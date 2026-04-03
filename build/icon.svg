@@ -1,0 +1,102 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1024" height="1024" viewBox="0 0 1024 1024">
+  <defs>
+    <!-- macOS-style background gradient -->
+    <linearGradient id="bg" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0%" stop-color="#6C63FF"/>
+      <stop offset="100%" stop-color="#3B35A8"/>
+    </linearGradient>
+    <!-- Subtle inner glow -->
+    <radialGradient id="glow" cx="0.5" cy="0.35" r="0.6">
+      <stop offset="0%" stop-color="#8B85FF" stop-opacity="0.4"/>
+      <stop offset="100%" stop-color="#6C63FF" stop-opacity="0"/>
+    </radialGradient>
+    <!-- Face gradient -->
+    <radialGradient id="face" cx="0.5" cy="0.45" r="0.5">
+      <stop offset="0%" stop-color="#F5F3FF"/>
+      <stop offset="100%" stop-color="#E0DEFF"/>
+    </radialGradient>
+    <!-- Shadow -->
+    <filter id="shadow" x="-10%" y="-10%" width="120%" height="130%">
+      <feDropShadow dx="0" dy="8" stdDeviation="20" flood-color="#1a1040" flood-opacity="0.3"/>
+    </filter>
+    <!-- macOS squircle approximation -->
+    <clipPath id="squircle">
+      <path d="M512,20 C780,20 1004,20 1004,244 C1004,244 1004,780 1004,780 C1004,1004 780,1004 512,1004 C244,1004 20,1004 20,780 C20,780 20,244 20,244 C20,20 244,20 512,20Z"/>
+    </clipPath>
+  </defs>
+
+  <!-- Squircle background -->
+  <g clip-path="url(#squircle)">
+    <rect width="1024" height="1024" fill="url(#bg)"/>
+    <rect width="1024" height="1024" fill="url(#glow)"/>
+
+    <!-- Cat body/silhouette -->
+    <g filter="url(#shadow)">
+      <!-- Ears -->
+      <path d="M310,440 L370,220 L460,410 Z" fill="url(#face)"/>
+      <path d="M564,410 L654,220 L714,440 Z" fill="url(#face)"/>
+      <!-- Inner ears -->
+      <path d="M345,420 L380,270 L435,405 Z" fill="#C4BCFF" opacity="0.5"/>
+      <path d="M589,405 L644,270 L679,420 Z" fill="#C4BCFF" opacity="0.5"/>
+
+      <!-- Head -->
+      <ellipse cx="512" cy="550" rx="215" ry="200" fill="url(#face)"/>
+    </g>
+
+    <!-- Eyes -->
+    <g>
+      <!-- Left eye -->
+      <ellipse cx="430" cy="520" rx="42" ry="48" fill="#3B35A8"/>
+      <ellipse cx="430" cy="520" rx="36" ry="42" fill="#1E1852"/>
+      <!-- Iris -->
+      <ellipse cx="430" cy="524" rx="18" ry="26" fill="#6C63FF"/>
+      <ellipse cx="430" cy="528" rx="12" ry="18" fill="#0E0A30"/>
+      <!-- Highlight -->
+      <circle cx="442" cy="510" r="10" fill="#fff" opacity="0.9"/>
+      <circle cx="424" cy="534" r="5" fill="#fff" opacity="0.5"/>
+
+      <!-- Right eye -->
+      <ellipse cx="594" cy="520" rx="42" ry="48" fill="#3B35A8"/>
+      <ellipse cx="594" cy="520" rx="36" ry="42" fill="#1E1852"/>
+      <!-- Iris -->
+      <ellipse cx="594" cy="524" rx="18" ry="26" fill="#6C63FF"/>
+      <ellipse cx="594" cy="528" rx="12" ry="18" fill="#0E0A30"/>
+      <!-- Highlight -->
+      <circle cx="606" cy="510" r="10" fill="#fff" opacity="0.9"/>
+      <circle cx="588" cy="534" r="5" fill="#fff" opacity="0.5"/>
+    </g>
+
+    <!-- Nose -->
+    <path d="M512,584 L500,570 L524,570 Z" fill="#FFB3C6"/>
+    <ellipse cx="512" cy="575" rx="12" ry="8" fill="#FFB3C6"/>
+
+    <!-- Mouth -->
+    <path d="M512,584 Q498,606 482,604" fill="none" stroke="#C4BCFF" stroke-width="3.5" stroke-linecap="round"/>
+    <path d="M512,584 Q526,606 542,604" fill="none" stroke="#C4BCFF" stroke-width="3.5" stroke-linecap="round"/>
+
+    <!-- Whiskers -->
+    <g stroke="#C4BCFF" stroke-width="2.5" stroke-linecap="round" opacity="0.7">
+      <line x1="340" y1="558" x2="410" y2="568"/>
+      <line x1="330" y1="588" x2="405" y2="584"/>
+      <line x1="340" y1="618" x2="410" y2="604"/>
+      <line x1="684" y1="558" x2="614" y2="568"/>
+      <line x1="694" y1="588" x2="619" y2="584"/>
+      <line x1="684" y1="618" x2="614" y2="604"/>
+    </g>
+
+    <!-- Cheek blush -->
+    <ellipse cx="380" cy="590" rx="30" ry="18" fill="#FF8FAB" opacity="0.2"/>
+    <ellipse cx="644" cy="590" rx="30" ry="18" fill="#FF8FAB" opacity="0.2"/>
+
+    <!-- Subtle sparkle accents -->
+    <g fill="#fff" opacity="0.6">
+      <circle cx="780" cy="280" r="4"/>
+      <circle cx="240" cy="320" r="3"/>
+      <circle cx="800" cy="700" r="3"/>
+      <circle cx="220" cy="680" r="2.5"/>
+    </g>
+
+    <!-- Bottom text -->
+    <text x="512" y="830" text-anchor="middle" font-family="-apple-system, BlinkMacSystemFont, sans-serif" font-weight="600" font-size="56" fill="#fff" opacity="0.85" letter-spacing="4">kitty kitty</text>
+  </g>
+</svg>
