@@ -100,6 +100,8 @@ export default function TagCloud({ sessions, onAttach, onKill, onRename, onCreat
   const [editingId, setEditingId] = useState<string | null>(null)
   const [editTitle, setEditTitle] = useState('')
   const [expandedSessionId, setExpandedSessionId] = useState<string | null>(null)
+  const [expandedGroupId, setExpandedGroupId] = useState<string | null>(null)
+  const [showAllUngrouped, setShowAllUngrouped] = useState(false)
   const [wtBranchInput, setWtBranchInput] = useState('')
   const [wtInputSessionId, setWtInputSessionId] = useState<string | null>(null)
   const { bubble } = useConfigStore()
@@ -187,11 +189,9 @@ export default function TagCloud({ sessions, onAttach, onKill, onRename, onCreat
     return parts.length ? parts.join(' · ') : null
   }, [sessions])
 
-  const [groups, setGroups] = useState<Array<{ id: string; name: string; collabEnabled?: boolean }>>([])
+  const [groups, setGroups] = useState<Array<{ id: string; name: string }>>([])
   const [groupMenuId, setGroupMenuId] = useState<string | null>(null)
   const [newGroupName, setNewGroupName] = useState('')
-  const [groupCollabMap, setGroupCollabMap] = useState<Record<string, boolean>>({})
-
   const showCollabError = useCallback((error: unknown) => {
     const message = error instanceof Error ? error.message : '未知错误'
     console.error('[session] action failed:', error)
@@ -199,12 +199,8 @@ export default function TagCloud({ sessions, onAttach, onKill, onRename, onCreat
   }, [])
 
   const loadGroups = useCallback(async () => {
-    const g = await window.api.invoke('group:list') as Array<{ id: string; name: string; collabEnabled?: boolean }>
-    const next = g || []
-    setGroups(next)
-    const collab: Record<string, boolean> = {}
-    for (const item of next) collab[item.id] = Boolean(item.collabEnabled)
-    setGroupCollabMap(collab)
+    const g = await window.api.invoke('group:list') as Array<{ id: string; name: string }>
+    setGroups(g || [])
   }, [])
 
   // Load groups
@@ -228,15 +224,6 @@ export default function TagCloud({ sessions, onAttach, onKill, onRename, onCreat
     setCtxMenu(null)
     setGroupMenuId(null)
   }, [newGroupName])
-
-  const handleToggleGroupCollab = useCallback(async (groupId: string, enabled: boolean) => {
-    try {
-      await window.api.invoke('group:collab:set-enabled', groupId, enabled)
-      await loadGroups()
-    } catch (error) {
-      showCollabError(error)
-    }
-  }, [loadGroups, showCollabError])
 
   // Group sessions: grouped ones by group, ungrouped separate
   const grouped = useMemo(() => {
@@ -352,15 +339,16 @@ export default function TagCloud({ sessions, onAttach, onKill, onRename, onCreat
               {branch.label}
             </div>
           )}
-          {session.isGitRepo && !(session.cwd || '').includes('.worktrees/') && (
-            <div
-              onClick={(e) => { e.stopPropagation(); setExpandedSessionId(expandedSessionId === session.id ? null : session.id) }}
-              style={{ fontSize: Math.max(fontSize - 4, 7), color: '#10b981', cursor: 'pointer', marginTop: 1 }}
-            >
-              {expandedSessionId === session.id ? '▾' : '▸'} {session.worktreePanes && session.worktreePanes.length > 0 ? `${session.worktreePanes.length} worktree` : '🌿+'}
-            </div>
-          )}
         </div>
+        {session.isGitRepo && !(session.cwd || '').includes('.worktrees/') && (
+          <span
+            onClick={(e) => { e.stopPropagation(); setExpandedSessionId(expandedSessionId === session.id ? null : session.id) }}
+            style={{ fontSize: Math.max(fontSize - 4, 7), color: '#10b981', cursor: 'pointer', flexShrink: 0 }}
+            title="Worktree panes"
+          >
+            {session.worktreePanes && session.worktreePanes.length > 0 ? `🌿${session.worktreePanes.length}` : '🌿'}
+          </span>
+        )}
         {hasPriority && (
           <span style={{ fontSize: Math.max(fontSize - 4, 7), flexShrink: 0, opacity: 0.7 }}>📌</span>
         )}
@@ -485,72 +473,86 @@ export default function TagCloud({ sessions, onAttach, onKill, onRename, onCreat
         </div>
       )}
 
-      {/* Grouped sections (top, farthest from cat) */}
-      {grouped.groups.map(([groupId, g]) => (
-        <div key={groupId} style={{
-          display: 'flex', flexDirection: 'column', alignItems: 'center', gap: Math.round(4 * scale),
-          padding: `${Math.round(6 * scale)}px ${Math.round(10 * scale)}px`,
-          borderRadius: Math.round(12 * scale),
-          background: '#23233f88',
-          border: '1px solid #46465c33',
-        }}>
-          <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
-            <div style={{
-              fontSize: Math.round(10 * scale), color: '#a7a5ff', opacity: 0.9,
-              fontFamily: "'Plus Jakarta Sans', -apple-system, sans-serif",
-              fontWeight: 600, letterSpacing: 0.5,
-            }}>
-              {g.name}
-            </div>
-            <button
-              onClick={() => handleToggleGroupCollab(groupId, !groupCollabMap[groupId])}
+      {/* Grouped sections — collapsed compact rows, click to expand */}
+      {grouped.groups.map(([groupId, g]) => {
+        const isExpanded = expandedGroupId === groupId
+        const runningCount = g.sessions.filter((s) => s.status === 'running').length
+        const detachedCount = g.sessions.length - runningCount
+        return (
+          <div key={groupId} style={{
+            display: 'flex', flexDirection: 'column', alignItems: 'stretch',
+            borderRadius: Math.round(10 * scale),
+            background: '#23233f88',
+            border: '1px solid #46465c33',
+            maxWidth: Math.round(400 * scale),
+            width: '100%',
+          }}>
+            {/* Compact group header row */}
+            <div
+              onClick={() => setExpandedGroupId(isExpanded ? null : groupId)}
               style={{
-                fontSize: 10,
-                borderRadius: 9999,
-                border: 'none',
-                padding: '3px 8px',
-                cursor: 'pointer',
-                color: '#fff',
-                background: groupCollabMap[groupId] ? '#10b981' : '#4b5563',
-                fontFamily: 'inherit',
+                display: 'flex', alignItems: 'center', gap: 6,
+                padding: `${Math.round(5 * scale)}px ${Math.round(10 * scale)}px`,
+                cursor: 'pointer', userSelect: 'none',
+                fontFamily: "'Plus Jakarta Sans', -apple-system, sans-serif",
               }}
-              title={groupCollabMap[groupId] ? '关闭群聊' : '开启群聊'}
             >
-              {groupCollabMap[groupId] ? '群聊开' : '群聊关'}
-            </button>
-            <button
-              onClick={() => handleSetGroupPriority(groupId, (groupPriorities[groupId] || 0) > 0 ? 0 : 1)}
-              style={{
-                fontSize: 10,
-                background: 'none',
-                border: 'none',
-                cursor: 'pointer',
-                opacity: (groupPriorities[groupId] || 0) > 0 ? 1 : 0.4,
-                padding: 0,
-              }}
-              title={(groupPriorities[groupId] || 0) > 0 ? '取消置顶' : '置顶显示'}
-            >📌</button>
-          </div>
-          <div style={{ display: 'flex', flexWrap: 'wrap', gap: Math.round(6 * scale), justifyContent: 'center' }}>
-            {g.sessions.map((s) => (
-              <div key={s.id} style={{ position: 'relative', display: 'flex', flexDirection: 'column', alignItems: 'center' }}>
-                {renderTag(s, tierMap.get(s.id) || 3)}
-                {renderWorktreePanes(s)}
+              <span style={{ fontSize: 9, color: '#aaa8c3' }}>{isExpanded ? '▾' : '▸'}</span>
+              <span style={{ fontSize: Math.round(11 * scale), color: '#a7a5ff', fontWeight: 600, flex: 1, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                {g.name}
+              </span>
+              {/* Status dots */}
+              {runningCount > 0 && <span style={{ fontSize: 9, color: '#10b981' }}>●{runningCount > 1 ? runningCount : ''}</span>}
+              {detachedCount > 0 && <span style={{ fontSize: 9, color: '#d97706' }}>●{detachedCount > 1 ? detachedCount : ''}</span>}
+              <span style={{ fontSize: 9, color: '#aaa8c3' }}>({g.sessions.length})</span>
+              <button
+                onClick={(e) => { e.stopPropagation(); handleSetGroupPriority(groupId, (groupPriorities[groupId] || 0) > 0 ? 0 : 1) }}
+                style={{
+                  fontSize: 9, background: 'none', border: 'none', cursor: 'pointer',
+                  opacity: (groupPriorities[groupId] || 0) > 0 ? 1 : 0.4,
+                  padding: 0, flexShrink: 0,
+                }}
+                title={(groupPriorities[groupId] || 0) > 0 ? '取消置顶' : '置顶显示'}
+              >📌</button>
+            </div>
+            {/* Expanded: show session bubbles vertically */}
+            {isExpanded && (
+              <div style={{
+                display: 'flex', flexDirection: 'column', alignItems: 'center', gap: Math.round(4 * scale),
+                padding: `0 ${Math.round(8 * scale)}px ${Math.round(6 * scale)}px`,
+              }}>
+                {g.sessions.map((s) => (
+                  <div key={s.id} style={{ position: 'relative', display: 'flex', flexDirection: 'column', alignItems: 'center' }}>
+                    {renderTag(s, tierMap.get(s.id) || 3)}
+                    {renderWorktreePanes(s)}
+                  </div>
+                ))}
               </div>
-            ))}
+            )}
           </div>
-        </div>
-      ))}
+        )
+      })}
 
-      {/* Ungrouped sessions (bottom, closest to cat) */}
+      {/* Ungrouped sessions — show up to 3, fold the rest */}
       {small.length > 0 && (
-        <div style={{ display: 'flex', flexWrap: 'wrap', gap: Math.round(8 * scale), justifyContent: 'center' }}>
-          {small.map((s) => (
+        <div style={{ display: 'flex', flexWrap: 'wrap', gap: Math.round(6 * scale), justifyContent: 'center' }}>
+          {(showAllUngrouped ? small : small.slice(0, 3)).map((s) => (
             <div key={s.id} style={{ display: 'flex', flexDirection: 'column', alignItems: 'center' }}>
               {renderTag(s, tierMap.get(s.id) || 3)}
               {renderWorktreePanes(s)}
             </div>
           ))}
+          {small.length > 3 && !showAllUngrouped && (
+            <button
+              onClick={() => setShowAllUngrouped(true)}
+              style={{
+                fontSize: Math.round(9 * scale), color: '#aaa8c3', background: '#23233f66',
+                border: '1px solid #46465c33', borderRadius: 9999,
+                padding: `${Math.round(3 * scale)}px ${Math.round(10 * scale)}px`,
+                cursor: 'pointer', fontFamily: "'Plus Jakarta Sans', -apple-system, sans-serif",
+              }}
+            >+{small.length - 3} more</button>
+          )}
         </div>
       )}
       {medium.length > 0 && (

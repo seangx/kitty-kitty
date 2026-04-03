@@ -58,7 +58,15 @@ function resolveNodePath(): string {
  * Inject the kitty-session MCP server into a session's project.
  * All sessions with cwd get basic pane tools. Git repos also get worktree tools.
  */
-export function injectSessionMcp(sessionId: string, cwd: string, tmuxName: string): void {
+export function injectSessionMcp(
+  sessionId: string,
+  cwd: string,
+  tmuxName: string,
+  sessionTitle: string,
+  groupId?: string,
+  groupName?: string,
+  tool?: string
+): void {
   if (!cwd) return
   if (injectedSessions.has(sessionId)) return
 
@@ -82,6 +90,23 @@ export function injectSessionMcp(sessionId: string, cwd: string, tmuxName: strin
       }
     }
 
+    // kitty-talk (communication)
+    const { ensureRuntimeArtifacts } = require('./collab-manager')
+    const { scriptPath: talkScriptPath, busDir } = ensureRuntimeArtifacts()
+    config.mcpServers['kitty-talk'] = {
+      command: nodePath,
+      args: [talkScriptPath],
+      env: {
+        KITTY_AGENT_ID: sessionId,
+        KITTY_AGENT_NAME: sessionTitle,
+        KITTY_BUS_DIR: busDir,
+        KITTY_GROUP_ID: groupId || '',
+        KITTY_GROUP_NAME: groupName || '',
+        KITTY_TOOL: tool || '',
+        KITTY_CWD: cwd,
+      }
+    }
+
     writeFileSync(configPath, JSON.stringify(config, null, 2))
     injectedSessions.add(sessionId)
     log('session-mcp', `injected session=${sessionId} cwd=${cwd}`)
@@ -91,7 +116,26 @@ export function injectSessionMcp(sessionId: string, cwd: string, tmuxName: strin
 }
 
 /**
- * Remove the kitty-session MCP server from a session's project.
+ * Update the group ID/name in kitty-talk config without restarting the agent.
+ */
+export function updateGroupId(sessionId: string, cwd: string, groupId: string, groupName: string): void {
+  if (!cwd) return
+  try {
+    const configPath = join(cwd, '.mcp.json')
+    const config = JSON.parse(readFileSync(configPath, 'utf-8'))
+    if (config?.mcpServers?.['kitty-talk']?.env) {
+      config.mcpServers['kitty-talk'].env.KITTY_GROUP_ID = groupId || ''
+      config.mcpServers['kitty-talk'].env.KITTY_GROUP_NAME = groupName || ''
+      writeFileSync(configPath, JSON.stringify(config, null, 2))
+      log('session-mcp', `updated groupId=${groupId} for session=${sessionId}`)
+    }
+  } catch (err) {
+    log('session-mcp', `updateGroupId failed session=${sessionId}:`, err)
+  }
+}
+
+/**
+ * Remove the kitty-session and kitty-talk MCP servers from a session's project.
  */
 export function removeSessionMcp(sessionId: string, cwd: string): void {
   if (!cwd) return
@@ -99,16 +143,12 @@ export function removeSessionMcp(sessionId: string, cwd: string): void {
   try {
     const configPath = join(cwd, '.mcp.json')
     const config = JSON.parse(readFileSync(configPath, 'utf-8'))
-    if (config?.mcpServers?.['kitty-session']) {
-      delete config.mcpServers['kitty-session']
-      if (Object.keys(config.mcpServers).length === 0) {
-        delete config.mcpServers
-      }
-      if (Object.keys(config).length === 0 || (Object.keys(config).length === 1 && config.mcpServers && Object.keys(config.mcpServers).length === 0)) {
-        unlinkSync(configPath)
-      } else {
-        writeFileSync(configPath, JSON.stringify(config, null, 2))
-      }
+    delete config?.mcpServers?.['kitty-session']
+    delete config?.mcpServers?.['kitty-talk']
+    if (!config.mcpServers || Object.keys(config.mcpServers).length === 0) {
+      unlinkSync(configPath)
+    } else {
+      writeFileSync(configPath, JSON.stringify(config, null, 2))
     }
   } catch { /* ignore */ }
 

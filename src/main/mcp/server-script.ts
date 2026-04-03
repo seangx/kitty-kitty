@@ -34,6 +34,9 @@ function registerAgent() {
     id: AGENT_ID,
     name: AGENT_NAME,
     groupId: GROUP_ID,
+    groupName: process.env.KITTY_GROUP_NAME || '',
+    tool: process.env.KITTY_TOOL || '',
+    cwd: process.env.KITTY_CWD || '',
     lastSeen: Date.now()
   };
   fs.writeFileSync(agentsFile, JSON.stringify(agents, null, 2));
@@ -78,7 +81,7 @@ function writeProtocolMessage(msg) {
 const TOOLS = [
   {
     name: 'talk',
-    description: 'Send a message to another agent in your group. Messages are queued and delivered asynchronously — the target does NOT need to be active. When the user says "@name <message>", call this tool directly without asking follow-up questions.',
+    description: 'Send a message to another agent. Messages are queued and delivered asynchronously — the target does NOT need to be active. When the user says "@name <message>", call this tool directly without asking follow-up questions.',
     inputSchema: {
       type: 'object',
       properties: {
@@ -101,10 +104,12 @@ const TOOLS = [
   },
   {
     name: 'peers',
-    description: 'List all agents currently in the collaboration group.',
+    description: 'List available agents. By default lists agents in your group. Use all=true to list all agents.',
     inputSchema: {
       type: 'object',
-      properties: {},
+      properties: {
+        all: { type: 'boolean', description: 'List all agents across all groups', default: false }
+      },
       additionalProperties: false
     }
   },
@@ -126,7 +131,6 @@ function handleToolCall(name, args) {
   switch (name) {
     case 'talk': {
       const { to, message, done } = args;
-      // Find target agent id by name
       const agents = readAgents();
       const targetKey = normalizeTarget(String(to || ''));
       const messageText = String(message || '').trim();
@@ -136,12 +140,21 @@ function handleToolCall(name, args) {
       if (!messageText) {
         return { content: [{ type: 'text', text: 'Missing message body.' }], isError: true };
       }
-      const targetEntry = findTargetEntry(agents, targetKey);
-      if (!targetEntry) {
-        return { content: [{ type: 'text', text: 'Agent "' + to + '" not found in current group. Use peers() to see available agents.' }], isError: true };
+      // Group broadcast: @@groupName (normalizeTarget strips leading @, so one @ remains)
+      if (targetKey.startsWith('@')) {
+        const groupName = targetKey.slice(1);
+        return handleGroupBroadcast(agents, groupName, messageText, done);
       }
-      const targetId = targetEntry[0];
-      const targetName = targetEntry[1] && targetEntry[1].name ? targetEntry[1].name : targetId;
+      const matches = findAllMatches(agents, targetKey);
+      if (matches.length === 0) {
+        return { content: [{ type: 'text', text: 'Agent "' + to + '" not found. Use peers() to see available agents.' }], isError: true };
+      }
+      if (matches.length > 1) {
+        const candidates = matches.map(([id, v]) => (v.name || id) + ' [' + id + ']' + (v.groupName ? ' (group: ' + v.groupName + ')' : '')).join('\\n');
+        return { content: [{ type: 'text', text: 'Multiple agents match "' + to + '". Please specify by id:\\n' + candidates }], isError: true };
+      }
+      const targetId = matches[0][0];
+      const targetName = matches[0][1] && matches[0][1].name ? matches[0][1].name : targetId;
       const targetInbox = path.join(BUS_DIR, targetId + '.inbox.jsonl');
       const msg = JSON.stringify({ from: AGENT_NAME, fromId: AGENT_ID, message: messageText, done: !!done, ts: Date.now() }) + '\\n';
       fs.appendFileSync(targetInbox, msg);
@@ -168,15 +181,33 @@ function handleToolCall(name, args) {
     }
     case 'peers': {
       const agents = readAgents();
-      const list = Object.entries(agents)
-        .filter(([id, v]) => id !== AGENT_ID && v && v.groupId === GROUP_ID)
-        .map(([id, v]) => {
-          const ago = Math.round((Date.now() - (v.lastSeen || 0)) / 1000);
-          const label = ago < 60 ? 'active' : ago < 300 ? Math.round(ago / 60) + 'm ago' : 'idle';
-          return v.name + ' [' + id + '] (' + label + ')';
-        })
-        .join('\\n');
-      return { content: [{ type: 'text', text: (list || 'No other agents in this group.') + '\\n\\nNote: Messages are queued and will be delivered when the agent is ready. You can always send even if they appear idle.' }] };
+      const showAll = !!args.all;
+      const hasGroup = GROUP_ID && GROUP_ID !== '__ungrouped__';
+      const allEntries = Object.entries(agents).filter(([id, v]) => id !== AGENT_ID && v);
+      if (!showAll && hasGroup) {
+        const list = allEntries
+          .filter(([id, v]) => v.groupId === GROUP_ID)
+          .map(([id, v]) => {
+            const ago = Math.round((Date.now() - (v.lastSeen || 0)) / 1000);
+            const label = ago < 60 ? 'active' : ago < 300 ? Math.round(ago / 60) + 'm ago' : 'idle';
+            const meta = [v.tool, v.cwd].filter(Boolean).join(' | ');
+            return v.name + ' [' + id + '] (' + label + ')' + (meta ? ' — ' + meta : '');
+          })
+          .join('\\n');
+        return { content: [{ type: 'text', text: (list || 'No other agents in this group.') + '\\n\\nTip: Use peers({ all: true }) to see agents across all groups.\\nNote: Messages are queued and will be delivered when the agent is ready. You can always send even if they appear idle.' }] };
+      }
+      // Show all, grouped by group
+      const groups = {};
+      for (const [id, v] of allEntries) {
+        const gName = v.groupName || v.groupId || '__ungrouped__';
+        if (!groups[gName]) groups[gName] = [];
+        const ago = Math.round((Date.now() - (v.lastSeen || 0)) / 1000);
+        const label = ago < 60 ? 'active' : ago < 300 ? Math.round(ago / 60) + 'm ago' : 'idle';
+        const meta = [v.tool, v.cwd].filter(Boolean).join(' | ');
+        groups[gName].push(v.name + ' [' + id + '] (' + label + ')' + (meta ? ' — ' + meta : ''));
+      }
+      const sections = Object.keys(groups).sort().map(g => '## ' + g + '\\n' + groups[g].join('\\n')).join('\\n\\n');
+      return { content: [{ type: 'text', text: (sections || 'No other agents found.') + '\\n\\nNote: Messages are queued and will be delivered when the agent is ready. You can always send even if they appear idle.' }] };
     }
     case 'slash': {
       const raw = String(args?.command || '').trim();
@@ -184,6 +215,7 @@ function handleToolCall(name, args) {
         return { content: [{ type: 'text', text: 'Usage: /@ <target> <message> | /@peers | /@listen' }], isError: true };
       }
       if (raw === '/@peers') return handleToolCall('peers', {});
+      if (raw === '/@peers --all' || raw === '/@peers -a') return handleToolCall('peers', { all: true });
       if (raw === '/@listen') return handleToolCall('listen', {});
       if (raw.startsWith('/@')) {
         const agents = readAgents();
@@ -215,9 +247,36 @@ function readAgents() {
 function findTargetEntry(agents, targetKey) {
   const wanted = String(targetKey || '').toLowerCase();
   return Object.entries(agents).find(([id, v]) => {
-    if (!v || v.groupId !== GROUP_ID) return false;
+    if (!v) return false;
     return String(v.name || '').toLowerCase() === wanted || String(id || '').toLowerCase() === wanted;
   });
+}
+
+function findAllMatches(agents, targetKey) {
+  const wanted = String(targetKey || '').toLowerCase();
+  return Object.entries(agents).filter(([id, v]) => {
+    if (!v || id === AGENT_ID) return false;
+    return String(v.name || '').toLowerCase() === wanted || String(id || '').toLowerCase() === wanted;
+  });
+}
+
+function handleGroupBroadcast(agents, groupName, messageText, done) {
+  const members = Object.entries(agents).filter(([id, v]) => {
+    if (!v || id === AGENT_ID) return false;
+    return String(v.groupName || '').toLowerCase() === groupName.toLowerCase()
+        || String(v.groupId || '').toLowerCase() === groupName.toLowerCase();
+  });
+  if (members.length === 0) {
+    return { content: [{ type: 'text', text: 'No agents found in group "' + groupName + '".' }], isError: true };
+  }
+  const msg = JSON.stringify({ from: AGENT_NAME, fromId: AGENT_ID, message: messageText, done: !!done, ts: Date.now() }) + '\\n';
+  const delivered = [];
+  for (const [id, v] of members) {
+    const inbox = path.join(BUS_DIR, id + '.inbox.jsonl');
+    fs.appendFileSync(inbox, msg);
+    delivered.push(v.name || id);
+  }
+  return { content: [{ type: 'text', text: 'Broadcast to ' + delivered.length + ' agents in ' + groupName + ': ' + delivered.join(', ') }] };
 }
 
 function parseSlashTalk(rest, agents) {
@@ -227,7 +286,7 @@ function parseSlashTalk(rest, agents) {
   let best = null;
   const candidates = [];
   for (const [id, v] of Object.entries(agents)) {
-    if (id === AGENT_ID || !v || v.groupId !== GROUP_ID) continue;
+    if (id === AGENT_ID || !v) continue;
     const name = normalizeTarget(String(v.name || '').trim());
     if (name) candidates.push(name);
     candidates.push(String(id));
@@ -253,7 +312,7 @@ function parseSlashTalk(rest, agents) {
 function buildSlashTargetSuggestions(agents, prefix) {
   const wanted = normalizeTarget(String(prefix || '')).toLowerCase();
   const rows = Object.entries(agents)
-    .filter(([id, v]) => id !== AGENT_ID && v && v.groupId === GROUP_ID)
+    .filter(([id, v]) => id !== AGENT_ID && v)
     .map(([id, v]) => ({
       id,
       name: String(v.name || id),

@@ -173,6 +173,7 @@ function ensureBusDir(): string {
 }
 
 /**
+ * @deprecated Use session-mcp-manager.injectSessionMcp + collab.watchInbox instead.
  * Start collaboration for a session: inject MCP config and restart agent
  */
 export function startCollaboration(
@@ -207,6 +208,7 @@ export function startCollaboration(
 }
 
 /**
+ * @deprecated Use session-mcp-manager.removeSessionMcp + collab.unwatchInbox instead.
  * Stop collaboration for a session: remove MCP config and restart
  */
 export function stopCollaboration(
@@ -300,6 +302,20 @@ export function cleanupStaleAgents(activeIds: Set<string>): void {
       log('collab', `cleanupStaleAgents: removed ${Object.keys(agents).length === 0 ? 'all' : 'some'} stale entries`)
     }
   } catch { /* ignore: file may not exist yet */ }
+}
+
+/**
+ * Start watching an agent's inbox for incoming messages.
+ */
+export function watchInbox(sessionId: string, tmuxName: string, tool: string): void {
+  getInboxWatcher().watch(sessionId, tmuxName, tool)
+}
+
+/**
+ * Stop watching an agent's inbox.
+ */
+export function unwatchInbox(sessionId: string): void {
+  getInboxWatcher().unwatch(sessionId)
 }
 
 /**

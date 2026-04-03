@@ -105,7 +105,8 @@ export function registerSessionHandlers(): void {
     const script = generateLaunchScript(tool || 'claude', 'new')
     const session = tmux.createTmuxSession(tool || 'claude', firstMessage, undefined, script)
     sessionRepo.saveSession(session)
-    sessionMcp.injectSessionMcp(session.id, session.cwd, session.tmuxName)
+    sessionMcp.injectSessionMcp(session.id, session.cwd, session.tmuxName, session.title, '', '', session.tool)
+    collab.watchInbox(session.id, session.tmuxName, session.tool)
     tmux.attachSession(session.tmuxName)
     return toSessionInfo(session)
   })
@@ -148,7 +149,8 @@ export function registerSessionHandlers(): void {
     const script = generateLaunchScript(tool || 'claude', mode, resumeId === '__new__' ? undefined : resumeId || undefined)
     const session = tmux.createTmuxSession(tool || 'claude', undefined, dir, script)
     sessionRepo.saveSession(session)
-    sessionMcp.injectSessionMcp(session.id, dir, session.tmuxName)
+    sessionMcp.injectSessionMcp(session.id, dir, session.tmuxName, session.title, '', '', session.tool)
+    collab.watchInbox(session.id, session.tmuxName, session.tool)
     tmux.attachSession(session.tmuxName)
     return toSessionInfo(session)
   })
@@ -225,7 +227,8 @@ export function registerSessionHandlers(): void {
     )
     const session = tmux.createTmuxSession(tool || 'claude', undefined, worktreePath, script)
     sessionRepo.saveSession(session)
-    sessionMcp.injectSessionMcp(session.id, worktreePath, session.tmuxName)
+    sessionMcp.injectSessionMcp(session.id, worktreePath, session.tmuxName, session.title, '', '', session.tool)
+    collab.watchInbox(session.id, session.tmuxName, session.tool)
     tmux.attachSession(session.tmuxName)
     return toSessionInfo(session)
   })
@@ -311,42 +314,18 @@ export function registerSessionHandlers(): void {
     if (!session) throw new Error('Session not found')
     if (session.tool === nextTool) return { success: true }
 
-    const wasCollaborating = collab.isCollaborating(id, session.cwd, session.tool, session.tmuxName)
-    try {
-      if (wasCollaborating) {
-        collab.stopCollaboration(id, session.cwd, session.tmuxName, session.tool)
-      }
-      if (tmux.isSessionAlive(session.tmuxName)) {
-        restartSessionTool(session.tmuxName, session.mainPane || '0.0', session.tool, nextTool)
-      }
-      sessionRepo.updateSessionTool(id, nextTool)
-      if (wasCollaborating) {
-        collab.startCollaboration(
-          id,
-          session.title,
-          session.groupId || null,
-          session.cwd,
-          session.tmuxName,
-          nextTool
-        )
-      }
-      return { success: true }
-    } catch (err) {
-      // Best effort rollback: keep collaboration usable on previous tool.
-      if (wasCollaborating) {
-        try {
-          collab.startCollaboration(
-            id,
-            session.title,
-            session.groupId || null,
-            session.cwd,
-            session.tmuxName,
-            session.tool
-          )
-        } catch { /* ignore rollback error */ }
-      }
-      throw err
+    if (tmux.isSessionAlive(session.tmuxName)) {
+      restartSessionTool(session.tmuxName, session.mainPane || '0.0', session.tool, nextTool)
     }
+    sessionRepo.updateSessionTool(id, nextTool)
+
+    // Re-inject MCP after tool switch
+    sessionMcp.removeSessionMcp(id, session.cwd)
+    const grp = session.groupId ? sessionRepo.getGroupById(session.groupId) : undefined
+    sessionMcp.injectSessionMcp(session.id, session.cwd, session.tmuxName, session.title, session.groupId || '', grp?.name || '', nextTool)
+    collab.watchInbox(session.id, session.tmuxName, nextTool)
+
+    return { success: true }
   })
 
   // Restart current session agent process in-place.
@@ -360,17 +339,22 @@ export function registerSessionHandlers(): void {
       sessionRepo.updateSessionStatus(id, 'dead')
       throw new Error('Session is not running')
     }
-    const group = session.groupId ? sessionRepo.getGroupById(session.groupId) : undefined
-    const collabEnabled = Boolean(group?.collabEnabled)
-    collab.restartSessionAgent(
-      session.id,
-      session.title,
-      session.groupId || null,
-      session.cwd,
-      session.tmuxName,
-      session.tool,
-      collabEnabled
-    )
+    // Run in background to avoid blocking UI
+    setTimeout(() => {
+      try {
+        collab.restartSessionAgent(
+          session.id,
+          session.title,
+          session.groupId || null,
+          session.cwd,
+          session.tmuxName,
+          session.tool,
+          true
+        )
+      } catch (err) {
+        log('session', `restart-agent failed for ${id}:`, err)
+      }
+    }, 0)
     return { success: true }
   })
 
@@ -413,11 +397,8 @@ export function registerSessionHandlers(): void {
   })
 
   ipcMain.handle('group:delete', (_event, groupId: string) => {
-    const group = sessionRepo.getGroupById(groupId)
-    if (group?.collabEnabled) {
-      for (const session of sessionRepo.listSessionsByGroup(groupId)) {
-        collab.stopCollaboration(session.id, session.cwd, session.tmuxName, session.tool)
-      }
+    for (const session of sessionRepo.listSessionsByGroup(groupId)) {
+      sessionMcp.updateGroupId(session.id, session.cwd, '', '')
     }
     sessionRepo.deleteGroup(groupId)
   })
@@ -430,62 +411,19 @@ export function registerSessionHandlers(): void {
     const rows = sessionRepo.listSessions()
     const session = rows.find((s) => s.id === sessionId)
     if (!session) throw new Error('Session not found')
-    const prevGroupId = session.groupId
-    const prevGroup = prevGroupId ? sessionRepo.getGroupById(prevGroupId) : undefined
-    const nextGroup = groupId ? sessionRepo.getGroupById(groupId) : undefined
 
     sessionRepo.updateSessionGroup(sessionId, groupId)
 
-    // Sync collaboration endpoint with group-level source of truth.
-    if (prevGroup?.collabEnabled && prevGroupId !== groupId) {
-      collab.stopCollaboration(session.id, session.cwd, session.tmuxName, session.tool)
-    }
-    if (nextGroup?.collabEnabled) {
-      collab.startCollaboration(session.id, session.title, groupId, session.cwd, session.tmuxName, session.tool)
-    }
-  })
-
-  ipcMain.handle('group:collab:set-enabled', (_event, groupId: string, enabled: boolean) => {
-    const group = sessionRepo.getGroupById(groupId)
-    if (!group) throw new Error('Group not found')
-
-    sessionRepo.setGroupCollabEnabled(groupId, enabled)
-    const sessions = sessionRepo.listSessionsByGroup(groupId)
-
-    // Run in background to avoid blocking the UI — each startCollaboration
-    // synchronously restarts agents which can take seconds per session.
-    for (const session of sessions) {
-      setTimeout(() => {
-        try {
-          if (enabled) {
-            collab.startCollaboration(session.id, session.title, groupId, session.cwd, session.tmuxName, session.tool)
-          } else {
-            collab.stopCollaboration(session.id, session.cwd, session.tmuxName, session.tool)
-          }
-        } catch (err) {
-          log('collab', `group toggle failed for ${session.id}:`, err)
-        }
-      }, 0)
-    }
-    return { success: true }
+    const nextGroup = groupId ? sessionRepo.getGroupById(groupId) : undefined
+    sessionMcp.updateGroupId(sessionId, session.cwd, groupId || '', nextGroup?.name || '')
   })
 
   // --- Collaboration (MCP) ---
-  ipcMain.handle('collab:start', (_event, _sessionId: string) => {
-    throw new Error('协作已升级为 Group 级开关。请使用 group:collab:set-enabled。')
-  })
-
-  ipcMain.handle('collab:stop', (_event, _sessionId: string) => {
-    throw new Error('协作已升级为 Group 级开关。请使用 group:collab:set-enabled。')
-  })
-
   ipcMain.handle('collab:status', (_event, sessionId: string) => {
     const rows = sessionRepo.listSessions()
     const session = rows.find(s => s.id === sessionId)
     if (!session) throw new Error('Session not found')
-    const group = session.groupId ? sessionRepo.getGroupById(session.groupId) : undefined
-    const active = Boolean(group?.collabEnabled)
-      && collab.isCollaborating(sessionId, session.cwd, session.tool, session.tmuxName)
+    const active = sessionMcp.hasSessionMcp(sessionId)
     return { active }
   })
 }
@@ -544,28 +482,15 @@ function syncAndList(): SessionInfo[] {
       tmux.applyKittyStatusBar(name)
     }
 
-    // Re-hydrate collaboration from group-level source of truth on app startup.
-    const activeCollabIds = new Set<string>()
-    for (const row of sessionRepo.listSessions()) {
-      if (!row.groupId) continue
-      const group = sessionRepo.getGroupById(row.groupId)
-      if (!group?.collabEnabled) continue
-      activeCollabIds.add(row.id)
-      try {
-        collab.startCollaboration(row.id, row.title, row.groupId, row.cwd, row.tmuxName, row.tool)
-      } catch (err) {
-        console.error(`[collab] Failed to rehydrate session ${row.id}:`, err)
-      }
-    }
-    // Remove stale agents.json entries left over from crashes or group/collab changes
-    collab.cleanupStaleAgents(activeCollabIds)
-
-    // Inject session MCP for all live sessions with cwd
+    // Start inbox watcher for all live sessions with cwd
     for (const row of sessionRepo.listSessions()) {
       if (liveNames.has(row.tmuxName) && row.cwd) {
-        sessionMcp.injectSessionMcp(row.id, row.cwd, row.tmuxName)
+        const group = row.groupId ? sessionRepo.getGroupById(row.groupId) : undefined
+        sessionMcp.injectSessionMcp(row.id, row.cwd, row.tmuxName, row.title, row.groupId || '', group?.name || '', row.tool)
+        collab.watchInbox(row.id, row.tmuxName, row.tool)
       }
     }
+    collab.cleanupStaleAgents(new Set(sessionRepo.listSessions().filter(r => liveNames.has(r.tmuxName)).map(r => r.id)))
   }
 
   // Normal sync: update status based on tmux state
