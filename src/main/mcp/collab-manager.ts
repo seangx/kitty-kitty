@@ -17,6 +17,7 @@ import { IPC } from '@shared/types/ipc'
 import { MCP_SERVER_SCRIPT } from './server-script'
 import { InboxWatcher } from './inbox-watcher'
 import { log } from '../logger'
+import { TMUX } from '../tmux/session-manager'
 
 const BUS_DIR = join(tmpdir(), 'kitty-bus')
 const SCRIPT_PATH = join(tmpdir(), 'kitty-mcp-server.js')
@@ -357,7 +358,7 @@ function getTmuxPanePath(tmuxName: string): string {
   try {
     const target = `${tmuxName}:0.0`
     return execSync(
-      `tmux display-message -p -t "${target}" "#{pane_current_path}"`,
+      `${TMUX} display-message -p -t "${target}" "#{pane_current_path}"`,
       { encoding: 'utf-8' }
     ).trim()
   } catch {
@@ -487,9 +488,9 @@ function restartAgent(tmuxName: string, tool: string, sessionEnv?: Record<string
   try {
     if (tool === 'claude') {
       // Graceful quit keeps transcript cleanup logic in Claude itself.
-      execSync(`tmux send-keys -t "${target}" "/exit" Enter`, { stdio: 'ignore' })
+      execSync(`${TMUX} send-keys -t "${target}" "/exit" Enter`, { stdio: 'ignore' })
     } else {
-      execSync(`tmux send-keys -t "${target}" C-c`, { stdio: 'ignore' })
+      execSync(`${TMUX} send-keys -t "${target}" C-c`, { stdio: 'ignore' })
     }
 
     // Wait until pane returns to a shell prompt before starting again.
@@ -501,7 +502,7 @@ function restartAgent(tmuxName: string, tool: string, sessionEnv?: Record<string
   }
 
   const cmd = buildRestartCommand(tool, sessionEnv)
-  execSync(`tmux send-keys -t "${target}" "${cmd}" Enter`, { stdio: 'ignore' })
+  execSync(`${TMUX} send-keys -t "${target}" "${cmd}" Enter`, { stdio: 'ignore' })
 }
 
 function buildRestartCommand(tool: string, sessionEnv?: Record<string, string>): string {
@@ -522,7 +523,7 @@ function waitForPaneShell(tmuxTarget: string, timeoutMs: number): void {
   while (Date.now() < deadline) {
     try {
       const current = execSync(
-        `tmux display-message -p -t "${tmuxTarget}" "#{pane_current_command}"`,
+        `${TMUX} display-message -p -t "${tmuxTarget}" "#{pane_current_command}"`,
         { encoding: 'utf-8' }
       ).trim()
       if (shellCommands.has(current)) return
@@ -536,11 +537,11 @@ function waitForPaneShell(tmuxTarget: string, timeoutMs: number): void {
 
 function forceStopPaneForegroundProcess(tmuxTarget: string): void {
   try {
-    execSync(`tmux send-keys -t "${tmuxTarget}" C-c`, { stdio: 'ignore' })
+    execSync(`${TMUX} send-keys -t "${tmuxTarget}" C-c`, { stdio: 'ignore' })
   } catch { /* ignore */ }
   let panePid = ''
   try {
-    panePid = execSync(`tmux display-message -p -t "${tmuxTarget}" "#{pane_pid}"`, { encoding: 'utf-8' }).trim()
+    panePid = execSync(`${TMUX} display-message -p -t "${tmuxTarget}" "#{pane_pid}"`, { encoding: 'utf-8' }).trim()
   } catch { /* ignore */ }
   if (!panePid) return
 

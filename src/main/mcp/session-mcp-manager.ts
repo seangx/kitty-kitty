@@ -3,6 +3,8 @@ import { join } from 'path'
 import { execSync } from 'child_process'
 import { SESSION_MCP_SERVER_SCRIPT } from './session-server-script'
 import { log } from '../logger'
+import { TMUX } from '../tmux/session-manager'
+import { ensureRuntimeArtifacts } from './collab-manager'
 
 const SCRIPT_FILENAME = 'kitty-session-server.js'
 
@@ -85,13 +87,13 @@ export function injectSessionMcp(
       env: {
         KITTY_AGENT_ID: sessionId,
         KITTY_TMUX_NAME: tmuxName,
+        KITTY_TMUX_BIN: TMUX,
         KITTY_PROJECT_ROOT: cwd,
         KITTY_IS_GIT_REPO: isGitRepo(cwd) ? '1' : '0',
       }
     }
 
     // kitty-talk (communication)
-    const { ensureRuntimeArtifacts } = require('./collab-manager')
     const { scriptPath: talkScriptPath, busDir } = ensureRuntimeArtifacts()
     config.mcpServers['kitty-talk'] = {
       command: nodePath,

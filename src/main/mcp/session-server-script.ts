@@ -25,6 +25,7 @@ const { execSync } = require('child_process');
 
 const AGENT_ID = process.env.KITTY_AGENT_ID || 'unknown';
 const TMUX_NAME = process.env.KITTY_TMUX_NAME || '';
+const TMUX_BIN = process.env.KITTY_TMUX_BIN || 'tmux';
 const PROJECT_ROOT = process.env.KITTY_PROJECT_ROOT || '';
 const IS_GIT_REPO = process.env.KITTY_IS_GIT_REPO === '1';
 
@@ -138,8 +139,31 @@ function handleCreatePane(args) {
       }
     }
 
+    // Main-vertical layout: first split horizontal (right), subsequent splits vertical (stack on right)
+    let paneCount = 1;
+    try {
+      paneCount = execSync(
+        TMUX_BIN + ' list-panes -t ' + JSON.stringify(TMUX_NAME) + ' -F "#{pane_id}"',
+        { stdio: 'pipe' }
+      ).toString().trim().split('\\n').length;
+    } catch {}
+    // 1 pane → split -h (create right column); 2+ panes → split -v on the last non-main pane
+    const splitFlag = paneCount <= 1 ? '-h' : '-v';
+    // Target: for -v, split from the last pane (right column) so sub-panes stack vertically
+    let splitTarget = JSON.stringify(TMUX_NAME);
+    if (paneCount > 1) {
+      try {
+        const panes = execSync(
+          TMUX_BIN + ' list-panes -t ' + JSON.stringify(TMUX_NAME) + ' -F "#{pane_id}"',
+          { stdio: 'pipe' }
+        ).toString().trim().split('\\n');
+        // Split from the last pane (bottom of right column)
+        splitTarget = JSON.stringify(panes[panes.length - 1]);
+      } catch {}
+    }
+
     const paneIdRaw = execSync(
-      'tmux split-window -t ' + JSON.stringify(TMUX_NAME) + ' -h -c ' + JSON.stringify(cwd) + ' -P -F "#{pane_id}" ' + JSON.stringify(paneCmd),
+      TMUX_BIN + ' split-window -t ' + splitTarget + ' ' + splitFlag + ' -c ' + JSON.stringify(cwd) + ' -P -F "#{pane_id}" ' + JSON.stringify(paneCmd),
       { stdio: 'pipe' }
     ).toString().trim();
 
@@ -148,7 +172,7 @@ function handleCreatePane(args) {
       setTimeout(() => {
         try {
           execSync(
-            'tmux send-keys -t ' + JSON.stringify(paneIdRaw) + ' ' + JSON.stringify(message) + ' Enter',
+            TMUX_BIN + ' send-keys -t ' + JSON.stringify(paneIdRaw) + ' ' + JSON.stringify(message) + ' Enter',
             { stdio: 'pipe' }
           );
         } catch {}
@@ -307,7 +331,7 @@ function handleListPanes() {
       return { content: [{ type: 'text', text: 'KITTY_TMUX_NAME is not set.' }], isError: true };
     }
     const output = execSync(
-      'tmux list-panes -t ' + JSON.stringify(TMUX_NAME) + ' -F "#{pane_id}:#{pane_current_path}:#{pane_current_command}"',
+      TMUX_BIN + ' list-panes -t ' + JSON.stringify(TMUX_NAME) + ' -F "#{pane_id}:#{pane_current_path}:#{pane_current_command}"',
       { stdio: 'pipe' }
     ).toString().trim();
     if (!output) {
@@ -338,7 +362,7 @@ function handleClosePane(args) {
     if (!paneToKill && targetBranch && TMUX_NAME) {
       const branchDir = targetBranch.replace(/\\//g, '-');
       const output = execSync(
-        'tmux list-panes -t ' + JSON.stringify(TMUX_NAME) + ' -F "#{pane_id}:#{pane_current_path}"',
+        TMUX_BIN + ' list-panes -t ' + JSON.stringify(TMUX_NAME) + ' -F "#{pane_id}:#{pane_current_path}"',
         { stdio: 'pipe' }
       ).toString().trim();
       for (const line of output.split('\\n')) {
@@ -359,7 +383,7 @@ function handleClosePane(args) {
     }
 
     try {
-      execSync('tmux kill-pane -t ' + JSON.stringify(paneToKill), { stdio: 'pipe' });
+      execSync(TMUX_BIN + ' kill-pane -t ' + JSON.stringify(paneToKill), { stdio: 'pipe' });
     } catch {}
 
     if (cleanup && PROJECT_ROOT) {

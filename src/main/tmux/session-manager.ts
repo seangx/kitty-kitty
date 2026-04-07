@@ -1,8 +1,28 @@
 import { execSync, exec } from 'child_process'
-import { writeFileSync, chmodSync } from 'fs'
+import { existsSync, writeFileSync, chmodSync } from 'fs'
 import { join } from 'path'
 import { tmpdir } from 'os'
 import { v4 as uuid } from 'uuid'
+
+/** Resolve tmux binary — GUI apps don't inherit homebrew PATH */
+function findTmux(): string {
+  const candidates = [
+    '/opt/homebrew/bin/tmux',
+    '/usr/local/bin/tmux',
+    '/usr/bin/tmux',
+  ]
+  for (const p of candidates) {
+    if (existsSync(p)) return p
+  }
+  // fallback: hope PATH has it
+  try {
+    return execSync('which tmux', { encoding: 'utf-8', stdio: ['ignore', 'pipe', 'ignore'] }).trim()
+  } catch {
+    return 'tmux'
+  }
+}
+
+export const TMUX = findTmux()
 
 export interface TmuxSession {
   id: string
@@ -35,7 +55,7 @@ export function getToolCommand(tool: string): string {
  */
 export function hasTmux(): boolean {
   try {
-    execSync('which tmux', { stdio: 'ignore' })
+    execSync(`${TMUX} -V`, { stdio: 'ignore' })
     return true
   } catch {
     return false
@@ -62,7 +82,7 @@ export function createTmuxSession(tool: string, firstMessage?: string, cwd?: str
 
   // Use launch script if provided, otherwise raw tool command
   const command = launchScript || getToolCommand(tool)
-  execSync(`tmux new-session -d -s "${tmuxName}" -c "${cwd}" "${command}"`, {
+  execSync(`${TMUX} new-session -d -s "${tmuxName}" -c "${cwd}" "${command}"`, {
     stdio: 'ignore',
     env: { ...process.env, TERM: 'xterm-256color' }
   })
@@ -99,7 +119,7 @@ export function createTmuxSession(tool: string, firstMessage?: string, cwd?: str
 export function sendKeys(tmuxName: string, text: string): void {
   // Escape special characters for tmux
   const escaped = text.replace(/"/g, '\\"')
-  execSync(`tmux send-keys -t "${tmuxName}" "${escaped}" Enter`, { stdio: 'ignore' })
+  execSync(`${TMUX} send-keys -t "${tmuxName}" "${escaped}" Enter`, { stdio: 'ignore' })
 }
 
 /**
@@ -155,7 +175,7 @@ export function focusAnyAttachedSession(): void {
 export function listTmuxSessions(): Array<{ name: string; attached: boolean }> {
   try {
     const output = execSync(
-      'tmux list-sessions -F "#{session_name}:#{session_attached}"',
+      `${TMUX} list-sessions -F "#{session_name}:#{session_attached}"`,
       { encoding: 'utf-8', stdio: ['ignore', 'pipe', 'ignore'] }
     )
     return output
@@ -177,7 +197,7 @@ export function listTmuxSessions(): Array<{ name: string; attached: boolean }> {
 export function listAllTmuxSessions(): Array<{ name: string; attached: boolean }> {
   try {
     const output = execSync(
-      'tmux list-sessions -F "#{session_name}:#{session_attached}"',
+      `${TMUX} list-sessions -F "#{session_name}:#{session_attached}"`,
       { encoding: 'utf-8', stdio: ['ignore', 'pipe', 'ignore'] }
     )
     return output
@@ -201,7 +221,7 @@ export function importTmuxSession(tmuxName: string): TmuxSession {
   // Try to get the cwd from the tmux session
   let cwd = ''
   try {
-    cwd = execSync(`tmux display-message -t "${tmuxName}" -p "#{pane_current_path}"`,
+    cwd = execSync(`${TMUX} display-message -t "${tmuxName}" -p "#{pane_current_path}"`,
       { encoding: 'utf-8', stdio: ['ignore', 'pipe', 'ignore'] }).trim()
   } catch { /* ignore */ }
   return {
@@ -237,7 +257,7 @@ export function isSessionAttached(tmuxName: string): boolean {
 export function hasAnyAttachedClient(): boolean {
   try {
     const output = execSync(
-      'tmux list-sessions -F "#{session_name}:#{session_attached}"',
+      `${TMUX} list-sessions -F "#{session_name}:#{session_attached}"`,
       { encoding: 'utf-8', stdio: ['ignore', 'pipe', 'ignore'] }
     )
     return output.trim().split('\n')
@@ -253,7 +273,7 @@ export function hasAnyAttachedClient(): boolean {
  */
 export function isSessionAlive(tmuxName: string): boolean {
   try {
-    execSync(`tmux has-session -t "${tmuxName}"`, { stdio: 'ignore' })
+    execSync(`${TMUX} has-session -t "${tmuxName}"`, { stdio: 'ignore' })
     return true
   } catch {
     return false
@@ -268,12 +288,12 @@ export function isSessionAlive(tmuxName: string): boolean {
  */
 export function focusSession(tmuxName: string): void {
   try {
-    execSync(`tmux switch-client -t "${tmuxName}"`, { stdio: 'ignore' })
+    execSync(`${TMUX} switch-client -t "${tmuxName}"`, { stdio: 'ignore' })
   } catch { /* ignore */ }
 
   // Force immediate status bar refresh on all sessions
   try {
-    execSync('tmux refresh-client -S', { stdio: 'ignore' })
+    execSync(`${TMUX} refresh-client -S`, { stdio: 'ignore' })
   } catch { /* ignore */ }
 
   if (process.platform === 'darwin') {
@@ -283,7 +303,7 @@ export function focusSession(tmuxName: string): void {
 
 export function killSession(tmuxName: string): void {
   try {
-    execSync(`tmux kill-session -t "${tmuxName}"`, { stdio: 'ignore' })
+    execSync(`${TMUX} kill-session -t "${tmuxName}"`, { stdio: 'ignore' })
   } catch { /* already dead */ }
   // Refresh other sessions' status bars
   refreshAllStatusBars()
@@ -295,7 +315,7 @@ export function killSession(tmuxName: string): void {
 export function capturePane(tmuxName: string, lines = 3): string {
   try {
     return execSync(
-      `tmux capture-pane -t "${tmuxName}" -p -J | tail -${lines}`,
+      `${TMUX} capture-pane -t "${tmuxName}" -p -J | tail -${lines}`,
       { encoding: 'utf-8', stdio: ['ignore', 'pipe', 'ignore'] }
     ).trim()
   } catch {
@@ -326,7 +346,7 @@ export function applyKittyStatusBar(tmuxName: string): void {
     ]
 
     for (const cmd of opts) {
-      try { execSync(`tmux ${cmd}`, { stdio: 'ignore' }) } catch { /* ignore */ }
+      try { execSync(`${TMUX} ${cmd}`, { stdio: 'ignore' }) } catch { /* ignore */ }
     }
 
     // Global keybindings (idempotent)
@@ -342,7 +362,7 @@ export function applyKittyStatusBar(tmuxName: string): void {
       'bind-key -n M-Left kill-pane',
     ]
     for (const cmd of binds) {
-      try { execSync(`tmux ${cmd}`, { stdio: 'ignore' }) } catch { /* ignore */ }
+      try { execSync(`${TMUX} ${cmd}`, { stdio: 'ignore' }) } catch { /* ignore */ }
     }
 
     // Ctrl+1~9 to switch to kitty session by index
@@ -360,11 +380,11 @@ function bindNumberKeys(): void {
     if (target) {
       // Alt+<number> (M- = Meta/Option key), works in Ghostty/iTerm/Terminal
       try {
-        execSync(`tmux bind-key -n M-${i + 1} switch-client -t "${target}"`, { stdio: 'ignore' })
+        execSync(`${TMUX} bind-key -n M-${i + 1} switch-client -t "${target}"`, { stdio: 'ignore' })
       } catch { /* ignore */ }
     } else {
       try {
-        execSync(`tmux unbind-key -n M-${i + 1}`, { stdio: 'ignore' })
+        execSync(`${TMUX} unbind-key -n M-${i + 1}`, { stdio: 'ignore' })
       } catch { /* ignore */ }
     }
   }
@@ -378,12 +398,12 @@ export function refreshAllStatusBars(): void {
   const sessions = listTmuxSessions()
   for (const s of sessions) {
     try {
-      execSync(`tmux set-option -t "${s.name}" status-left "#(${tabsScript})"`, { stdio: 'ignore' })
+      execSync(`${TMUX} set-option -t "${s.name}" status-left "#(${tabsScript})"`, { stdio: 'ignore' })
     } catch { /* ignore */ }
   }
   // Force immediate visual refresh
   try {
-    execSync('tmux refresh-client -S', { stdio: 'ignore' })
+    execSync(`${TMUX} refresh-client -S`, { stdio: 'ignore' })
   } catch { /* ignore */ }
   bindNumberKeys()
 }
@@ -393,10 +413,11 @@ function ensureTabScript(): string {
   const dbPath = join(homedir(), 'Library', 'Application Support', 'kitty-kitty', 'kitty-kitty.db')
   const scriptPath = join(tmpdir(), 'kitty_tabs.sh')
   writeFileSync(scriptPath, `#!/bin/bash
-CURRENT=$(tmux display-message -p '#S')
+TMUX_BIN="${TMUX}"
+CURRENT=$($TMUX_BIN display-message -p '#S')
 DB="${dbPath}"
 N=0
-tmux list-sessions -F '#{session_name}' 2>/dev/null | grep '^${SESSION_PREFIX}' | while read -r S; do
+$TMUX_BIN list-sessions -F '#{session_name}' 2>/dev/null | grep '^${SESSION_PREFIX}' | while read -r S; do
   N=$((N+1))
   TITLE="$S"
   TOOL=""
@@ -406,7 +427,7 @@ tmux list-sessions -F '#{session_name}' 2>/dev/null | grep '^${SESSION_PREFIX}' 
     TOOL=$(sqlite3 "$DB" "SELECT tool FROM sessions WHERE tmux_name='$S' LIMIT 1;" 2>/dev/null)
   fi
   # Status dot: check if pane has a running foreground process
-  PANE_CMD=$(tmux list-panes -t "$S" -F '#{pane_current_command}' 2>/dev/null | head -1)
+  PANE_CMD=$($TMUX_BIN list-panes -t "$S" -F '#{pane_current_command}' 2>/dev/null | head -1)
   case "$PANE_CMD" in
     bash|zsh|sh|fish|"") DOTCOLOR="#06d6a0" ;;   # cyan-green = idle
     *)                   DOTCOLOR="#ffb148" ;;     # amber = busy

@@ -3,6 +3,7 @@ import { existsSync, symlinkSync, mkdirSync, appendFileSync } from 'fs'
 import { join } from 'path'
 import { homedir } from 'os'
 import { v4 as uuid } from 'uuid'
+import { TMUX } from '../tmux/session-manager'
 import { generateLaunchScript } from '../tmux/cli-wrapper'
 import * as wtRepo from '../db/worktree-pane-repo'
 import type { WorktreePaneInfo, DiscoveredWorktree } from '@shared/types/worktree'
@@ -19,7 +20,7 @@ function sanitizeBranch(branch: string): string {
  */
 function isPaneAlive(paneId: string): boolean {
   try {
-    execSync(`tmux display-message -t "${paneId}" ""`, { stdio: 'ignore' })
+    execSync(`${TMUX} display-message -t "${paneId}" ""`, { stdio: 'ignore' })
     return true
   } catch {
     return false
@@ -128,7 +129,7 @@ export function createWorktreePane(
   let paneId: string
   try {
     paneId = execSync(
-      `tmux split-window -t "${tmuxName}" -h -c "${worktreePath}" -P -F "#{pane_id}" "${script}"`,
+      `${TMUX} split-window -t "${tmuxName}" -h -c "${worktreePath}" -P -F "#{pane_id}" "${script}"`,
       { encoding: 'utf-8' }
     ).trim()
   } catch (err: any) {
@@ -175,7 +176,7 @@ export function removeWorktreePane(
   // Kill the tmux pane if alive
   if (row.paneId) {
     try {
-      execSync(`tmux kill-pane -t "${row.paneId}"`, { stdio: 'ignore' })
+      execSync(`${TMUX} kill-pane -t "${row.paneId}"`, { stdio: 'ignore' })
     } catch { /* pane may already be dead */ }
   }
 

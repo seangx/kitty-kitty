@@ -611,6 +611,7 @@ export default function TagCloud({ sessions, onAttach, onKill, onRename, onCreat
                 try { await window.api.invoke('session:restart-agent', ctxMenu.id); setCtxMenu(null) }
                 catch (error) { showCollabError(error) }
               }},
+              { label: '📂 打开目录', action: () => { const s = alive.find(x => x.id === ctxMenu.id); if (s?.cwd) window.api.invoke('shell:open-path', s.cwd); setCtxMenu(null) } },
               { label: '📦 技能', action: () => { onOpenSkills(ctxMenu.id); setCtxMenu(null) } },
               { label: '👥 移到 Group...', action: () => setGroupMenuId(groupMenuId ? null : ctxMenu.id) },
               null,

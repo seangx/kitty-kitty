@@ -1,4 +1,4 @@
-import { ipcMain, dialog, BrowserWindow } from 'electron'
+import { ipcMain, dialog, BrowserWindow, shell } from 'electron'
 import { IPC } from '@shared/types/ipc'
 import { readdirSync, existsSync } from 'fs'
 import { join, basename } from 'path'
@@ -87,9 +87,11 @@ let statusBarsInitialized = false
 
 function ensureReady(tool: string): void {
   if (!tmux.hasTmux()) {
+    log('session', 'ensureReady failed: tmux not found')
     throw new Error('tmux 未安装。请先安装: brew install tmux')
   }
   if (!isToolInstalled(tool)) {
+    log('session', `ensureReady failed: ${tool} not found`)
     throw new Error(`${tool} 未安装。${getInstallHint(tool)}`)
   }
 }
@@ -98,6 +100,9 @@ export function registerSessionHandlers(): void {
   // Keep MCP runtime scripts in sync with latest source at app boot.
   collab.ensureRuntimeArtifacts()
 
+  // Open a path in Finder
+  ipcMain.handle('shell:open-path', (_event, p: string) => shell.openPath(p))
+
   // Create new tmux session and open terminal
   ipcMain.handle(IPC.SESSION_CREATE, (_event, tool: string, firstMessage?: string) => {
     ensureReady(tool || 'claude')
@@ -105,8 +110,10 @@ export function registerSessionHandlers(): void {
     const script = generateLaunchScript(tool || 'claude', 'new')
     const session = tmux.createTmuxSession(tool || 'claude', firstMessage, undefined, script)
     sessionRepo.saveSession(session)
-    sessionMcp.injectSessionMcp(session.id, session.cwd, session.tmuxName, session.title, '', '', session.tool)
-    collab.watchInbox(session.id, session.tmuxName, session.tool)
+    try {
+      sessionMcp.injectSessionMcp(session.id, session.cwd, session.tmuxName, session.title, '', '', session.tool)
+      collab.watchInbox(session.id, session.tmuxName, session.tool)
+    } catch (e) { log('session', 'mcp inject failed (non-fatal):', e) }
     tmux.attachSession(session.tmuxName)
     return toSessionInfo(session)
   })
@@ -116,10 +123,9 @@ export function registerSessionHandlers(): void {
     ensureReady(tool || 'claude')
 
     const win = BrowserWindow.getFocusedWindow() || BrowserWindow.getAllWindows()[0]
-    const result = await dialog.showOpenDialog(win!, {
-      title: '选择项目目录',
-      properties: ['openDirectory']
-    })
+    const result = win
+      ? await dialog.showOpenDialog(win, { title: '选择项目目录', properties: ['openDirectory'] })
+      : await dialog.showOpenDialog({ title: '选择项目目录', properties: ['openDirectory'] })
 
     if (result.canceled || result.filePaths.length === 0) return null
 
@@ -149,8 +155,10 @@ export function registerSessionHandlers(): void {
     const script = generateLaunchScript(tool || 'claude', mode, resumeId === '__new__' ? undefined : resumeId || undefined)
     const session = tmux.createTmuxSession(tool || 'claude', undefined, dir, script)
     sessionRepo.saveSession(session)
-    sessionMcp.injectSessionMcp(session.id, dir, session.tmuxName, session.title, '', '', session.tool)
-    collab.watchInbox(session.id, session.tmuxName, session.tool)
+    try {
+      sessionMcp.injectSessionMcp(session.id, dir, session.tmuxName, session.title, '', '', session.tool)
+      collab.watchInbox(session.id, session.tmuxName, session.tool)
+    } catch (e) { log('session', 'mcp inject failed (non-fatal):', e) }
     tmux.attachSession(session.tmuxName)
     return toSessionInfo(session)
   })
@@ -579,9 +587,9 @@ function restartSessionTool(tmuxName: string, mainPane: string, prevTool: string
   const target = resolvePaneTarget(tmuxName, mainPane)
   try {
     if (prevTool === 'claude') {
-      execSync(`tmux send-keys -t "${target}" "/exit" Enter`, { stdio: 'ignore' })
+      execSync(`${tmux.TMUX} send-keys -t "${target}" "/exit" Enter`, { stdio: 'ignore' })
     } else {
-      execSync(`tmux send-keys -t "${target}" C-c`, { stdio: 'ignore' })
+      execSync(`${tmux.TMUX} send-keys -t "${target}" C-c`, { stdio: 'ignore' })
     }
     waitForPaneShell(target, 12000)
   } catch {
@@ -591,7 +599,7 @@ function restartSessionTool(tmuxName: string, mainPane: string, prevTool: string
 
   const launch = generateLaunchScript(nextTool, 'continue')
   const escaped = launch.replace(/"/g, '\\"')
-  execSync(`tmux send-keys -t "${target}" "${escaped}" Enter`, { stdio: 'ignore' })
+  execSync(`${tmux.TMUX} send-keys -t "${target}" "${escaped}" Enter`, { stdio: 'ignore' })
 }
 
 function waitForPaneShell(tmuxTarget: string, timeoutMs: number): void {
@@ -600,7 +608,7 @@ function waitForPaneShell(tmuxTarget: string, timeoutMs: number): void {
   while (Date.now() < deadline) {
     try {
       const current = execSync(
-        `tmux display-message -p -t "${tmuxTarget}" "#{pane_current_command}"`,
+        `${tmux.TMUX} display-message -p -t "${tmuxTarget}" "#{pane_current_command}"`,
         { encoding: 'utf-8' }
       ).trim()
       if (shellCommands.has(current)) return
@@ -614,11 +622,11 @@ function waitForPaneShell(tmuxTarget: string, timeoutMs: number): void {
 
 function forceStopPaneForegroundProcess(tmuxTarget: string): void {
   try {
-    execSync(`tmux send-keys -t "${tmuxTarget}" C-c`, { stdio: 'ignore' })
+    execSync(`${tmux.TMUX} send-keys -t "${tmuxTarget}" C-c`, { stdio: 'ignore' })
   } catch { /* ignore */ }
   let panePid = ''
   try {
-    panePid = execSync(`tmux display-message -p -t "${tmuxTarget}" "#{pane_pid}"`, { encoding: 'utf-8' }).trim()
+    panePid = execSync(`${tmux.TMUX} display-message -p -t "${tmuxTarget}" "#{pane_pid}"`, { encoding: 'utf-8' }).trim()
   } catch { /* ignore */ }
   if (!panePid) return
 

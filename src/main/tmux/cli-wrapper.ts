@@ -1,7 +1,28 @@
-import { writeFileSync, chmodSync } from 'fs'
+import { writeFileSync, chmodSync, existsSync } from 'fs'
 import { execSync } from 'child_process'
 import { join } from 'path'
 import { tmpdir } from 'os'
+
+/** Common binary directories not in GUI app's PATH */
+const EXTRA_BIN_DIRS = [
+  '/opt/homebrew/bin',
+  '/usr/local/bin',
+  '/usr/bin',
+  join(require('os').homedir(), '.local', 'bin'),
+  join(require('os').homedir(), '.npm-global', 'bin'),
+]
+
+function findBinary(name: string): string | null {
+  for (const dir of EXTRA_BIN_DIRS) {
+    const p = join(dir, name)
+    if (existsSync(p)) return p
+  }
+  try {
+    return execSync(`which ${name}`, { encoding: 'utf-8', stdio: ['ignore', 'pipe', 'ignore'] }).trim() || null
+  } catch {
+    return null
+  }
+}
 
 /**
  * CLI wrapper layer: generates shell scripts that handle continue/new/restore
@@ -50,13 +71,8 @@ const TOOLS: Record<string, ToolConfig> = {
 export function isToolInstalled(tool: string): boolean {
   const config = TOOLS[tool]
   if (!config) return false
-  if (tool === 'shell') return true // shell is always available
-  try {
-    execSync(`which ${config.cmd}`, { stdio: 'ignore' })
-    return true
-  } catch {
-    return false
-  }
+  if (tool === 'shell') return true
+  return findBinary(config.cmd) !== null
 }
 
 /**
@@ -114,10 +130,13 @@ export function getToolCommand(tool: string): string {
 
 // --- Script builders ---
 
+const PATH_PREAMBLE = 'export PATH="/opt/homebrew/bin:/usr/local/bin:$HOME/.local/bin:$PATH"'
+
 function buildContinueScript(config: ToolConfig): string {
   if (!config.continueFlag) return buildNewScript(config)
 
   return `#!/bin/bash
+${PATH_PREAMBLE}
 # Try to continue most recent session, fallback to new
 ${config.cmd} ${config.continueFlag} 2>/dev/null
 EXIT=$?
@@ -132,6 +151,7 @@ exec $SHELL
 
 function buildNewScript(config: ToolConfig): string {
   return `#!/bin/bash
+${PATH_PREAMBLE}
 ${config.cmd}
 # Keep shell alive if tool exits
 exec $SHELL
@@ -142,6 +162,7 @@ function buildResumeScript(config: ToolConfig, resumeId: string): string {
   if (!config.resumeFlag) return buildNewScript(config)
 
   return `#!/bin/bash
+${PATH_PREAMBLE}
 # Resume specific session, fallback to continue, then new
 ${config.cmd} ${config.resumeFlag} "${resumeId}" 2>/dev/null
 EXIT=$?
@@ -158,11 +179,13 @@ function buildRestoreScript(config: ToolConfig): string {
   // Best-effort: try continue → new → shell
   if (!config.continueFlag) {
     return `#!/bin/bash
+${PATH_PREAMBLE}
 ${config.cmd} 2>/dev/null || exec $SHELL
 `
   }
 
   return `#!/bin/bash
+${PATH_PREAMBLE}
 # Restore: try continue, then new, then fallback to shell
 ${config.cmd} ${config.continueFlag} 2>/dev/null
 EXIT=$?

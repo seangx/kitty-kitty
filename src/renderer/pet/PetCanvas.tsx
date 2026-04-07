@@ -148,7 +148,7 @@ export default function PetCanvas() {
       await createSession(tool, message)
       machine.forceState('happy', 2000)
       say('开始新对话喵~')
-    } catch { machine.forceState('sad', 2000); say('出错了喵...') }
+    } catch (err) { console.error('[kitty] create session failed:', err); machine.forceState('sad', 2000); say('出错了喵...') }
   }, [createSession, machine, say])
 
   const handleAttach = useCallback(async (id: string) => {
@@ -187,7 +187,8 @@ export default function PetCanvas() {
         say('在新目录开始啦~')
         await loadSessions()
       }
-    } catch {
+    } catch (err) {
+      console.error('[kitty] open in dir failed:', err)
       machine.forceState('sad', 1500); say('打开失败了喵...')
     }
   }, [machine, loadSessions, say])
@@ -201,7 +202,8 @@ export default function PetCanvas() {
       machine.forceState('happy', 2000)
       say(resumeId && resumeId !== '__new__' ? '继续之前的对话喵~' : '开始新对话喵~')
       await loadSessions()
-    } catch {
+    } catch (err) {
+      console.error('[kitty] dir confirm failed:', err)
       machine.forceState('sad', 1500); say('出错了喵...')
     }
     setDirPick(null)

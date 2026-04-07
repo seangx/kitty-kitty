@@ -2,6 +2,7 @@ import { watch, watchFile, unwatchFile, readFileSync, statSync, type FSWatcher }
 import { execSync } from 'child_process'
 import { join, basename } from 'path'
 import { log } from '../logger'
+import { TMUX } from '../tmux/session-manager'
 
 interface WatchedSession {
   sessionId: string
@@ -231,7 +232,7 @@ export class InboxWatcher {
     const text = this.formatNotification(msg)
     const escaped = text.replace(/"/g, '\\"')
     try {
-      execSync(`tmux send-keys -t "${target}" "${escaped}" Enter`, { stdio: 'ignore' })
+      execSync(`${TMUX} send-keys -t "${target}" "${escaped}" Enter`, { stdio: 'ignore' })
       log('inbox-watcher', `injected message from ${msg.from} to ${entry.sessionId}`)
     } catch (err) {
       log('inbox-watcher', `inject failed for ${entry.sessionId}:`, err)
@@ -242,7 +243,7 @@ export class InboxWatcher {
     const agentCommands = new Set(['claude', 'codex', 'node', 'aichat'])
     try {
       const current = execSync(
-        `tmux display-message -p -t "${tmuxTarget}" "#{pane_current_command}"`,
+        `${TMUX} display-message -p -t "${tmuxTarget}" "#{pane_current_command}"`,
         { encoding: 'utf-8' }
       ).trim()
       return agentCommands.has(current)
