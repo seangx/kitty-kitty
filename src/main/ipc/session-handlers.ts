@@ -276,17 +276,18 @@ export function registerSessionHandlers(): void {
     }
 
     if (tmux.isSessionAttached(session.tmuxName)) {
-      // Focus the existing Ghostty window and switch tmux client to this session
+      log('session', `attach ${id}: already attached, focusing`)
       tmux.focusSession(session.tmuxName)
       return true
     }
 
-    // If any other tmux client is connected, switch it instead of opening a new window
     if (tmux.hasAnyAttachedClient()) {
+      log('session', `attach ${id}: switching client`)
       tmux.focusSession(session.tmuxName)
       return true
     }
 
+    log('session', `attach ${id}: no client, opening new terminal`)
     tmux.attachSession(session.tmuxName)
     return true
   })

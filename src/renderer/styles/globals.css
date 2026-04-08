@@ -17,6 +17,21 @@ body.pet-mode {
   overflow: hidden;
 }
 
+/* Popup window — separate child window for panels */
+body.popup-mode {
+  background: transparent !important;
+  margin: 0;
+  padding: 0;
+  overflow: hidden;
+}
+
+/* Override SkillsPanel fixed dimensions in popup window */
+.popup-skills-override > div {
+  width: 100% !important;
+  max-height: 100vh !important;
+  border-radius: 0 !important;
+}
+
 /* Chat window styling */
 body.chat-mode {
   margin: 0;

@@ -12,6 +12,9 @@ interface WatchedSession {
   offset: number
   /** Throttle: last inject timestamp per sender */
   lastInjectBySender: Map<string, number>
+  /** Per-file watcher */
+  fileWatcher?: FSWatcher | null
+  pollActive?: boolean
 }
 
 interface InboxMessage {
@@ -71,14 +74,18 @@ export class InboxWatcher {
       offset = statSync(inboxPath).size
     } catch { /* file may not exist yet */ }
 
-    this.sessions.set(sessionId, {
+    const entry: WatchedSession = {
       sessionId,
       tmuxName,
       tool,
       inboxPath,
       offset,
       lastInjectBySender: new Map(),
-    })
+    }
+    this.sessions.set(sessionId, entry)
+
+    // Watch the individual inbox file for changes (append)
+    this.watchFile(entry)
 
     this.ensureDirWatcher()
     log('inbox-watcher', `watching ${sessionId}`)
@@ -88,7 +95,9 @@ export class InboxWatcher {
    * Stop watching an agent's inbox.
    */
   unwatch(sessionId: string): void {
-    if (!this.sessions.has(sessionId)) return
+    const entry = this.sessions.get(sessionId)
+    if (!entry) return
+    if (entry.pollActive) { try { unwatchFile(entry.inboxPath) } catch {} }
     this.sessions.delete(sessionId)
     log('inbox-watcher', `unwatched ${sessionId}`)
     if (this.sessions.size === 0) {
@@ -103,6 +112,17 @@ export class InboxWatcher {
     this.sessions.clear()
     this.stopDirWatcher()
     log('inbox-watcher', 'unwatched all')
+  }
+
+  private watchFile(entry: WatchedSession): void {
+    // Use stat-based polling — fs.watch is unreliable for file appends on macOS tmpdir
+    if (entry.pollActive) return
+    entry.pollActive = true
+    log('inbox-watcher', `polling ${entry.sessionId} at ${entry.inboxPath}`)
+    watchFile(entry.inboxPath, { interval: 1000 }, (curr, prev) => {
+      log('inbox-watcher', `file change ${entry.sessionId}: size ${prev.size} → ${curr.size}`)
+      this.onInboxChange(entry.sessionId)
+    })
   }
 
   private ensureDirWatcher(): void {
@@ -180,6 +200,10 @@ export class InboxWatcher {
       content = readFileSync(entry.inboxPath, 'utf-8')
     } catch { return }
 
+    // File was truncated/rewritten — reset offset
+    if (content.length < entry.offset) {
+      entry.offset = 0
+    }
     if (content.length <= entry.offset) return
     const newContent = content.slice(entry.offset)
     entry.offset = content.length
@@ -240,13 +264,10 @@ export class InboxWatcher {
   }
 
   private isPaneRunningAgent(tmuxTarget: string): boolean {
-    const agentCommands = new Set(['claude', 'codex', 'node', 'aichat'])
     try {
-      const current = execSync(
-        `${TMUX} display-message -p -t "${tmuxTarget}" "#{pane_current_command}"`,
-        { encoding: 'utf-8' }
-      ).trim()
-      return agentCommands.has(current)
+      // Just verify the pane exists and is alive
+      execSync(`${TMUX} display-message -p -t "${tmuxTarget}" ""`, { stdio: 'ignore' })
+      return true
     } catch {
       return false
     }

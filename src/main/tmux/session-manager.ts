@@ -139,7 +139,7 @@ export function attachSession(tmuxName: string): void {
       return
     }
     // No existing terminal window — open one
-    exec(`/Applications/Ghostty.app/Contents/MacOS/ghostty --window-save-state=never --confirm-close-surface=false --macos-option-as-alt=true -e tmux attach-session -t "${tmuxName}"`, {
+    exec(`/Applications/Ghostty.app/Contents/MacOS/ghostty --window-save-state=never --confirm-close-surface=false --macos-option-as-alt=true --command="${TMUX} attach-session -t ${tmuxName}"`, {
       env: { ...process.env, TERM: 'xterm-256color' }
     })
   } else if (platform === 'linux') {

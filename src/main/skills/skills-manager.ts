@@ -8,8 +8,11 @@
 
 import { execFile } from 'child_process'
 import { promisify } from 'util'
+import { readdirSync, readFileSync, existsSync } from 'fs'
+import { join, basename } from 'path'
+import { homedir } from 'os'
 import { log } from '../logger'
-import type { SkillCategory, GroupInfo, SearchResult } from '@shared/types/skills'
+import type { SkillCategory, GroupInfo, SearchResult, NativeSkill } from '@shared/types/skills'
 
 const execFileAsync = promisify(execFile)
 
@@ -76,119 +79,41 @@ async function runSkillsMgr(args: string[], cwd?: string): Promise<CliResult> {
   }
 }
 
-// ─── Text Parsers (replace with JSON when available) ───
+// ─── JSON Parsers ─────────────────────────────────────
 
-/**
- * Parse `skillsmgr list` output.
- *
- * Format:
- *   ── official (12 skills) ──
- *     anthropic (12)
- *       claude-api
- *       pdf
- *   ── custom (1 skill) ──
- *     example-skill
- */
-export function parseList(stdout: string): SkillCategory[] {
+function parseJson<T>(stdout: string, fallback: T): T {
+  try {
+    return JSON.parse(stdout)
+  } catch {
+    log('skills', `JSON parse failed: ${stdout.slice(0, 200)}`)
+    return fallback
+  }
+}
+
+function jsonToCategories(data: any): SkillCategory[] {
+  if (!data?.skills || !Array.isArray(data.skills)) return []
+  // Group by source/category
   const catMap = new Map<string, SkillCategory>()
-  let currentCategory = ''
-
-  for (const raw of stdout.split('\n')) {
-    const line = raw.trimEnd()
-
-    // Category header: ── official (12 skills) ──
-    const catMatch = line.match(/^──\s+(\S+)\s+\(\d+\s+skills?\)\s+──$/)
-    if (catMatch) {
-      currentCategory = catMatch[1]
-      if (!catMap.has(currentCategory)) {
-        catMap.set(currentCategory, { category: currentCategory, skills: [] })
-      }
-      continue
-    }
-
-    if (!currentCategory) continue
-
-    // Source header (2-space indent): "  anthropic (12)" — skip, just a grouping label
-    if (line.match(/^  \S+\s+\(\d+\)$/)) continue
-
-    // Skill name (4-space indent under source)
-    const skill4 = line.match(/^    (\S+)$/)
-    if (skill4) {
-      catMap.get(currentCategory)!.skills.push(skill4[1])
-      continue
-    }
-
-    // Skill name (2-space indent, for categories without source like custom)
-    const skill2 = line.match(/^  (\S+)$/)
-    if (skill2 && !line.includes('(')) {
-      catMap.get(currentCategory)!.skills.push(skill2[1])
-      continue
-    }
+  for (const s of data.skills) {
+    const cat = s.source || s.category || 'unknown'
+    if (!catMap.has(cat)) catMap.set(cat, { category: cat, skills: [] })
+    catMap.get(cat)!.skills.push(s.name)
   }
-
-  return [...catMap.values()].filter((c) => c.skills.length > 0)
+  return [...catMap.values()].filter(c => c.skills.length > 0)
 }
 
-/**
- * Parse `skillsmgr list --deployed` output.
- */
-export function parseDeployed(stdout: string): string[] {
-  const deployed: string[] = []
-  for (const line of stdout.split('\n')) {
-    const match = line.match(/◉\s+(\S+)/)
-    if (match) {
-      deployed.push(match[1])
-    }
-  }
-  return deployed
+function jsonToDeployed(data: any): string[] {
+  if (!data?.skills || !Array.isArray(data.skills)) return []
+  return data.skills.map((s: any) => s.name || s).filter(Boolean)
 }
 
-/**
- * Parse `skillsmgr search` output.
- */
-export function parseSearch(stdout: string): SearchResult[] {
-  const results: SearchResult[] = []
-  const lines = stdout.split('\n')
-  let started = false
-  for (const line of lines) {
-    if (line.startsWith('NAME')) { started = true; continue }
-    if (!started) continue
-    if (!line.trim() || line.match(/^\d+ of \d+ results/)) break
-    const parts = line.trim().split(/\s{2,}/)
-    if (parts.length >= 2) {
-      results.push({
-        name: parts[0],
-        version: parts[1],
-        description: parts.slice(2).join(' '),
-      })
-    }
-  }
-  return results
-}
-
-/**
- * Parse `skillsmgr group list` output.
- */
-export function parseGroupList(stdout: string): GroupInfo[] {
-  const groups: GroupInfo[] = []
-  for (const line of stdout.split('\n')) {
-    const match = line.match(/^(\S+)\s+\(\d+\)$/)
-    if (match) {
-      groups.push({ name: match[1], skills: [] })
-    }
-  }
-  return groups
-}
-
-export function parseGroupDetail(stdout: string): string[] {
-  const skills: string[] = []
-  for (const line of stdout.split('\n')) {
-    const match = line.match(/^\s+(\S+)\s+\(/)
-    if (match) {
-      skills.push(match[1])
-    }
-  }
-  return skills
+function jsonToSearchResults(data: any): SearchResult[] {
+  if (!data?.results || !Array.isArray(data.results)) return []
+  return data.results.map((r: any) => ({
+    name: r.name || '',
+    version: r.version || '',
+    description: r.description || '',
+  }))
 }
 
 // ─── Operation Interfaces (all async) ──────────────────
@@ -200,26 +125,29 @@ const TOOL_AGENT_MAP: Record<string, string> = {
 }
 
 export async function listSkills(): Promise<{ categories: SkillCategory[]; groups: GroupInfo[] }> {
-  // Run list + group list in parallel
   const [listResult, groupListResult] = await Promise.all([
-    runSkillsMgr(['list']),
-    runSkillsMgr(['group', 'list']),
+    runSkillsMgr(['list', '--json']),
+    runSkillsMgr(['group', 'list']), // group subcommand doesn't support --json yet
   ])
 
-  const categories = listResult.success ? parseList(listResult.stdout) : []
+  const categories = listResult.success
+    ? jsonToCategories(parseJson(listResult.stdout, null))
+    : []
 
   let groups: GroupInfo[] = []
   if (groupListResult.success) {
-    groups = parseGroupList(groupListResult.stdout)
-    // Fetch all group details in parallel
-    if (groups.length > 0) {
-      const details = await Promise.all(
-        groups.map((g) => runSkillsMgr(['group', 'list', g.name]))
-      )
-      for (let i = 0; i < groups.length; i++) {
-        if (details[i].success) {
-          groups[i].skills = parseGroupDetail(details[i].stdout)
-        }
+    // Try JSON first, fallback to text parsing
+    try {
+      const data = JSON.parse(groupListResult.stdout)
+      groups = (data.groups || []).map((g: any) => ({
+        name: g.name || '',
+        skills: Array.isArray(g.skills) ? g.skills.map((s: any) => s.name || s) : [],
+      }))
+    } catch {
+      // Text fallback: "groupName (N)"
+      for (const line of groupListResult.stdout.split('\n')) {
+        const match = line.match(/^(\S+)\s+\(\d+\)$/)
+        if (match) groups.push({ name: match[1], skills: [] })
       }
     }
   }
@@ -228,45 +156,122 @@ export async function listSkills(): Promise<{ categories: SkillCategory[]; group
 }
 
 export async function listDeployed(cwd: string): Promise<string[]> {
-  const result = await runSkillsMgr(['list', '--deployed'], cwd)
-  return result.success ? parseDeployed(result.stdout) : []
+  const result = await runSkillsMgr(['list', '--deployed', '--json'], cwd)
+  return result.success ? jsonToDeployed(parseJson(result.stdout, null)) : []
 }
 
 export async function addSkill(cwd: string, name: string, tool: string): Promise<{ success: boolean; message: string }> {
   const safeName = validateName(name)
-  // Try --same-agents first
-  let result = await runSkillsMgr(['add', safeName, '--same-agents', '-y'], cwd)
+  let result = await runSkillsMgr(['add', safeName, '--same-agents', '--json'], cwd)
   if (!result.success) {
-    // Fallback: use mapped agent
     const agent = TOOL_AGENT_MAP[tool] || 'claude-code'
-    result = await runSkillsMgr(['add', safeName, '-a', agent, '-y'], cwd)
+    result = await runSkillsMgr(['add', safeName, '-a', agent, '--json'], cwd)
   }
-  return {
-    success: result.success,
-    message: result.success ? (result.stdout.trim() || `${safeName} 已部署`) : (result.stderr.trim() || '部署失败'),
+  if (result.success) {
+    const data = parseJson<any>(result.stdout, null)
+    return { success: true, message: data?.deployed?.[0]?.name ? `${data.deployed[0].name} 已部署` : `${safeName} 已部署` }
   }
+  const errData = parseJson<any>(result.stdout || result.stderr, null)
+  return { success: false, message: errData?.error || result.stderr.trim() || '部署失败' }
 }
 
 export async function removeSkill(cwd: string, name: string): Promise<{ success: boolean; message: string }> {
   const safeName = validateName(name)
-  const result = await runSkillsMgr(['remove', safeName, '--same-agents', '-y'], cwd)
-  return {
-    success: result.success,
-    message: result.success ? (result.stdout.trim() || `${safeName} 已移除`) : (result.stderr.trim() || '移除失败'),
+  const result = await runSkillsMgr(['remove', safeName, '--same-agents', '--json'], cwd)
+  if (result.success) {
+    return { success: true, message: `${safeName} 已移除` }
   }
+  const errData = parseJson<any>(result.stdout || result.stderr, null)
+  return { success: false, message: errData?.error || result.stderr.trim() || '移除失败' }
 }
 
 export async function searchSkills(query: string): Promise<SearchResult[]> {
   const safeQuery = validateName(query)
-  const result = await runSkillsMgr(['search', safeQuery])
-  return result.success ? parseSearch(result.stdout) : []
+  const result = await runSkillsMgr(['search', '--json', safeQuery])
+  return result.success ? jsonToSearchResults(parseJson(result.stdout, null)) : []
 }
 
 export async function installSkill(name: string): Promise<{ success: boolean; message: string }> {
   const safeName = validateName(name)
-  const result = await runSkillsMgr(['install', safeName, '--all'])
-  return {
-    success: result.success,
-    message: result.success ? (result.stdout.trim() || `${safeName} 已安装`) : (result.stderr.trim() || '安装失败'),
+  const result = await runSkillsMgr(['install', safeName, '--all', '--json'])
+  if (result.success) {
+    const data = parseJson<any>(result.stdout, null)
+    return { success: true, message: data?.installed?.[0]?.name ? `${data.installed[0].name} 已安装` : `${safeName} 已安装` }
   }
+  const errData = parseJson<any>(result.stdout || result.stderr, null)
+  return { success: false, message: errData?.error || result.stderr.trim() || '安装失败' }
+}
+
+// ─── Native Skills Scanner ────────────────────────────
+
+function scanDir(dir: string, ext: string): string[] {
+  try {
+    if (!existsSync(dir)) return []
+    return readdirSync(dir).filter(f => f.endsWith(ext)).map(f => basename(f, ext))
+  } catch { return [] }
+}
+
+export function listNativeSkills(tool: string, cwd: string): NativeSkill[] {
+  const skills: NativeSkill[] = []
+
+  if (tool === 'claude' || tool === 'shell') {
+    const home = homedir()
+
+    // Global commands: ~/.claude/commands/*.md
+    const globalCmds = join(home, '.claude', 'commands')
+    for (const name of scanDir(globalCmds, '.md')) {
+      skills.push({ name, source: 'command', path: join(globalCmds, name + '.md') })
+    }
+
+    // Project commands: <cwd>/.claude/commands/*.md
+    if (cwd) {
+      const projCmds = join(cwd, '.claude', 'commands')
+      for (const name of scanDir(projCmds, '.md')) {
+        skills.push({ name, source: 'project-command', path: join(projCmds, name + '.md') })
+      }
+    }
+
+    // Plugins from installed_plugins.json
+    const pluginsFile = join(home, '.claude', 'plugins', 'installed_plugins.json')
+    try {
+      if (existsSync(pluginsFile)) {
+        const data = JSON.parse(readFileSync(pluginsFile, 'utf-8'))
+        const settingsFile = join(home, '.claude', 'settings.json')
+        let enabledPlugins: Record<string, boolean> = {}
+        try {
+          if (existsSync(settingsFile)) {
+            const settings = JSON.parse(readFileSync(settingsFile, 'utf-8'))
+            enabledPlugins = settings.enabledPlugins || {}
+          }
+        } catch { /* ignore */ }
+
+        for (const [key, entries] of Object.entries(data.plugins || {})) {
+          const entry = Array.isArray(entries) ? entries[0] : null
+          if (!entry) continue
+          const installPath = (entry as any).installPath || ''
+          // Scan skills/ subdirectory inside plugin
+          let children: string[] = []
+          try {
+            const skillsDir = join(installPath, 'skills')
+            if (existsSync(skillsDir)) {
+              children = readdirSync(skillsDir).filter(f => {
+                try { return require('fs').statSync(join(skillsDir, f)).isDirectory() } catch { return false }
+              })
+            }
+          } catch { /* ignore */ }
+          skills.push({
+            name: key,
+            source: 'plugin',
+            path: installPath,
+            enabled: enabledPlugins[key] ?? false,
+            children: children.length > 0 ? children : undefined,
+          })
+        }
+      }
+    } catch { /* ignore */ }
+  }
+
+  // TODO: add codex/aichat native skill scanning when directory structure is known
+
+  return skills
 }

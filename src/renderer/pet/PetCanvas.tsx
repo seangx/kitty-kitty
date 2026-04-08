@@ -6,7 +6,6 @@ import ContextMenu from './ContextMenu'
 import SettingsPanel from './SettingsPanel'
 import SessionPicker from './SessionPicker'
 import SpeechBubble from './SpeechBubble'
-import SkillsPanel from './SkillsPanel'
 import { PetStateMachine } from './animations/state-machine'
 import { BehaviorScheduler } from './animations/behaviors'
 import { SKINS } from './animations/sprite-data'
@@ -31,7 +30,6 @@ export default function PetCanvas() {
   const [contextMenu, setContextMenu] = useState<{ x: number; y: number } | null>(null)
   const [speech, setSpeech] = useState<string | null>(null)
   const [showSkinPicker, setShowSkinPicker] = useState(false)
-  const [skillsSessionId, setSkillsSessionId] = useState<string | null>(null)
   const isDragging = useRef(false)
   const clickTimer = useRef<ReturnType<typeof setTimeout> | null>(null)
   const dragOffset = useRef({ x: 0, y: 0 })
@@ -53,7 +51,6 @@ export default function PetCanvas() {
     setShowInput(false)
     setShowSettings(false)
     setShowSkinPicker(false)
-    setSkillsSessionId(null)
     setDirPick(null)
     setContextMenu(null)
   }, [])
@@ -95,7 +92,7 @@ export default function PetCanvas() {
     return () => { unsub() }
   }, [say])
 
-  const anyPopup = showInput || showSettings || showSkinPicker || !!dirPick || !!skillsSessionId
+  const anyPopup = showInput || showSettings || showSkinPicker || !!dirPick
 
   const clickAnimations: AnimationState[] = ['happy', 'dance', 'jump', 'roll', 'stretch', 'lick', 'sneak']
   const clickIndex = useRef(0)
@@ -128,6 +125,7 @@ export default function PetCanvas() {
     const onMove = (ev: MouseEvent) => {
       const dx = ev.screenX - dragOffset.current.x, dy = ev.screenY - dragOffset.current.y
       if (Math.abs(dx) > 5 || Math.abs(dy) > 5) {
+        if (!isDragging.current) window.api.invoke('drag-start')
         isDragging.current = true
         if (clickTimer.current) { clearTimeout(clickTimer.current); clickTimer.current = null }
         window.api.invoke('move-window', dx, dy)
@@ -136,6 +134,7 @@ export default function PetCanvas() {
     }
     const onUp = () => {
       document.removeEventListener('mousemove', onMove); document.removeEventListener('mouseup', onUp)
+      if (isDragging.current) window.api.invoke('drag-end')
       setTimeout(() => { isDragging.current = false }, 150)
     }
     document.addEventListener('mousemove', onMove); document.addEventListener('mouseup', onUp)
@@ -238,38 +237,13 @@ export default function PetCanvas() {
     { label: '⚙️ 气泡设置', onClick: () => setShowSettings(true) },
   ], [handleOpenInDir, importSessions, machine, say])
 
-  const DraggablePopup = useCallback(({ children }: { children: React.ReactNode }) => {
-    const ref = useRef<HTMLDivElement>(null)
-    const dragOff = useRef({ x: 0, y: 0 })
-    const onDragStart = (e: React.MouseEvent) => {
-      const target = e.target as HTMLElement
-      if (!target.closest('[data-drag-handle]')) return
-      e.preventDefault()
-      const el = ref.current; if (!el) return
-      const rect = el.getBoundingClientRect()
-      dragOff.current = { x: e.clientX - rect.left, y: e.clientY - rect.top }
-      const onMove = (ev: MouseEvent) => {
-        if (!ref.current) return
-        ref.current.style.left = `${ev.clientX - dragOff.current.x}px`
-        ref.current.style.top = `${ev.clientY - dragOff.current.y}px`
-        ref.current.style.transform = 'none'
-      }
-      const onUp = () => { document.removeEventListener('mousemove', onMove); document.removeEventListener('mouseup', onUp) }
-      document.addEventListener('mousemove', onMove); document.addEventListener('mouseup', onUp)
-    }
-    return (
-      <div ref={ref}
-        style={{ position: 'absolute', top: 8, left: '50%', transform: 'translateX(-50%)', zIndex: 100 }}
-        onClick={(e) => e.stopPropagation()} onMouseDown={(e) => { e.stopPropagation(); onDragStart(e) }}>
-        {children}
-      </div>
-    )
-  }, [])
 
-  // When a popup opens, always grab mouse (no click-through while popups are visible)
+  // When popup is open, disable click-through so popup is interactive
   useEffect(() => {
     if (anyPopup) {
       window.api.invoke('set-ignore-mouse', false)
+    } else {
+      window.api.invoke('set-ignore-mouse', true)
     }
   }, [anyPopup])
 
@@ -285,31 +259,44 @@ export default function PetCanvas() {
     }
   }, [anyPopup])
 
+
+
   return (
+    <>
+    {/* Floating popups — outside pet area */}
+    {showInput && <DraggablePopup><InputPopup sessions={sessions} onSubmit={handleCreateSession} onClose={() => setShowInput(false)} /></DraggablePopup>}
+    {showSettings && <DraggablePopup><SettingsPanel onClose={() => setShowSettings(false)} /></DraggablePopup>}
+    {dirPick && (
+      <DraggablePopup>
+        <SessionPicker
+          dir={dirPick.dir}
+          sessions={dirPick.sessions}
+          isGitRepo={dirPick.isGitRepo}
+          discoveredWorktrees={dirPick.discoveredWorktrees}
+          onPick={handleDirConfirm}
+          onWorktree={handleWorktree}
+          onAttachWorktrees={async (worktrees) => { setDirPick(null) }}
+          onClose={() => setDirPick(null)}
+        />
+      </DraggablePopup>
+    )}
+    {/* Skills panel opens in a separate window */}
+    {showSkinPicker && (
+      <DraggablePopup>
+        <SkinPicker
+          current={bubble.skin}
+          onSelect={(id) => { setBubble({ skin: id }); setShowSkinPicker(false); machine.forceState('happy', 1500); say('换装成功喵~') }}
+          onClose={() => setShowSkinPicker(false)}
+        />
+      </DraggablePopup>
+    )}
+
+    {/* Pet area — cat, tagcloud, context menu */}
     <div
       style={{ width: '100%', height: '100%', display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'flex-end', userSelect: 'none', position: 'relative' }}
       onMouseDown={handleMouseDown} onClick={handleClick} onContextMenu={handleContextMenu}
       onMouseMove={handleMouseMove} onMouseLeave={handleMouseLeave}
     >
-      {showInput && <DraggablePopup><InputPopup sessions={sessions} onSubmit={handleCreateSession} onClose={() => setShowInput(false)} /></DraggablePopup>}
-      {showSettings && <DraggablePopup><SettingsPanel onClose={() => setShowSettings(false)} /></DraggablePopup>}
-      {dirPick && (
-        <DraggablePopup>
-          <SessionPicker
-            dir={dirPick.dir}
-            sessions={dirPick.sessions}
-            isGitRepo={dirPick.isGitRepo}
-            discoveredWorktrees={dirPick.discoveredWorktrees}
-            onPick={handleDirConfirm}
-            onWorktree={handleWorktree}
-            onAttachWorktrees={async (worktrees) => {
-              setDirPick(null)
-            }}
-            onClose={() => setDirPick(null)}
-          />
-        </DraggablePopup>
-      )}
-
       <TagCloud
         sessions={sessions}
         onAttach={handleAttach}
@@ -331,40 +318,17 @@ export default function PetCanvas() {
           await removeWorktreePane(paneId, keepWorktree)
           say('pane 已关闭喵~')
         }}
-        onOpenSkills={(id) => setSkillsSessionId(id)}
+        onOpenSkills={(id) => window.api.invoke('popup-open', 'skills', id)}
       />
-
-      {/* Cat sprite + speech bubble */}
       <div style={{ position: 'relative' }}>
         {speech && <SpeechBubble text={speech} onDone={() => setSpeech(null)} />}
         <PetSprite state={animation} skin={bubble.skin} />
       </div>
-
-      {skillsSessionId && (
-        <DraggablePopup>
-          <SkillsPanel
-            sessionId={skillsSessionId}
-            onClose={() => setSkillsSessionId(null)}
-            onSay={say}
-            onDance={() => machine.forceState('dance', 15000)}
-          />
-        </DraggablePopup>
-      )}
-
-      {showSkinPicker && (
-        <DraggablePopup>
-          <SkinPicker
-            current={bubble.skin}
-            onSelect={(id) => { setBubble({ skin: id }); setShowSkinPicker(false); machine.forceState('happy', 1500); say('换装成功喵~') }}
-            onClose={() => setShowSkinPicker(false)}
-          />
-        </DraggablePopup>
-      )}
-
       {contextMenu && (
         <ContextMenu x={contextMenu.x} y={contextMenu.y} onClose={() => setContextMenu(null)} items={menuItems} />
       )}
     </div>
+    </>
   )
 }
 
@@ -407,6 +371,41 @@ function SkinPicker({ current, onSelect, onClose }: { current: SkinId; onSelect:
           </button>
         ))}
       </div>
+    </div>
+  )
+}
+
+// ─── Draggable Popup ──────────────────
+
+function DraggablePopup({ children }: { children: React.ReactNode }) {
+  const ref = useRef<HTMLDivElement>(null)
+  const dragOff = useRef({ x: 0, y: 0 })
+  const onDragStart = (e: React.MouseEvent) => {
+    const target = e.target as HTMLElement
+    if (!target.closest('[data-drag-handle]')) return
+    e.preventDefault()
+    const el = ref.current; if (!el) return
+    const rect = el.getBoundingClientRect()
+    dragOff.current = { x: e.clientX - rect.left, y: e.clientY - rect.top }
+    const onMove = (ev: MouseEvent) => {
+      if (!ref.current) return
+      const elRect = ref.current.getBoundingClientRect()
+      let newX = ev.clientX - dragOff.current.x
+      let newY = ev.clientY - dragOff.current.y
+      newX = Math.max(0, Math.min(newX, window.innerWidth - elRect.width))
+      newY = Math.max(0, Math.min(newY, window.innerHeight - elRect.height))
+      ref.current.style.left = `${newX}px`
+      ref.current.style.top = `${newY}px`
+      ref.current.style.transform = 'none'
+    }
+    const onUp = () => { document.removeEventListener('mousemove', onMove); document.removeEventListener('mouseup', onUp) }
+    document.addEventListener('mousemove', onMove); document.addEventListener('mouseup', onUp)
+  }
+  return (
+    <div ref={ref}
+      style={{ position: 'fixed', top: 8, left: 8, right: 8, zIndex: 200, maxHeight: 'calc(100vh - 16px)', overflow: 'auto' }}
+      onClick={(e) => e.stopPropagation()} onMouseDown={(e) => { e.stopPropagation(); onDragStart(e) }}>
+      {children}
     </div>
   )
 }

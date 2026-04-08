@@ -17,7 +17,9 @@ export function registerSkillsHandlers(): void {
       session?.cwd ? skills.listDeployed(session.cwd) : Promise.resolve([]),
     ])
 
-    return { available, categories, groups, deployed }
+    const native = session ? skills.listNativeSkills(session.tool, session.cwd) : []
+
+    return { available, categories, groups, deployed, native }
   })
 
   ipcMain.handle(IPC.SKILLS_ADD, async (_event, sessionId: string, skillName: string) => {

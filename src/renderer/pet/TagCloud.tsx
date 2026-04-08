@@ -14,8 +14,6 @@ interface Props {
   onOpenSkills: (sessionId: string) => void
 }
 
-// Status dot: cyan-green=running, amber=detached
-const statusDotColor: Record<string, string> = { running: '#06d6a0', detached: '#ffb148', dead: '#555' }
 
 function getBubbleColor(id: string): string | null {
   try { return localStorage.getItem(`kitty-bubble-color-${id}`) } catch { return null }
@@ -121,11 +119,14 @@ export default function TagCloud({ sessions, onAttach, onKill, onRename, onCreat
       .slice(0, 8)
   }, [sessions])
 
-  const [bubbleColors, setBubbleColors] = useState<Record<string, string>>(() => {
+  const [bubbleColors, setBubbleColors] = useState<Record<string, string>>({})
+
+  // Sync bubble colors from localStorage whenever sessions change
+  useEffect(() => {
     const c: Record<string, string> = {}
-    alive.forEach((s) => { const v = getBubbleColor(s.id); if (v) c[s.id] = v })
-    return c
-  })
+    sessions.forEach((s) => { const v = getBubbleColor(s.id); if (v) c[s.id] = v })
+    setBubbleColors(c)
+  }, [sessions])
 
   const [priorities, setPriorities] = useState<Record<string, number>>(() => {
     const p: Record<string, number> = {}
@@ -258,7 +259,6 @@ export default function TagCloud({ sessions, onAttach, onKill, onRename, onCreat
     const isHovered = hoveredId === session.id
     const isEditing = editingId === session.id
     const isRunning = session.status === 'running'
-    const dotColor = statusDotColor[session.status] || '#555'
     const accent = bubbleColors[session.id] || (isRunning ? theme.primary : theme.dim)
     const opacity = isRunning ? Math.max(baseOpacity, 0.85) : baseOpacity
     const n = nudge(tierIdx)
@@ -288,16 +288,12 @@ export default function TagCloud({ sessions, onAttach, onKill, onRename, onCreat
             ? `${accent}cc`
             : isHero
               ? `${accent}bb`
-              : isRunning
-                ? `${accent}aa`
-                : `${theme.glass}ee`,
+              : `${accent}aa`,
           backdropFilter: 'blur(16px)', WebkitBackdropFilter: 'blur(16px)',
           boxShadow: isHero
             ? `0 0 ${18 * scale}px ${accent}40, 0 4px 14px rgba(0,0,0,0.3)`
-            : isRunning
-              ? `0 0 10px ${accent}25, 0 3px 10px rgba(0,0,0,0.2)`
-              : `0 2px 8px rgba(0,0,0,0.25)`,
-          border: (isHero || isRunning) ? `1px solid ${accent}${isHero ? '55' : '30'}` : 'none',
+            : `0 0 10px ${accent}25, 0 3px 10px rgba(0,0,0,0.2)`,
+          border: `1px solid ${accent}${isHero ? '55' : '30'}`,
           cursor: 'pointer',
           transition: 'all 0.25s ease',
           whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis',
@@ -306,14 +302,6 @@ export default function TagCloud({ sessions, onAttach, onKill, onRename, onCreat
         }}
         title={`${session.tool}: ${session.title}\n📂 ${session.cwd || '未设置'}${hasPriority ? '\n📌 已置顶' : ''}\n点击 attach · 右键菜单`}
       >
-        {/* Status dot */}
-        <span style={{
-          width: Math.round((isHero ? 8 : 6) * scale),
-          height: Math.round((isHero ? 8 : 6) * scale),
-          borderRadius: '50%', background: dotColor, flexShrink: 0,
-          boxShadow: `0 0 ${isHero ? 10 : 6}px ${dotColor}`,
-          animation: isRunning ? 'kitty-pulse 2s ease-in-out infinite' : undefined,
-        }} />
         {/* Title + optional branch below */}
         <div style={{ overflow: 'hidden', minWidth: 0 }}>
           {isEditing ? (

@@ -7,6 +7,7 @@ import { PET_WINDOW } from '@shared/constants'
 import { log } from '../logger'
 
 let petWindow: BrowserWindow | null = null
+let popupWindow: BrowserWindow | null = null
 let mouseHandlerRegistered = false
 
 const POS_FILE = join(homedir(), '.kitty-kitty', 'window-pos.json')
@@ -81,6 +82,81 @@ export function createPetWindow(): BrowserWindow {
       if (win && !win.isDestroyed()) {
         const [x, y] = win.getPosition()
         win.setPosition(x + dx, y + dy)
+      }
+    })
+    ipcMain.handle('drag-start', () => {
+      const win = getPetWindow()
+      if (win && !win.isDestroyed()) win.setAlwaysOnTop(true, 'screen-saver')
+    })
+    ipcMain.handle('drag-end', () => {
+      const win = getPetWindow()
+      if (win && !win.isDestroyed()) win.setAlwaysOnTop(true, 'floating')
+    })
+    ipcMain.handle('popup-open', (_e, type: string, params: string) => {
+      if (popupWindow && !popupWindow.isDestroyed()) {
+        popupWindow.focus()
+        return
+      }
+      const pet = getPetWindow()
+      if (!pet) return
+      const [px, py] = pet.getPosition()
+      const popupW = 480
+      const popupH = 520
+      // Position to the left of the pet window
+      let popupX = px - popupW - 12
+      let popupY = py
+      // If goes off-screen left, place to the right
+      const display = screen.getDisplayMatching(pet.getBounds())
+      if (popupX < display.workArea.x) {
+        popupX = px + PET_WINDOW.WIDTH + 12
+      }
+      // Clamp Y
+      popupY = Math.max(display.workArea.y, Math.min(popupY, display.workArea.y + display.workArea.height - popupH))
+
+      popupWindow = new BrowserWindow({
+        width: popupW,
+        height: popupH,
+        x: popupX,
+        y: popupY,
+        transparent: true,
+        frame: false,
+        resizable: true,
+        skipTaskbar: true,
+        hasShadow: true,
+        alwaysOnTop: true,
+        webPreferences: {
+          preload: join(__dirname, '../preload/index.js'),
+          sandbox: false,
+          contextIsolation: true,
+          nodeIntegration: false
+        }
+      })
+      popupWindow.setAlwaysOnTop(true, 'floating')
+
+      const hash = `#popup/${type}/${encodeURIComponent(params)}`
+      if (is.dev && process.env['ELECTRON_RENDERER_URL']) {
+        popupWindow.loadURL(process.env['ELECTRON_RENDERER_URL'] + hash)
+      } else {
+        popupWindow.loadFile(join(__dirname, '../renderer/index.html'), { hash: `popup/${type}/${encodeURIComponent(params)}` })
+      }
+
+      popupWindow.on('closed', () => {
+        popupWindow = null
+        // Notify pet window that popup closed
+        const p = getPetWindow()
+        if (p && !p.isDestroyed()) p.webContents.send('popup-closed', type)
+      })
+    })
+    ipcMain.handle('move-popup', (_e, dx: number, dy: number) => {
+      if (popupWindow && !popupWindow.isDestroyed()) {
+        const [x, y] = popupWindow.getPosition()
+        popupWindow.setPosition(x + dx, y + dy)
+      }
+    })
+    ipcMain.handle('popup-close', () => {
+      if (popupWindow && !popupWindow.isDestroyed()) {
+        popupWindow.close()
+        popupWindow = null
       }
     })
   }
