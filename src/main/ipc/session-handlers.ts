@@ -111,7 +111,7 @@ export function registerSessionHandlers(): void {
     const session = tmux.createTmuxSession(tool || 'claude', firstMessage, undefined, script)
     sessionRepo.saveSession(session)
     try {
-      sessionMcp.injectSessionMcp(session.id, session.cwd, session.tmuxName, session.title, '', '', session.tool)
+      sessionMcp.injectSessionMcp(session.id, session.cwd, session.tmuxName, session.title, '', '', session.tool, (session as any).roles || '', (session as any).expertise || '')
       collab.watchInbox(session.id, session.tmuxName, session.tool)
     } catch (e) { log('session', 'mcp inject failed (non-fatal):', e) }
     tmux.attachSession(session.tmuxName)
@@ -124,8 +124,8 @@ export function registerSessionHandlers(): void {
 
     const win = BrowserWindow.getFocusedWindow() || BrowserWindow.getAllWindows()[0]
     const result = win
-      ? await dialog.showOpenDialog(win, { title: '选择项目目录', properties: ['openDirectory'] })
-      : await dialog.showOpenDialog({ title: '选择项目目录', properties: ['openDirectory'] })
+      ? await dialog.showOpenDialog(win, { title: '选择项目目录', properties: ['openDirectory', 'showHiddenFiles'] })
+      : await dialog.showOpenDialog({ title: '选择项目目录', properties: ['openDirectory', 'showHiddenFiles'] })
 
     if (result.canceled || result.filePaths.length === 0) return null
 
@@ -156,7 +156,7 @@ export function registerSessionHandlers(): void {
     const session = tmux.createTmuxSession(tool || 'claude', undefined, dir, script)
     sessionRepo.saveSession(session)
     try {
-      sessionMcp.injectSessionMcp(session.id, dir, session.tmuxName, session.title, '', '', session.tool)
+      sessionMcp.injectSessionMcp(session.id, dir, session.tmuxName, session.title, '', '', session.tool, (session as any).roles || '', (session as any).expertise || '')
       collab.watchInbox(session.id, session.tmuxName, session.tool)
     } catch (e) { log('session', 'mcp inject failed (non-fatal):', e) }
     tmux.attachSession(session.tmuxName)
@@ -235,7 +235,7 @@ export function registerSessionHandlers(): void {
     )
     const session = tmux.createTmuxSession(tool || 'claude', undefined, worktreePath, script)
     sessionRepo.saveSession(session)
-    sessionMcp.injectSessionMcp(session.id, worktreePath, session.tmuxName, session.title, '', '', session.tool)
+    sessionMcp.injectSessionMcp(session.id, worktreePath, session.tmuxName, session.title, '', '', session.tool, (session as any).roles || '', (session as any).expertise || '')
     collab.watchInbox(session.id, session.tmuxName, session.tool)
     tmux.attachSession(session.tmuxName)
     return toSessionInfo(session)
@@ -310,6 +310,63 @@ export function registerSessionHandlers(): void {
     return { success: true }
   })
 
+  ipcMain.handle('session:set-roles', (_event, id: string, roles: string) => {
+    sessionRepo.updateSessionRoles(id, roles)
+    return { success: true }
+  })
+
+  ipcMain.handle('session:set-expertise', (_event, id: string, expertise: string) => {
+    sessionRepo.updateSessionExpertise(id, expertise)
+    return { success: true }
+  })
+
+  // Aggregate handler: set roles + expertise, re-inject .mcp.json, and directly
+  // update agents.json so the change is visible immediately without waiting for heartbeat.
+  ipcMain.handle('session:set-agent-metadata', (_event, id: string, roles: string, expertise: string) => {
+    sessionRepo.updateSessionRoles(id, roles)
+    sessionRepo.updateSessionExpertise(id, expertise)
+
+    const session = sessionRepo.listSessions().find(s => s.id === id)
+    if (!session) throw new Error('Session not found')
+
+    // Re-inject .mcp.json with new roles/expertise
+    try {
+      const grp = session.groupId ? sessionRepo.getGroupById(session.groupId) : undefined
+      sessionMcp.removeSessionMcp(id, session.cwd)
+      sessionMcp.injectSessionMcp(
+        id,
+        session.cwd,
+        session.tmuxName,
+        session.title,
+        session.groupId || '',
+        grp?.name || '',
+        session.tool,
+        roles,
+        expertise
+      )
+    } catch (err) {
+      log('session', `metadata inject failed for ${id}:`, err)
+    }
+
+    // Directly update agents.json so peers() from other agents sees new values immediately
+    try {
+      const fs = require('fs')
+      const { ensureRuntimeArtifacts } = require('../mcp/collab-manager')
+      const { busDir } = ensureRuntimeArtifacts()
+      const agentsFile = join(busDir, 'agents.json')
+      const agents = JSON.parse(fs.readFileSync(agentsFile, 'utf-8'))
+      if (agents[id]) {
+        agents[id].roles = roles.split(',').map((s: string) => s.trim()).filter(Boolean)
+        agents[id].expertise = expertise
+        fs.writeFileSync(agentsFile, JSON.stringify(agents, null, 2))
+      }
+    } catch (err) {
+      log('session', `metadata agents.json update failed for ${id}:`, err)
+    }
+
+    return { success: true }
+  })
+
   // Change a session CLI tool and restart the tmux command in-place.
   ipcMain.handle('session:set-tool', (_event, id: string, tool: string) => {
     const nextTool = (tool || '').trim()
@@ -331,7 +388,7 @@ export function registerSessionHandlers(): void {
     // Re-inject MCP after tool switch
     sessionMcp.removeSessionMcp(id, session.cwd)
     const grp = session.groupId ? sessionRepo.getGroupById(session.groupId) : undefined
-    sessionMcp.injectSessionMcp(session.id, session.cwd, session.tmuxName, session.title, session.groupId || '', grp?.name || '', nextTool)
+    sessionMcp.injectSessionMcp(session.id, session.cwd, session.tmuxName, session.title, session.groupId || '', grp?.name || '', nextTool, session.roles || '', session.expertise || '')
     collab.watchInbox(session.id, session.tmuxName, nextTool)
 
     return { success: true }
@@ -416,6 +473,10 @@ export function registerSessionHandlers(): void {
     sessionRepo.renameGroup(groupId, name)
   })
 
+  ipcMain.handle('group:set-color', (_event, groupId: string, color: string | null) => {
+    sessionRepo.updateGroupColor(groupId, color)
+  })
+
   ipcMain.handle('session:set-group', (_event, sessionId: string, groupId: string | null) => {
     const rows = sessionRepo.listSessions()
     const session = rows.find((s) => s.id === sessionId)
@@ -427,6 +488,11 @@ export function registerSessionHandlers(): void {
     sessionMcp.updateGroupId(sessionId, session.cwd, groupId || '', nextGroup?.name || '')
   })
 
+  ipcMain.handle('session:set-hidden', (_event, sessionId: string, hidden: boolean) => {
+    sessionRepo.updateSessionHidden(sessionId, hidden)
+    tmux.refreshAllStatusBars()
+  })
+
   // --- Collaboration (MCP) ---
   ipcMain.handle('collab:status', (_event, sessionId: string) => {
     const rows = sessionRepo.listSessions()
@@ -435,6 +501,174 @@ export function registerSessionHandlers(): void {
     const active = sessionMcp.hasSessionMcp(sessionId)
     return { active }
   })
+
+  // --- Pane mode ---
+  ipcMain.handle(IPC.PANE_MODE_GET, () => {
+    const { getPaneMode } = require('../tmux/cli-wrapper')
+    return getPaneMode()
+  })
+
+  ipcMain.handle(IPC.PANE_MODE_SET, (_event, enabled: boolean) => {
+    const { readFileSync, writeFileSync, mkdirSync } = require('fs')
+    const configPath = join(homedir(), '.kitty-kitty', 'config.json')
+
+    let config: any = {}
+    try { config = JSON.parse(readFileSync(configPath, 'utf-8')) } catch { /* ignore */ }
+    config.paneMode = enabled
+    mkdirSync(join(homedir(), '.kitty-kitty'), { recursive: true })
+    writeFileSync(configPath, JSON.stringify(config, null, 2))
+
+    if (enabled) {
+      migrateToPane()
+    } else {
+      migrateToSession()
+    }
+
+    tmux.refreshAllStatusBars()
+    return { success: true }
+  })
+
+  ipcMain.handle(IPC.SESSION_CREATE_IN_GROUP, (_event, groupId: string) => {
+    const { getPaneMode } = require('../tmux/cli-wrapper')
+    ensureReady('claude')
+
+    const group = sessionRepo.getGroupById(groupId)
+    if (!group) throw new Error('Group not found')
+
+    const groupSessions = sessionRepo.listSessionsByGroup(groupId)
+    const mainSession = groupSessions.find(s => s.id === group.mainSessionId) || groupSessions[0]
+    const cwd = mainSession?.cwd || undefined
+
+    const script = generateLaunchScript('claude', 'new')
+
+    if (getPaneMode() && groupSessions.length > 0 && mainSession) {
+      // Pane mode: split into the group's tmux session
+      const hostTmuxName = mainSession.tmuxName
+      if (!tmux.isSessionAlive(hostTmuxName)) {
+        throw new Error('Group host session is not running')
+      }
+
+      const isFirstSplit = tmux.getPaneCount(hostTmuxName) === 1
+      const paneId = tmux.createPaneInSession(hostTmuxName, script, isFirstSplit)
+
+      const { v4: uuid } = require('uuid')
+      const id = uuid().slice(0, 8)
+      const session: tmux.TmuxSession = {
+        id,
+        tmuxName: hostTmuxName,
+        title: `${group.name} agent`,
+        tool: 'claude',
+        cwd: cwd || '',
+        status: 'running',
+        createdAt: new Date().toISOString(),
+      }
+      sessionRepo.saveSession(session)
+      sessionRepo.updateSessionGroup(id, groupId)
+
+      if (!group.mainSessionId) {
+        sessionRepo.setGroupMainSession(groupId, groupSessions[0]?.id || id)
+      }
+
+      try {
+        sessionMcp.injectSessionMcp(id, cwd || '', hostTmuxName, session.title, groupId, group.name, 'claude', '', '')
+        collab.watchInbox(id, hostTmuxName, 'claude')
+      } catch (e) { log('session', 'mcp inject failed:', e) }
+
+      tmux.focusSession(hostTmuxName)
+      tmux.refreshAllStatusBars()
+      return toSessionInfo(session)
+    } else {
+      // Session mode or first session: create independent
+      const session = tmux.createTmuxSession('claude', undefined, cwd, script)
+      sessionRepo.saveSession(session)
+      sessionRepo.updateSessionGroup(session.id, groupId)
+
+      if (!group.mainSessionId) {
+        sessionRepo.setGroupMainSession(groupId, session.id)
+      }
+
+      try {
+        sessionMcp.injectSessionMcp(session.id, session.cwd, session.tmuxName, session.title, groupId, group.name, 'claude', '', '')
+        collab.watchInbox(session.id, session.tmuxName, 'claude')
+      } catch (e) { log('session', 'mcp inject failed:', e) }
+
+      tmux.attachSession(session.tmuxName)
+      return toSessionInfo(session)
+    }
+  })
+
+  ipcMain.handle(IPC.GROUP_SET_MAIN_SESSION, (_event, groupId: string, sessionId: string) => {
+    sessionRepo.setGroupMainSession(groupId, sessionId)
+
+    const { getPaneMode } = require('../tmux/cli-wrapper')
+    if (getPaneMode()) {
+      const session = sessionRepo.listSessions().find(s => s.id === sessionId)
+      if (session && tmux.isSessionAlive(session.tmuxName)) {
+        const mainPane = session.mainPane || '0.0'
+        const target = mainPane.startsWith('%') ? mainPane : `${session.tmuxName}:${mainPane}`
+        tmux.swapMainPane(session.tmuxName, target)
+      }
+    }
+    return { success: true }
+  })
+}
+
+function migrateToPane(): void {
+  const groups = sessionRepo.listGroups()
+  for (const group of groups) {
+    const sessions = sessionRepo.listSessionsByGroup(group.id)
+      .filter(s => tmux.isSessionAlive(s.tmuxName))
+    if (sessions.length <= 1) continue
+
+    const mainSession = sessions.find(s => s.id === group.mainSessionId) || sessions[0]
+    const others = sessions.filter(s => s.id !== mainSession.id)
+
+    for (let i = 0; i < others.length; i++) {
+      try {
+        tmux.joinSessionAsPane(others[i].tmuxName, mainSession.tmuxName, i === 0)
+      } catch (err) {
+        log('pane-mode', `join failed for ${others[i].tmuxName}:`, err)
+      }
+    }
+
+    if (!group.mainSessionId) {
+      sessionRepo.setGroupMainSession(group.id, mainSession.id)
+    }
+  }
+}
+
+function migrateToSession(): void {
+  const groups = sessionRepo.listGroups()
+  for (const group of groups) {
+    const sessions = sessionRepo.listSessionsByGroup(group.id)
+    if (sessions.length <= 1) continue
+
+    const hostSession = sessions.find(s => tmux.isSessionAlive(s.tmuxName))
+    if (!hostSession) continue
+
+    const paneCount = tmux.getPaneCount(hostSession.tmuxName)
+    if (paneCount <= 1) continue
+
+    try {
+      const panes = execSync(
+        `${tmux.TMUX} list-panes -t "${hostSession.tmuxName}" -F '#{pane_id}'`,
+        { encoding: 'utf-8' }
+      ).trim().split('\n')
+
+      for (let i = 1; i < panes.length; i++) {
+        const { v4: uuid } = require('uuid')
+        const newTmuxName = `kitty_${uuid().slice(0, 8)}`
+        try {
+          tmux.breakPaneToSession(panes[i], newTmuxName)
+          tmux.applyKittyStatusBar(newTmuxName)
+        } catch (err) {
+          log('pane-mode', `break failed for pane ${panes[i]}:`, err)
+        }
+      }
+    } catch (err) {
+      log('pane-mode', `migration failed for group ${group.id}:`, err)
+    }
+  }
 }
 
 /**
@@ -490,17 +724,17 @@ function syncAndList(): SessionInfo[] {
     for (const name of liveNames) {
       tmux.applyKittyStatusBar(name)
     }
-
-    // Start inbox watcher for all live sessions with cwd
-    for (const row of sessionRepo.listSessions()) {
-      if (liveNames.has(row.tmuxName) && row.cwd) {
-        const group = row.groupId ? sessionRepo.getGroupById(row.groupId) : undefined
-        sessionMcp.injectSessionMcp(row.id, row.cwd, row.tmuxName, row.title, row.groupId || '', group?.name || '', row.tool)
-        collab.watchInbox(row.id, row.tmuxName, row.tool)
-      }
-    }
-    collab.cleanupStaleAgents(new Set(sessionRepo.listSessions().filter(r => liveNames.has(r.tmuxName)).map(r => r.id)))
   }
+
+  // Start/refresh inbox watcher for all live sessions with cwd (every sync, idempotent)
+  for (const row of sessionRepo.listSessions()) {
+    if (liveNames.has(row.tmuxName) && row.cwd) {
+      const group = row.groupId ? sessionRepo.getGroupById(row.groupId) : undefined
+      sessionMcp.injectSessionMcp(row.id, row.cwd, row.tmuxName, row.title, row.groupId || '', group?.name || '', row.tool, row.roles || '', row.expertise || '')
+      collab.watchInbox(row.id, row.tmuxName, row.tool)
+    }
+  }
+  collab.cleanupStaleAgents(new Set(sessionRepo.listSessions().filter(r => liveNames.has(r.tmuxName)).map(r => r.id)))
 
   // Normal sync: update status based on tmux state
   // tmux gone → keep as 'detached' (restorable on next launch), NOT 'dead'
@@ -553,6 +787,9 @@ function syncAndList(): SessionInfo[] {
     groupId: row.groupId || undefined,
     groupName: row.groupName || undefined,
     groupColor: row.groupColor || undefined,
+    hidden: !!row.hidden,
+    roles: row.roles || '',
+    expertise: row.expertise || '',
     isGitRepo: row.cwd ? isGitRepository(row.cwd) : false,
     worktreePanes: worktreeManager.listPanes(row.id),
   }))

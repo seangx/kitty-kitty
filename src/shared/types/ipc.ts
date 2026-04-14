@@ -28,9 +28,16 @@ export const IPC = {
 
   // Pet
   PET_STATE_GET: 'pet:state:get',
+  PET_STATE_UPDATE: 'pet:state:update',
   PET_INTERACT: 'pet:interact',
 
   // Config
   CONFIG_GET: 'config:get',
-  CONFIG_SET: 'config:set'
+  CONFIG_SET: 'config:set',
+
+  // Pane mode
+  SESSION_CREATE_IN_GROUP: 'session:create-in-group',
+  PANE_MODE_GET: 'pane-mode:get',
+  PANE_MODE_SET: 'pane-mode:set',
+  GROUP_SET_MAIN_SESSION: 'group:set-main-session',
 } as const
