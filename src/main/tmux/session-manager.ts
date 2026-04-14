@@ -301,14 +301,28 @@ export function focusSession(tmuxName: string): void {
     execSync(`${TMUX} switch-client -t ${shellQuote(tmuxName)}`, { stdio: 'ignore' })
   } catch { /* ignore */ }
 
+  // Sync active group to match the session we just switched to
+  syncActiveGroupForSession(tmuxName)
+
   // Force immediate status bar refresh on all sessions
-  try {
-    execSync(`${TMUX} refresh-client -S`, { stdio: 'ignore' })
-  } catch { /* ignore */ }
+  refreshAllStatusBars()
 
   if (process.platform === 'darwin') {
     exec(`osascript -e 'tell application "Ghostty" to activate'`)
   }
+}
+
+/**
+ * Set KITTY_ACTIVE_GROUP to match the group of a given session.
+ * Called when switching sessions via UI click or other non-keybinding paths.
+ */
+function syncActiveGroupForSession(tmuxName: string): void {
+  try {
+    const db = getDB()
+    const row = db.prepare("SELECT COALESCE(group_id, '') as group_id FROM sessions WHERE tmux_name = ?").get(tmuxName) as { group_id: string } | undefined
+    const groupId = row?.group_id || '__ungrouped__'
+    execSync(`${TMUX} set-environment -g KITTY_ACTIVE_GROUP ${shellQuote(groupId)}`, { stdio: 'ignore' })
+  } catch { /* ignore */ }
 }
 
 export function killSession(tmuxName: string): void {
@@ -317,6 +331,72 @@ export function killSession(tmuxName: string): void {
   } catch { /* already dead */ }
   // Refresh other sessions' status bars
   refreshAllStatusBars()
+}
+
+/**
+ * Create a new pane in an existing tmux session by splitting.
+ * First split: horizontal (right side, 65% width).
+ * Subsequent splits: vertical within the right side.
+ * Returns the new pane's tmux pane ID (e.g., %5).
+ */
+export function createPaneInSession(tmuxName: string, command: string, isFirstSplit: boolean): string {
+  let paneId: string
+  if (isFirstSplit) {
+    paneId = execSync(
+      `${TMUX} split-window -t ${shellQuote(tmuxName)} -h -p 65 -P -F '#{pane_id}' ${shellQuote(command)}`,
+      { encoding: 'utf-8', env: { ...process.env, TERM: 'xterm-256color' } }
+    ).trim()
+  } else {
+    const panes = execSync(
+      `${TMUX} list-panes -t ${shellQuote(tmuxName)} -F '#{pane_id}'`,
+      { encoding: 'utf-8' }
+    ).trim().split('\n')
+    const lastPane = panes[panes.length - 1]
+    paneId = execSync(
+      `${TMUX} split-window -t ${lastPane} -v -P -F '#{pane_id}' ${shellQuote(command)}`,
+      { encoding: 'utf-8', env: { ...process.env, TERM: 'xterm-256color' } }
+    ).trim()
+  }
+  return paneId
+}
+
+export function getPaneCount(tmuxName: string): number {
+  try {
+    const output = execSync(
+      `${TMUX} list-panes -t ${shellQuote(tmuxName)} -F '#{pane_id}'`,
+      { encoding: 'utf-8', stdio: ['ignore', 'pipe', 'ignore'] }
+    ).trim()
+    return output ? output.split('\n').length : 0
+  } catch {
+    return 0
+  }
+}
+
+export function swapMainPane(tmuxName: string, targetPaneId: string): void {
+  try {
+    const firstPane = execSync(
+      `${TMUX} list-panes -t ${shellQuote(tmuxName)} -F '#{pane_id}'`,
+      { encoding: 'utf-8', stdio: ['ignore', 'pipe', 'ignore'] }
+    ).trim().split('\n')[0]
+    if (firstPane && firstPane !== targetPaneId) {
+      execSync(`${TMUX} swap-pane -s ${targetPaneId} -t ${firstPane}`, { stdio: 'ignore' })
+    }
+  } catch { /* ignore */ }
+}
+
+export function joinSessionAsPane(sourceSession: string, targetSession: string, isFirstJoin: boolean): void {
+  const flag = isFirstJoin ? '-h -p 65' : '-v'
+  execSync(
+    `${TMUX} join-pane -s ${shellQuote(sourceSession + ':0.0')} -t ${shellQuote(targetSession)} ${flag}`,
+    { stdio: 'ignore' }
+  )
+}
+
+export function breakPaneToSession(paneId: string, newTmuxName: string): void {
+  execSync(
+    `${TMUX} break-pane -s ${paneId} -t ${shellQuote(newTmuxName)}`,
+    { stdio: 'ignore' }
+  )
 }
 
 /**
@@ -358,7 +438,7 @@ export function applyKittyStatusBar(tmuxName: string): void {
       `set-option -t ${sq} status-position bottom`,
       `set-option -t ${sq} status-style "bg=#2a2a45,fg=#aaa8c3"`,
       `set-option -t ${sq} status 2`,
-      `set-option -t ${sq} status-format[0] "#(${groupBarScript})"`,
+      `set-option -t ${sq} status-format[0] "#[bg=#1e1e36]#(${groupBarScript})#[fill=#1e1e36]"`,
       `set-option -t ${sq} status-format[1] "#(${sessionBarScript})#[align=right]#[fg=#aaa8c3] %H:%M "`,
       // No window list — everything is in status-format
       `set-window-option -t ${sq} window-status-format ""`,
@@ -438,13 +518,14 @@ function bindSessionKeys(): void {
 }
 
 /**
- * Bind Ctrl+1~9 to switch between groups
+ * Bind prefix+1~9 to switch between groups.
+ * (Ctrl+number doesn't work in most terminals including Ghostty)
  */
 function bindGroupKeys(): void {
   const switchScript = ensureSwitchGroupScript()
   for (let i = 1; i <= 9; i++) {
     try {
-      execSync(`${TMUX} bind-key -n C-${i} run-shell -b '${switchScript} ${i}'`, { stdio: 'ignore' })
+      execSync(`${TMUX} bind-key ${i} run-shell -b '${switchScript} ${i}'`, { stdio: 'ignore' })
     } catch { /* ignore */ }
   }
 }
@@ -458,7 +539,7 @@ export function refreshAllStatusBars(): void {
   const sessions = listTmuxSessions()
   for (const s of sessions) {
     try {
-      execSync(`${TMUX} set-option -t ${shellQuote(s.name)} status-format[0] "#(${groupBarScript})"`, { stdio: 'ignore' })
+      execSync(`${TMUX} set-option -t ${shellQuote(s.name)} status-format[0] "#[bg=#1e1e36]#(${groupBarScript})#[fill=#1e1e36]"`, { stdio: 'ignore' })
       execSync(`${TMUX} set-option -t ${shellQuote(s.name)} status-format[1] "#(${sessionBarScript})#[align=right]#[fg=#aaa8c3] %H:%M "`, { stdio: 'ignore' })
     } catch { /* ignore */ }
   }
@@ -479,13 +560,13 @@ function ensureGroupBarScript(): string {
   writeFileSync(scriptPath, `#!/bin/bash
 TMUX_BIN="${TMUX}"
 DB="${dbPath}"
-BG="#2a2a45"
+GBG="#1e1e36"
 
 ACTIVE_GROUP=\$(\$TMUX_BIN show-environment -g KITTY_ACTIVE_GROUP 2>/dev/null | sed 's/^[^=]*=//')
 [ -z "\$ACTIVE_GROUP" ] && ACTIVE_GROUP="__ungrouped__"
 
 if ! [ -f "\$DB" ] || ! command -v sqlite3 >/dev/null 2>&1; then
-  printf '#[fg=#aaa8c3,bg=%s] (no db) ' "\$BG"
+  printf '#[fg=#aaa8c3,bg=%s]  (no db)  ' "\$GBG"
   exit 0
 fi
 
@@ -509,11 +590,10 @@ while IFS='|' read -r GID GNAME; do
   [ "\$COUNT" -eq 0 ] && continue
   N=\$((N+1))
   if [ "\$GID" = "\$ACTIVE_GROUP" ]; then
-    FG="#06b6d4"
-    printf '#[fg=%s,bg=%s,bold] %d:%s(%d) ' "\$FG" "\$BG" "\$N" "\$GNAME" "\$COUNT"
+    printf '#[fg=#06b6d4,bg=#3a3a5c,bold]  %d  %s (%d)  #[bg=%s]' "\$N" "\$GNAME" "\$COUNT" "\$GBG"
   else
-    FG="#aaa8c3"
-    printf '#[fg=%s,bg=%s,nobold] %d:%s(%d) ' "\$FG" "\$BG" "\$N" "\$GNAME" "\$COUNT"
+    [ "\$N" -gt 1 ] && printf '#[fg=#3a3a5c,bg=%s] ' "\$GBG"
+    printf '#[fg=#706f8a,bg=%s]  %d  %s (%d)  ' "\$GBG" "\$N" "\$GNAME" "\$COUNT"
   fi
 done < <(sqlite3 "\$DB" "SELECT id, name FROM groups ORDER BY created_at;" 2>/dev/null | tr '|' '|')
 
@@ -527,11 +607,11 @@ done < <(sqlite3 "\$DB" "SELECT tmux_name FROM sessions WHERE (group_id IS NULL 
 if [ "\$UCOUNT" -gt 0 ]; then
   N=\$((N+1))
   if [ "\$ACTIVE_GROUP" = "__ungrouped__" ]; then
-    FG="#06b6d4"
-    printf '#[fg=%s,bg=%s,bold] %d:未分组(%d) ' "\$FG" "\$BG" "\$N" "\$UCOUNT"
+    [ "\$N" -gt 1 ] && printf '#[fg=#3a3a5c,bg=%s] ' "\$GBG"
+    printf '#[fg=#06b6d4,bg=#3a3a5c,bold]  %d  未分组 (%d)  #[bg=%s]' "\$N" "\$UCOUNT" "\$GBG"
   else
-    FG="#aaa8c3"
-    printf '#[fg=%s,bg=%s,nobold] %d:未分组(%d) ' "\$FG" "\$BG" "\$N" "\$UCOUNT"
+    [ "\$N" -gt 1 ] && printf '#[fg=#3a3a5c,bg=%s] ' "\$GBG"
+    printf '#[fg=#706f8a,bg=%s]  %d  未分组 (%d)  ' "\$GBG" "\$N" "\$UCOUNT"
   fi
 fi
 `)
@@ -553,30 +633,29 @@ DB="${dbPath}"
 ACTIVE_GROUP=\$(\$TMUX_BIN show-environment -g KITTY_ACTIVE_GROUP 2>/dev/null | sed 's/^[^=]*=//')
 [ -z "\$ACTIVE_GROUP" ] && ACTIVE_GROUP="__ungrouped__"
 
-N=0
+# Collect alive tmux sessions for cross-check
+ALIVE=""
 while read -r S; do
-  [ -z "\$S" ] && continue
-  TITLE="\$S"
-  TOOL=""
-  HIDDEN=0
-  GROUP_ID=""
-  if [ -f "\$DB" ] && command -v sqlite3 >/dev/null 2>&1; then
-    ROW=\$(sqlite3 "\$DB" "SELECT title, tool, COALESCE(hidden,0), COALESCE(group_id,'') FROM sessions WHERE tmux_name='\$S' LIMIT 1;" 2>/dev/null)
-    if [ -n "\$ROW" ]; then
-      TITLE=\$(echo "\$ROW" | cut -d'|' -f1)
-      TOOL=\$(echo "\$ROW" | cut -d'|' -f2)
-      HIDDEN=\$(echo "\$ROW" | cut -d'|' -f3)
-      GROUP_ID=\$(echo "\$ROW" | cut -d'|' -f4)
-    fi
-  fi
-  [ "\$HIDDEN" = "1" ] && continue
+  ALIVE="\$ALIVE|\$S|"
+done < <(\$TMUX_BIN list-sessions -F '#{session_name}' 2>/dev/null | grep '^${SESSION_PREFIX}')
 
-  # Filter by active group
-  if [ "\$ACTIVE_GROUP" = "__ungrouped__" ]; then
-    [ -n "\$GROUP_ID" ] && continue
-  else
-    [ "\$GROUP_ID" != "\$ACTIVE_GROUP" ] && continue
-  fi
+if ! [ -f "\$DB" ] || ! command -v sqlite3 >/dev/null 2>&1; then
+  exit 0
+fi
+
+# Query sessions from DB, filtered by group, ordered by updated_at DESC
+# This order matches bindSessionKeys() so Alt+N is consistent
+if [ "\$ACTIVE_GROUP" = "__ungrouped__" ]; then
+  QUERY="SELECT tmux_name, title, cwd FROM sessions WHERE COALESCE(hidden,0)=0 AND (group_id IS NULL OR group_id='') ORDER BY updated_at DESC;"
+else
+  QUERY="SELECT tmux_name, title, cwd FROM sessions WHERE COALESCE(hidden,0)=0 AND group_id='\$ACTIVE_GROUP' ORDER BY updated_at DESC;"
+fi
+
+N=0
+while IFS='|' read -r S TITLE CWD; do
+  [ -z "\$S" ] && continue
+  # Only show alive sessions
+  case "\$ALIVE" in *"|\$S|"*) ;; *) continue ;; esac
 
   N=\$((N+1))
   # Status dot: check if pane has a running foreground process
@@ -587,10 +666,6 @@ while read -r S; do
   esac
   # Git branch with color
   BRANCH=""
-  CWD=""
-  if [ -f "\$DB" ] && command -v sqlite3 >/dev/null 2>&1; then
-    CWD=\$(sqlite3 "\$DB" "SELECT cwd FROM sessions WHERE tmux_name='\$S' LIMIT 1;" 2>/dev/null)
-  fi
   if [ -n "\$CWD" ] && [ -d "\$CWD" ]; then
     B=\$(git -C "\$CWD" rev-parse --abbrev-ref HEAD 2>/dev/null)
     if [ -n "\$B" ]; then
@@ -618,7 +693,7 @@ while read -r S; do
     printf '#[fg=%s,bg=%s,bold] %d:%s #[fg=%s,bg=%s]● #[fg=#46465c,bg=%s,nobold] | ' \\
       "\$FG" "\$BG" "\$N" "\$TITLE" "\$DOTCOLOR" "\$BG" "\$BG"
   fi
-done < <(\$TMUX_BIN list-sessions -F '#{session_name}' 2>/dev/null | grep '^${SESSION_PREFIX}')
+done < <(sqlite3 "\$DB" "\$QUERY" 2>/dev/null)
 `)
   chmodSync(scriptPath, '755')
   return scriptPath
