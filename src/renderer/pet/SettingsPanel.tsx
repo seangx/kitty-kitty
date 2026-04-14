@@ -1,3 +1,4 @@
+import { useState, useEffect } from 'react'
 import { useConfigStore } from '../store/config-store'
 import type { BubbleConfig } from '@shared/types/config'
 
@@ -19,6 +20,24 @@ const layouts: Array<{ id: BubbleConfig['layout']; emoji: string; label: string 
 
 export default function SettingsPanel({ onClose }: Props) {
   const { bubble, setBubble, resetBubble } = useConfigStore()
+  const [paneMode, setPaneMode] = useState(false)
+  const [paneModeLoading, setPaneModeLoading] = useState(false)
+
+  useEffect(() => {
+    window.api.invoke('pane-mode:get').then(setPaneMode).catch(() => {})
+  }, [])
+
+  const togglePaneMode = async () => {
+    setPaneModeLoading(true)
+    try {
+      const next = !paneMode
+      await window.api.invoke('pane-mode:set', next)
+      setPaneMode(next)
+    } catch (e) {
+      console.error('pane-mode:set failed:', e)
+    }
+    setPaneModeLoading(false)
+  }
 
   return (
     <div style={{
@@ -28,9 +47,40 @@ export default function SettingsPanel({ onClose }: Props) {
       fontFamily: "'Plus Jakarta Sans', -apple-system, sans-serif", color: C.text,
     }}>
       <div data-drag-handle style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 14, cursor: 'grab' }}>
-        <span style={{ fontSize: 14, fontWeight: 600 }}>⚙️ 气泡设置</span>
+        <span style={{ fontSize: 14, fontWeight: 600 }}>⚙️ 设置</span>
         <button onClick={onClose} style={{ background: 'none', border: 'none', color: C.textDim, cursor: 'pointer', fontSize: 16 }}>✕</button>
       </div>
+
+      {/* Pane Mode Toggle */}
+      <div style={{ marginBottom: 14 }}>
+        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+          <div>
+            <div style={{ fontSize: 12, color: C.text }}>Pane 模式</div>
+            <div style={{ fontSize: 10, color: paneModeLoading ? C.primaryDim : C.textDim, marginTop: 2 }}>
+              {paneModeLoading ? '正在切换布局...' : '同组会话合并为分屏窗口'}
+            </div>
+          </div>
+          <button onClick={togglePaneMode} disabled={paneModeLoading}
+            style={{
+              width: 40, height: 22, borderRadius: 11, border: 'none', cursor: 'pointer',
+              background: paneMode ? C.primaryDim : `${C.outline}66`,
+              position: 'relative', transition: 'background 0.2s',
+              opacity: paneModeLoading ? 0.5 : 1,
+            }}>
+            <div style={{
+              width: 16, height: 16, borderRadius: '50%', background: '#fff',
+              position: 'absolute', top: 3,
+              left: paneMode ? 21 : 3,
+              transition: 'left 0.2s',
+            }} />
+          </button>
+        </div>
+      </div>
+
+      <div style={{ height: 1, background: `${C.outline}33`, margin: '12px 0' }} />
+
+      {/* Bubble section header */}
+      <div style={{ fontSize: 11, color: C.textDim, marginBottom: 8, fontWeight: 500 }}>气泡</div>
 
       {/* Size */}
       <div style={{ marginBottom: 14 }}>

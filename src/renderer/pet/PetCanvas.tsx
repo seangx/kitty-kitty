@@ -234,7 +234,7 @@ export default function PetCanvas() {
     }},
     { separator: true as const },
     { label: '🎨 换装', onClick: () => setShowSkinPicker(true) },
-    { label: '⚙️ 气泡设置', onClick: () => setShowSettings(true) },
+    { label: '⚙️ 设置', onClick: () => setShowSettings(true) },
   ], [handleOpenInDir, importSessions, machine, say])
 
 

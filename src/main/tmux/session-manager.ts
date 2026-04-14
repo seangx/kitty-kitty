@@ -4,6 +4,7 @@ import { join } from 'path'
 import { tmpdir, homedir } from 'os'
 import { v4 as uuid } from 'uuid'
 import { getDB } from '../db/database'
+import { getPaneMode } from './cli-wrapper'
 
 /** Resolve tmux binary — GUI apps don't inherit homebrew PATH */
 function findTmux(): string {
@@ -384,10 +385,9 @@ export function swapMainPane(tmuxName: string, targetPaneId: string): void {
   } catch { /* ignore */ }
 }
 
-export function joinSessionAsPane(sourceSession: string, targetSession: string, isFirstJoin: boolean): void {
-  const flag = isFirstJoin ? '-h -p 65' : '-v'
+export function joinSessionAsPane(sourceSession: string, targetSession: string, _isFirstJoin: boolean): void {
   execSync(
-    `${TMUX} join-pane -s ${shellQuote(sourceSession + ':0.0')} -t ${shellQuote(targetSession)} ${flag}`,
+    `${TMUX} join-pane -s ${shellQuote(sourceSession + ':0.0')} -t ${shellQuote(targetSession)} -v`,
     { stdio: 'ignore' }
   )
 }
@@ -419,7 +419,6 @@ export function capturePane(tmuxName: string, lines = 3): string {
  */
 export function applyKittyStatusBar(tmuxName: string): void {
   try {
-    const { getPaneMode } = require('./cli-wrapper')
     const isPaneMode = getPaneMode()
     const groupBarScript = ensureGroupBarScript()
     const sq = shellQuote(tmuxName)
@@ -449,6 +448,12 @@ export function applyKittyStatusBar(tmuxName: string): void {
       opts.push(
         `set-option -t ${sq} status 1`,
         `set-option -t ${sq} status-format[0] "#[bg=#1e1e36]#(${groupBarScript})#[fill=#1e1e36,align=right]#[fg=#aaa8c3] %H:%M "`,
+        // Highlight active pane with border + top status label
+        `set-option -t ${sq} pane-active-border-style "fg=#645efb"`,
+        `set-option -t ${sq} pane-border-style "fg=#2a2a45"`,
+        `set-option -t ${sq} pane-border-lines single`,
+        `set-option -t ${sq} pane-border-status top`,
+        `set-option -t ${sq} pane-border-format "#[fg=#{?pane_active,#645efb,#46465c},bg=#1e1e36] #{pane_index} #{b:pane_current_path} "`,
       )
     } else {
       const sessionBarScript = ensureSessionBarScript()
@@ -485,7 +490,10 @@ export function applyKittyStatusBar(tmuxName: string): void {
 
     // Ctrl+1~9 to switch groups, Alt+1~9 to switch sessions within group
     bindGroupKeys()
-    if (!isPaneMode) {
+    if (isPaneMode) {
+      // Pane mode: Alt+number switches groups (sessions are visible as panes)
+      bindAltGroupKeys()
+    } else {
       bindSessionKeys()
     }
   } catch { /* ignore */ }
@@ -545,24 +553,47 @@ function bindGroupKeys(): void {
 }
 
 /**
+ * Bind Alt+1~9 to switch between groups (used in pane mode).
+ * In pane mode, panes handle session navigation, so Alt+number switches groups instead.
+ */
+function bindAltGroupKeys(): void {
+  const switchScript = ensureSwitchGroupScript()
+  for (let i = 1; i <= 9; i++) {
+    try {
+      execSync(`${TMUX} bind-key -n M-${i} run-shell -b '${switchScript} ${i}'`, { stdio: 'ignore' })
+    } catch { /* ignore */ }
+  }
+}
+
+/**
  * Refresh the status bar of all kitty sessions (called after session changes)
  */
 export function refreshAllStatusBars(): void {
+  const isPaneMode = getPaneMode()
   const groupBarScript = ensureGroupBarScript()
-  const sessionBarScript = ensureSessionBarScript()
   const sessions = listTmuxSessions()
   for (const s of sessions) {
     try {
-      execSync(`${TMUX} set-option -t ${shellQuote(s.name)} status-format[0] "#[bg=#1e1e36]#(${groupBarScript})#[fill=#1e1e36]"`, { stdio: 'ignore' })
-      execSync(`${TMUX} set-option -t ${shellQuote(s.name)} status-format[1] "#(${sessionBarScript})#[align=right]#[fg=#aaa8c3] %H:%M "`, { stdio: 'ignore' })
+      if (isPaneMode) {
+        execSync(`${TMUX} set-option -t ${shellQuote(s.name)} status 1`, { stdio: 'ignore' })
+        execSync(`${TMUX} set-option -t ${shellQuote(s.name)} status-format[0] "#[bg=#1e1e36]#(${groupBarScript})#[fill=#1e1e36,align=right]#[fg=#aaa8c3] %H:%M "`, { stdio: 'ignore' })
+      } else {
+        const sessionBarScript = ensureSessionBarScript()
+        execSync(`${TMUX} set-option -t ${shellQuote(s.name)} status 2`, { stdio: 'ignore' })
+        execSync(`${TMUX} set-option -t ${shellQuote(s.name)} status-format[0] "#[bg=#1e1e36]#(${groupBarScript})#[fill=#1e1e36]"`, { stdio: 'ignore' })
+        execSync(`${TMUX} set-option -t ${shellQuote(s.name)} status-format[1] "#[bg=#2a2a45]#(${sessionBarScript})#[fill=#2a2a45,align=right]#[fg=#aaa8c3] %H:%M "`, { stdio: 'ignore' })
+      }
     } catch { /* ignore */ }
   }
-  // Force immediate visual refresh
   try {
     execSync(`${TMUX} refresh-client -S`, { stdio: 'ignore' })
   } catch { /* ignore */ }
   bindGroupKeys()
-  bindSessionKeys()
+  if (isPaneMode) {
+    bindAltGroupKeys()
+  } else {
+    bindSessionKeys()
+  }
 }
 
 /**
@@ -595,13 +626,17 @@ N=0
 # Named groups with active sessions
 while IFS='|' read -r GID GNAME; do
   [ -z "\$GID" ] && continue
-  # Count visible alive sessions in this group
-  COUNT=0
+  # Count visible sessions in this group
+  # In pane mode, multiple DB sessions share one tmux session, so count from DB directly
+  COUNT=\$(sqlite3 "\$DB" "SELECT COUNT(*) FROM sessions WHERE group_id='\$GID' AND COALESCE(hidden,0)=0;" 2>/dev/null)
+  # But still need at least one alive tmux session in the group
+  HAS_ALIVE=0
   while read -r TNAME; do
     [ -z "\$TNAME" ] && continue
-    case "\$ALIVE" in *"|\$TNAME|"*) COUNT=\$((COUNT+1)) ;; esac
-  done < <(sqlite3 "\$DB" "SELECT tmux_name FROM sessions WHERE group_id='\$GID' AND COALESCE(hidden,0)=0;" 2>/dev/null)
-  [ "\$COUNT" -eq 0 ] && continue
+    case "\$ALIVE" in *"|\$TNAME|"*) HAS_ALIVE=1; break ;; esac
+  done < <(sqlite3 "\$DB" "SELECT DISTINCT tmux_name FROM sessions WHERE group_id='\$GID' AND COALESCE(hidden,0)=0;" 2>/dev/null)
+  [ "\$HAS_ALIVE" -eq 0 ] && continue
+  [ "\${COUNT:-0}" -eq 0 ] && continue
   N=\$((N+1))
   if [ "\$GID" = "\$ACTIVE_GROUP" ]; then
     printf '#[fg=#06b6d4,bg=#3a3a5c,bold]  %d  %s (%d)  #[bg=%s]' "\$N" "\$GNAME" "\$COUNT" "\$GBG"
@@ -778,36 +813,53 @@ TARGET_GID="\${GROUP_IDS[\$IDX]}"
 # Set active group
 \$TMUX_BIN set-environment -g KITTY_ACTIVE_GROUP "\$TARGET_GID" 2>/dev/null
 
-# Find most recently updated session in that group and switch to it
+# Find most recently updated ALIVE session in that group and switch to it
 if [ "\$TARGET_GID" = "__ungrouped__" ]; then
-  BEST=\$(sqlite3 "\$DB" "SELECT tmux_name FROM sessions WHERE (group_id IS NULL OR group_id='') AND COALESCE(hidden,0)=0 ORDER BY updated_at DESC LIMIT 1;" 2>/dev/null)
+  QUERY_BEST="SELECT tmux_name FROM sessions WHERE (group_id IS NULL OR group_id='') AND COALESCE(hidden,0)=0 ORDER BY updated_at DESC;"
 else
-  BEST=\$(sqlite3 "\$DB" "SELECT tmux_name FROM sessions WHERE group_id='\$TARGET_GID' AND COALESCE(hidden,0)=0 ORDER BY updated_at DESC LIMIT 1;" 2>/dev/null)
+  QUERY_BEST="SELECT tmux_name FROM sessions WHERE group_id='\$TARGET_GID' AND COALESCE(hidden,0)=0 ORDER BY updated_at DESC;"
 fi
+BEST=""
+while read -r CANDIDATE; do
+  [ -z "\$CANDIDATE" ] && continue
+  case "\$ALIVE" in *"|\$CANDIDATE|"*) BEST="\$CANDIDATE"; break ;; esac
+done < <(sqlite3 "\$DB" "\$QUERY_BEST" 2>/dev/null)
 
 if [ -n "\$BEST" ]; then
-  \$TMUX_BIN switch-client -t "\$BEST" 2>/dev/null
+  CLIENT=\$(\$TMUX_BIN list-clients -F '#{client_name}' 2>/dev/null | head -1)
+  if [ -n "\$CLIENT" ]; then
+    \$TMUX_BIN switch-client -c "\$CLIENT" -t "\$BEST" 2>/dev/null
+  fi
 fi
 
-# Rebind Alt+1~9 to sessions in the new group
-SIDX=0
-if [ "\$TARGET_GID" = "__ungrouped__" ]; then
-  QUERY="SELECT tmux_name FROM sessions WHERE (group_id IS NULL OR group_id='') AND COALESCE(hidden,0)=0 ORDER BY updated_at DESC;"
-else
-  QUERY="SELECT tmux_name FROM sessions WHERE group_id='\$TARGET_GID' AND COALESCE(hidden,0)=0 ORDER BY updated_at DESC;"
+# In session mode, rebind Alt+1~9 to sessions in the new group.
+# In pane mode, Alt+numbers stay bound to group switching — skip rebind.
+PANE_MODE=0
+if [ -f "${join(homedir(), '.kitty-kitty', 'config.json')}" ]; then
+  PM=\$(grep -o '"paneMode"[[:space:]]*:[[:space:]]*true' "${join(homedir(), '.kitty-kitty', 'config.json')}" 2>/dev/null)
+  [ -n "\$PM" ] && PANE_MODE=1
 fi
-while read -r SNAME; do
-  [ -z "\$SNAME" ] && continue
-  case "\$ALIVE" in *"|\$SNAME|"*) ;; *) continue ;; esac
-  SIDX=\$((SIDX+1))
-  [ "\$SIDX" -gt 9 ] && break
-  \$TMUX_BIN bind-key -n M-\$SIDX switch-client -t "\$SNAME" 2>/dev/null
-done < <(sqlite3 "\$DB" "\$QUERY" 2>/dev/null)
 
-# Unbind remaining Alt keys
-for I in \$(seq \$((SIDX+1)) 9); do
-  \$TMUX_BIN unbind-key -n M-\$I 2>/dev/null
-done
+if [ "\$PANE_MODE" -eq 0 ]; then
+  SIDX=0
+  if [ "\$TARGET_GID" = "__ungrouped__" ]; then
+    QUERY="SELECT tmux_name FROM sessions WHERE (group_id IS NULL OR group_id='') AND COALESCE(hidden,0)=0 ORDER BY updated_at DESC;"
+  else
+    QUERY="SELECT tmux_name FROM sessions WHERE group_id='\$TARGET_GID' AND COALESCE(hidden,0)=0 ORDER BY updated_at DESC;"
+  fi
+  while read -r SNAME; do
+    [ -z "\$SNAME" ] && continue
+    case "\$ALIVE" in *"|\$SNAME|"*) ;; *) continue ;; esac
+    SIDX=\$((SIDX+1))
+    [ "\$SIDX" -gt 9 ] && break
+    \$TMUX_BIN bind-key -n M-\$SIDX switch-client -t "\$SNAME" 2>/dev/null
+  done < <(sqlite3 "\$DB" "\$QUERY" 2>/dev/null)
+
+  # Unbind remaining Alt keys
+  for I in \$(seq \$((SIDX+1)) 9); do
+    \$TMUX_BIN unbind-key -n M-\$I 2>/dev/null
+  done
+fi
 
 \$TMUX_BIN refresh-client -S 2>/dev/null
 `)

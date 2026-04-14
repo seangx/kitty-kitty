@@ -34,7 +34,7 @@ function ensureScript(): string {
  */
 function isGitRepo(dir: string): boolean {
   try {
-    execSync(`git -C "${dir}" rev-parse --git-dir`, { stdio: 'ignore' })
+    execSync(`git -C '${dir.replace(/'/g, "'\\''")}' rev-parse --git-dir`, { stdio: 'ignore' })
     return true
   } catch {
     return false
@@ -67,7 +67,9 @@ export function injectSessionMcp(
   sessionTitle: string,
   groupId?: string,
   groupName?: string,
-  tool?: string
+  tool?: string,
+  roles?: string,
+  expertise?: string
 ): void {
   if (!cwd) return
   if (injectedSessions.has(sessionId)) return
@@ -76,6 +78,7 @@ export function injectSessionMcp(
     const scriptPath = ensureScript()
     const nodePath = resolveNodePath()
     const configPath = join(cwd, '.mcp.json')
+    const { scriptPath: talkScriptPath, busDir } = ensureRuntimeArtifacts()
 
     let config: any = {}
     try { config = JSON.parse(readFileSync(configPath, 'utf-8')) } catch { /* new file */ }
@@ -90,11 +93,11 @@ export function injectSessionMcp(
         KITTY_TMUX_BIN: TMUX,
         KITTY_PROJECT_ROOT: cwd,
         KITTY_IS_GIT_REPO: isGitRepo(cwd) ? '1' : '0',
+        KITTY_BUS_DIR: busDir,
       }
     }
 
     // kitty-talk (communication)
-    const { scriptPath: talkScriptPath, busDir } = ensureRuntimeArtifacts()
     config.mcpServers['kitty-talk'] = {
       command: nodePath,
       args: [talkScriptPath],
@@ -106,6 +109,9 @@ export function injectSessionMcp(
         KITTY_GROUP_NAME: groupName || '',
         KITTY_TOOL: tool || '',
         KITTY_CWD: cwd,
+        KITTY_TMUX_NAME: tmuxName,
+        KITTY_AGENT_ROLES: roles || '',
+        KITTY_AGENT_EXPERTISE: expertise || '',
       }
     }
 
@@ -129,10 +135,25 @@ export function updateGroupId(sessionId: string, cwd: string, groupId: string, g
       config.mcpServers['kitty-talk'].env.KITTY_GROUP_ID = groupId || ''
       config.mcpServers['kitty-talk'].env.KITTY_GROUP_NAME = groupName || ''
       writeFileSync(configPath, JSON.stringify(config, null, 2))
-      log('session-mcp', `updated groupId=${groupId} for session=${sessionId}`)
     }
   } catch (err) {
-    log('session-mcp', `updateGroupId failed session=${sessionId}:`, err)
+    log('session-mcp', `updateGroupId .mcp.json failed session=${sessionId}:`, err)
+  }
+
+  // Also update agents.json directly so the running MCP process picks it up on next heartbeat
+  try {
+    const { ensureRuntimeArtifacts } = require('./collab-manager')
+    const { busDir } = ensureRuntimeArtifacts()
+    const agentsFile = join(busDir, 'agents.json')
+    const agents = JSON.parse(readFileSync(agentsFile, 'utf-8'))
+    if (agents[sessionId]) {
+      agents[sessionId].groupId = groupId || ''
+      agents[sessionId].groupName = groupName || ''
+      writeFileSync(agentsFile, JSON.stringify(agents, null, 2))
+      log('session-mcp', `updated groupId=${groupId} in agents.json for session=${sessionId}`)
+    }
+  } catch (err) {
+    log('session-mcp', `updateGroupId agents.json failed session=${sessionId}:`, err)
   }
 }
 
@@ -147,9 +168,13 @@ export function removeSessionMcp(sessionId: string, cwd: string): void {
     const config = JSON.parse(readFileSync(configPath, 'utf-8'))
     delete config?.mcpServers?.['kitty-session']
     delete config?.mcpServers?.['kitty-talk']
-    if (!config.mcpServers || Object.keys(config.mcpServers).length === 0) {
+    // Only delete the file if mcpServers is empty AND there's no other top-level config
+    const mcpEmpty = !config.mcpServers || Object.keys(config.mcpServers).length === 0
+    const otherKeys = Object.keys(config).filter(k => k !== 'mcpServers')
+    if (mcpEmpty && otherKeys.length === 0) {
       unlinkSync(configPath)
     } else {
+      if (mcpEmpty) delete config.mcpServers
       writeFileSync(configPath, JSON.stringify(config, null, 2))
     }
   } catch { /* ignore */ }

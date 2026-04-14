@@ -9,8 +9,6 @@ interface Props {
 
 const TOOLS = [
   { id: 'claude', label: '⚡ Claude' },
-  { id: 'codex', label: '🔧 Codex' },
-  { id: 'shell', label: '💻 Shell' }
 ]
 
 // Aether Glass tokens
@@ -70,31 +68,8 @@ export default function InputPopup({ onSubmit, onClose, sessions }: Props) {
       boxShadow: `0 10px 40px rgba(0,0,0,0.5), inset 0 1px 0 ${C.outline}26`,
       fontFamily: "'Plus Jakarta Sans', -apple-system, sans-serif"
     }}>
-      {/* Tool pills (also drag handle) */}
-      <div data-drag-handle style={{ display: 'flex', gap: 4, marginBottom: 8, cursor: 'grab' }}>
-        {TOOLS.map((t) => (
-          <button
-            key={t.id}
-            onClick={() => setTool(t.id)}
-            style={{
-              flex: 1,
-              padding: '5px 6px',
-              borderRadius: 9999,
-              border: 'none',
-              fontSize: 11,
-              cursor: 'pointer',
-              color: tool === t.id ? C.surface : C.textDim,
-              background: tool === t.id
-                ? `linear-gradient(135deg, ${C.primary}, ${C.primaryDim})`
-                : `${C.container}aa`,
-              transition: 'all 0.2s',
-              fontWeight: tool === t.id ? 600 : 400
-            }}
-          >
-            {t.label}
-          </button>
-        ))}
-      </div>
+      {/* Drag handle */}
+      <div data-drag-handle style={{ height: 4, cursor: 'grab' }} />
 
       {/* Input row */}
       <div style={{ display: 'flex', gap: 6 }}>

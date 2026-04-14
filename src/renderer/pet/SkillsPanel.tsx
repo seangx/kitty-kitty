@@ -102,6 +102,26 @@ export default function SkillsPanel({ sessionId, onClose, onSay, onDance }: Prop
     })
   }
 
+  const toggleGroup = async (skills: string[]) => {
+    const allDeployed = skills.every((s) => deployed.has(s))
+    setOperating('__group__')
+    onDance()
+    try {
+      for (const skill of skills) {
+        if (allDeployed) {
+          await ipc.removeSkill(sessionId, skill)
+        } else if (!deployed.has(skill)) {
+          await ipc.addSkill(sessionId, skill)
+        }
+      }
+      onSay(allDeployed ? '已全部移除' : '已全部部署', 3000)
+      await refresh()
+    } catch (err: any) {
+      onSay(err?.message || '批量操作失败', 3000)
+    }
+    setOperating(null)
+  }
+
   // Collect all installed skill names for search result dedup
   const installedNames = new Set<string>()
   for (const cat of categories) {
@@ -191,13 +211,30 @@ export default function SkillsPanel({ sessionId, onClose, onSay, onDance }: Prop
         {/* Skill categories */}
         {!loading && categories.map((cat) => {
           const isCollapsed = collapsed.has(cat.category)
+          const allDeployed = cat.skills.length > 0 && cat.skills.every((s) => deployed.has(s))
+          const noneDeployed = cat.skills.every((s) => !deployed.has(s))
           return (
             <div key={cat.category} style={{ marginBottom: 6 }}>
-              <div
-                onClick={() => toggleCollapse(cat.category)}
-                style={{ fontSize: 14, color: C.primaryDim, cursor: 'pointer', padding: '4px 0', userSelect: 'none' }}
-              >
-                {isCollapsed ? '▸' : '▾'} {cat.category} <span style={{ color: C.textDim }}>({cat.skills.length})</span>
+              <div style={{ display: 'flex', alignItems: 'center', gap: 6, padding: '4px 0' }}>
+                <div
+                  onClick={() => toggleCollapse(cat.category)}
+                  style={{ fontSize: 14, color: C.primaryDim, cursor: 'pointer', userSelect: 'none', flex: 1 }}
+                >
+                  {isCollapsed ? '▸' : '▾'} {cat.category} <span style={{ color: C.textDim }}>({cat.skills.length})</span>
+                </div>
+                {cat.skills.length > 1 && (
+                  <button
+                    onClick={(e) => { e.stopPropagation(); toggleGroup(cat.skills) }}
+                    disabled={operating === '__group__'}
+                    style={{
+                      padding: '2px 8px', borderRadius: 6, border: `1px solid ${C.outline}44`,
+                      background: allDeployed ? `${C.red}22` : `${C.green}22`,
+                      color: allDeployed ? C.red : C.green,
+                      fontSize: 11, cursor: 'pointer', fontFamily: 'inherit', flexShrink: 0,
+                      opacity: operating === '__group__' ? 0.5 : 1,
+                    }}
+                  >{operating === '__group__' ? '...' : allDeployed ? '全部移除' : noneDeployed ? '全部部署' : '补全部署'}</button>
+                )}
               </div>
               {!isCollapsed && cat.skills.map((skill) => (
                 <SkillRow
@@ -216,13 +253,28 @@ export default function SkillsPanel({ sessionId, onClose, onSay, onDance }: Prop
         {!loading && groups.map((g) => {
           const key = `group:${g.name}`
           const isCollapsed = collapsed.has(key)
+          const allDeployed = g.skills.length > 0 && g.skills.every((s) => deployed.has(s))
+          const noneDeployed = g.skills.every((s) => !deployed.has(s))
           return (
             <div key={key} style={{ marginBottom: 6 }}>
-              <div
-                onClick={() => toggleCollapse(key)}
-                style={{ fontSize: 14, color: '#d97706', cursor: 'pointer', padding: '4px 0', userSelect: 'none' }}
-              >
-                {isCollapsed ? '▸' : '▾'} {g.name} <span style={{ color: C.textDim }}>(group · {g.skills.length})</span>
+              <div style={{ display: 'flex', alignItems: 'center', gap: 6, padding: '4px 0' }}>
+                <div
+                  onClick={() => toggleCollapse(key)}
+                  style={{ fontSize: 14, color: '#d97706', cursor: 'pointer', userSelect: 'none', flex: 1 }}
+                >
+                  {isCollapsed ? '▸' : '▾'} {g.name} <span style={{ color: C.textDim }}>(group · {g.skills.length})</span>
+                </div>
+                <button
+                  onClick={(e) => { e.stopPropagation(); toggleGroup(g.skills) }}
+                  disabled={operating === '__group__'}
+                  style={{
+                    padding: '2px 8px', borderRadius: 6, border: `1px solid ${C.outline}44`,
+                    background: allDeployed ? `${C.red}22` : `${C.green}22`,
+                    color: allDeployed ? C.red : C.green,
+                    fontSize: 11, cursor: 'pointer', fontFamily: 'inherit', flexShrink: 0,
+                    opacity: operating === '__group__' ? 0.5 : 1,
+                  }}
+                >{operating === '__group__' ? '...' : allDeployed ? '全部移除' : noneDeployed ? '全部部署' : '补全部署'}</button>
               </div>
               {!isCollapsed && g.skills.map((skill) => (
                 <SkillRow

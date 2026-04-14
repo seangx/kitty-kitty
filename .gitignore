@@ -5,3 +5,8 @@ dist/
 *.db-wal
 *.db-shm
 .env
+.worktrees/
+.claude/
+.agents/
+.mcp.json
+openspec/

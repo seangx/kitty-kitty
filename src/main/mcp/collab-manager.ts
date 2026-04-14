@@ -13,6 +13,7 @@ import { join, dirname } from 'path'
 import { tmpdir, homedir } from 'os'
 import { execSync, spawnSync, spawn, type ChildProcess } from 'child_process'
 import { BrowserWindow } from 'electron'
+import { getUserToolArgs } from '../tmux/cli-wrapper'
 import { IPC } from '@shared/types/ipc'
 import { MCP_SERVER_SCRIPT } from './server-script'
 import { InboxWatcher } from './inbox-watcher'
@@ -506,15 +507,17 @@ function restartAgent(tmuxName: string, tool: string, sessionEnv?: Record<string
 }
 
 function buildRestartCommand(tool: string, sessionEnv?: Record<string, string>): string {
+  // Read user-configured default args from ~/.kitty-kitty/config.json
+  const userArgs = getUserToolArgs(tool)
+  const extra = userArgs ? ` ${userArgs}` : ''
+
   if (tool === 'codex') {
-    // Do not use "--last" because it is global and can fork/resume unrelated
-    // sessions from other terminals. Always launch a fresh Codex runtime.
-    return buildAgentCommand('codex --yolo', sessionEnv)
+    return buildAgentCommand(`codex --yolo${extra}`, sessionEnv)
   }
   if (tool === 'claude') {
-    return buildAgentCommand('claude -c', sessionEnv)
+    return buildAgentCommand(`claude${extra} -c || claude${extra}`, sessionEnv)
   }
-  return buildAgentCommand(tool, sessionEnv)
+  return buildAgentCommand(`${tool}${extra}`, sessionEnv)
 }
 
 function waitForPaneShell(tmuxTarget: string, timeoutMs: number): void {

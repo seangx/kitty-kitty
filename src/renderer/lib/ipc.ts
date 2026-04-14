@@ -28,6 +28,9 @@ export const killSession = (id: string) =>
 export const syncSessions = () =>
   api().invoke(IPC.SESSION_SYNC) as Promise<SessionInfo[]>
 
+export const setAgentMetadata = (id: string, roles: string, expertise: string) =>
+  api().invoke('session:set-agent-metadata', id, roles, expertise) as Promise<{ success: boolean }>
+
 // Pet
 export const getPetState = () =>
   api().invoke(IPC.PET_STATE_GET) as Promise<PetState>

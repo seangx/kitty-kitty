@@ -1,0 +1,1964 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Kitty Hive — 架构设计文档</title>
+<link href="https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet">
+<style>
+/* ═══════════════════════════════════════════════
+   AETHER GLASS THEME — Kitty Hive Architecture
+   ═══════════════════════════════════════════════ */
+
+:root {
+  --bg-deep: #0c0c1f;
+  --bg-mid: #17172f;
+  --bg-card: #23233f;
+  --accent: #a7a5ff;
+  --accent-bright: #645efb;
+  --text-primary: #e5e3ff;
+  --text-dim: #aaa8c3;
+  --outline: #46465c;
+  --success: #5ae6a0;
+  --warning: #ffc857;
+  --danger: #ff6b6b;
+  --info: #57c7ff;
+  --glass-bg: rgba(35, 35, 63, 0.55);
+  --glass-border: rgba(167, 165, 255, 0.12);
+  --glass-blur: 18px;
+}
+
+*, *::before, *::after { margin: 0; padding: 0; box-sizing: border-box; }
+
+html {
+  scroll-behavior: smooth;
+  scrollbar-width: thin;
+  scrollbar-color: var(--accent-bright) var(--bg-deep);
+}
+
+::-webkit-scrollbar { width: 6px; }
+::-webkit-scrollbar-track { background: var(--bg-deep); }
+::-webkit-scrollbar-thumb { background: var(--accent-bright); border-radius: 3px; }
+
+body {
+  font-family: 'Plus Jakarta Sans', -apple-system, sans-serif;
+  background: var(--bg-deep);
+  color: var(--text-primary);
+  line-height: 1.7;
+  min-height: 100vh;
+}
+
+/* ── Background gradient mesh ── */
+body::before {
+  content: '';
+  position: fixed;
+  inset: 0;
+  background:
+    radial-gradient(ellipse 600px 400px at 20% 10%, rgba(100, 94, 251, 0.08), transparent),
+    radial-gradient(ellipse 500px 500px at 80% 30%, rgba(167, 165, 255, 0.06), transparent),
+    radial-gradient(ellipse 700px 300px at 50% 80%, rgba(90, 230, 160, 0.04), transparent);
+  pointer-events: none;
+  z-index: 0;
+}
+
+/* ── Navigation ── */
+nav {
+  position: fixed;
+  top: 0;
+  left: 0;
+  right: 0;
+  z-index: 100;
+  background: rgba(12, 12, 31, 0.85);
+  backdrop-filter: blur(24px);
+  -webkit-backdrop-filter: blur(24px);
+  border-bottom: 1px solid var(--glass-border);
+  padding: 0 2rem;
+  height: 56px;
+  display: flex;
+  align-items: center;
+  gap: 1.5rem;
+  overflow-x: auto;
+  white-space: nowrap;
+}
+
+nav::-webkit-scrollbar { height: 0; }
+
+nav .logo {
+  font-weight: 800;
+  font-size: 1.05rem;
+  color: var(--accent);
+  letter-spacing: -0.02em;
+  flex-shrink: 0;
+  margin-right: 1rem;
+}
+
+nav a {
+  color: var(--text-dim);
+  text-decoration: none;
+  font-size: 0.8rem;
+  font-weight: 500;
+  padding: 0.35rem 0.65rem;
+  border-radius: 6px;
+  transition: all 0.2s;
+  flex-shrink: 0;
+}
+
+nav a:hover, nav a.active {
+  color: var(--accent);
+  background: rgba(167, 165, 255, 0.1);
+}
+
+/* ── Main layout ── */
+main {
+  position: relative;
+  z-index: 1;
+  max-width: 1040px;
+  margin: 0 auto;
+  padding: 80px 2rem 6rem;
+}
+
+/* ── Section ── */
+section {
+  margin-bottom: 5rem;
+}
+
+section[id] {
+  scroll-margin-top: 70px;
+}
+
+.fade-in {
+  opacity: 0;
+  transform: translateY(20px);
+  transition: opacity 0.5s ease, transform 0.5s ease;
+}
+
+.fade-in.visible {
+  opacity: 1;
+  transform: translateY(0);
+}
+
+.section-num {
+  display: inline-block;
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 0.75rem;
+  font-weight: 600;
+  color: var(--accent-bright);
+  background: rgba(100, 94, 251, 0.15);
+  padding: 0.2rem 0.6rem;
+  border-radius: 4px;
+  margin-bottom: 0.6rem;
+}
+
+h2 {
+  font-size: 1.75rem;
+  font-weight: 800;
+  letter-spacing: -0.03em;
+  margin-bottom: 1rem;
+  color: var(--text-primary);
+}
+
+h3 {
+  font-size: 1.15rem;
+  font-weight: 700;
+  margin: 1.5rem 0 0.75rem;
+  color: var(--accent);
+}
+
+p, li {
+  color: var(--text-dim);
+  font-size: 0.95rem;
+  line-height: 1.8;
+}
+
+p { margin-bottom: 1rem; }
+
+ul { padding-left: 1.4rem; margin-bottom: 1rem; }
+li { margin-bottom: 0.3rem; }
+
+/* ── Cards ── */
+.card {
+  background: var(--glass-bg);
+  backdrop-filter: blur(var(--glass-blur));
+  -webkit-backdrop-filter: blur(var(--glass-blur));
+  border: 1px solid var(--glass-border);
+  border-radius: 16px;
+  padding: 1.5rem;
+  margin-bottom: 1.25rem;
+  transition: border-color 0.3s, box-shadow 0.3s;
+}
+
+.card:hover {
+  border-color: rgba(167, 165, 255, 0.25);
+  box-shadow: 0 4px 30px rgba(100, 94, 251, 0.08);
+}
+
+.card-title {
+  font-weight: 700;
+  font-size: 1.05rem;
+  color: var(--text-primary);
+  margin-bottom: 0.5rem;
+}
+
+.card-subtitle {
+  font-size: 0.8rem;
+  color: var(--accent);
+  font-family: 'JetBrains Mono', monospace;
+  margin-bottom: 0.75rem;
+}
+
+/* ── Code blocks ── */
+pre, code {
+  font-family: 'JetBrains Mono', monospace;
+}
+
+code {
+  font-size: 0.85em;
+  color: var(--accent);
+  background: rgba(100, 94, 251, 0.1);
+  padding: 0.15em 0.4em;
+  border-radius: 4px;
+}
+
+pre {
+  background: rgba(12, 12, 31, 0.7);
+  border: 1px solid var(--outline);
+  border-radius: 12px;
+  padding: 1.25rem 1.5rem;
+  overflow-x: auto;
+  margin-bottom: 1.25rem;
+  font-size: 0.82rem;
+  line-height: 1.7;
+}
+
+pre code {
+  background: none;
+  padding: 0;
+  color: var(--text-dim);
+}
+
+/* Syntax coloring */
+.kw { color: #c792ea; }
+.ty { color: #82aaff; }
+.str { color: #c3e88d; }
+.cm { color: #5c6370; font-style: italic; }
+.fn { color: #ffc857; }
+.op { color: #89ddff; }
+.num { color: #f78c6c; }
+
+/* ── Diagrams ── */
+.diagram {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: center;
+  gap: 0.75rem;
+  padding: 2rem 1rem;
+  margin: 1.5rem 0;
+  border-radius: 16px;
+  background: rgba(12, 12, 31, 0.5);
+  border: 1px solid var(--outline);
+  overflow-x: auto;
+}
+
+.diagram-vertical {
+  flex-direction: column;
+}
+
+.d-box {
+  padding: 0.65rem 1.1rem;
+  border-radius: 10px;
+  font-size: 0.82rem;
+  font-weight: 600;
+  text-align: center;
+  white-space: nowrap;
+  border: 1px solid var(--outline);
+  background: var(--bg-card);
+  min-width: 80px;
+  transition: transform 0.2s;
+}
+
+.d-box:hover { transform: scale(1.04); }
+
+.d-box.accent {
+  border-color: var(--accent-bright);
+  background: rgba(100, 94, 251, 0.15);
+  color: var(--accent);
+}
+
+.d-box.success {
+  border-color: var(--success);
+  background: rgba(90, 230, 160, 0.1);
+  color: var(--success);
+}
+
+.d-box.warning {
+  border-color: var(--warning);
+  background: rgba(255, 200, 87, 0.1);
+  color: var(--warning);
+}
+
+.d-box.danger {
+  border-color: var(--danger);
+  background: rgba(255, 107, 107, 0.1);
+  color: var(--danger);
+}
+
+.d-box.info {
+  border-color: var(--info);
+  background: rgba(87, 199, 255, 0.1);
+  color: var(--info);
+}
+
+.d-box.dim {
+  border-color: var(--outline);
+  background: rgba(23, 23, 47, 0.6);
+  color: var(--text-dim);
+}
+
+.d-arrow {
+  color: var(--text-dim);
+  font-size: 1.2rem;
+  flex-shrink: 0;
+}
+
+.d-arrow-down {
+  color: var(--text-dim);
+  font-size: 1.1rem;
+}
+
+.d-label {
+  font-size: 0.7rem;
+  color: var(--text-dim);
+  font-family: 'JetBrains Mono', monospace;
+  text-align: center;
+}
+
+/* ── Schema cards ── */
+.schema-card {
+  background: var(--glass-bg);
+  backdrop-filter: blur(var(--glass-blur));
+  -webkit-backdrop-filter: blur(var(--glass-blur));
+  border: 1px solid var(--glass-border);
+  border-radius: 16px;
+  padding: 1.25rem 1.5rem;
+  margin-bottom: 1rem;
+  transition: border-color 0.3s;
+}
+
+.schema-card:hover {
+  border-color: rgba(167, 165, 255, 0.3);
+}
+
+.schema-name {
+  font-family: 'JetBrains Mono', monospace;
+  font-weight: 700;
+  font-size: 1rem;
+  color: var(--accent);
+  margin-bottom: 0.75rem;
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+}
+
+.schema-name .badge {
+  font-size: 0.65rem;
+  font-weight: 500;
+  padding: 0.15rem 0.5rem;
+  border-radius: 4px;
+  background: rgba(100, 94, 251, 0.2);
+  color: var(--accent-bright);
+}
+
+.schema-fields {
+  display: grid;
+  gap: 0.35rem;
+}
+
+.schema-field {
+  display: flex;
+  align-items: baseline;
+  gap: 0.75rem;
+  font-size: 0.82rem;
+  padding: 0.25rem 0;
+  border-bottom: 1px solid rgba(70, 70, 92, 0.3);
+}
+
+.schema-field:last-child { border-bottom: none; }
+
+.field-name {
+  font-family: 'JetBrains Mono', monospace;
+  color: var(--text-primary);
+  font-weight: 500;
+  min-width: 140px;
+  flex-shrink: 0;
+}
+
+.field-type {
+  font-family: 'JetBrains Mono', monospace;
+  color: #82aaff;
+  font-size: 0.78rem;
+  min-width: 100px;
+  flex-shrink: 0;
+}
+
+.field-note {
+  color: var(--text-dim);
+  font-size: 0.78rem;
+}
+
+.field-pk { color: var(--warning); }
+.field-fk { color: var(--info); }
+.field-enum { color: #c792ea; }
+
+/* ── State machine ── */
+.state-machine {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 0.5rem;
+  padding: 2rem;
+  margin: 1.5rem 0;
+  border-radius: 16px;
+  background: rgba(12, 12, 31, 0.5);
+  border: 1px solid var(--outline);
+}
+
+.state-row {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  flex-wrap: wrap;
+  justify-content: center;
+}
+
+.state-node {
+  padding: 0.5rem 1rem;
+  border-radius: 10px;
+  font-size: 0.82rem;
+  font-weight: 600;
+  text-align: center;
+  border: 2px solid;
+  min-width: 90px;
+}
+
+.state-node.initial {
+  border-color: var(--info);
+  background: rgba(87, 199, 255, 0.1);
+  color: var(--info);
+}
+
+.state-node.active {
+  border-color: var(--accent-bright);
+  background: rgba(100, 94, 251, 0.15);
+  color: var(--accent);
+  animation: subtlePulse 3s ease-in-out infinite;
+}
+
+.state-node.paused {
+  border-color: var(--warning);
+  background: rgba(255, 200, 87, 0.1);
+  color: var(--warning);
+}
+
+.state-node.terminal-success {
+  border-color: var(--success);
+  background: rgba(90, 230, 160, 0.1);
+  color: var(--success);
+}
+
+.state-node.terminal-fail {
+  border-color: var(--danger);
+  background: rgba(255, 107, 107, 0.1);
+  color: var(--danger);
+}
+
+.state-edge {
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 0.7rem;
+  color: var(--text-dim);
+  display: flex;
+  align-items: center;
+  gap: 0.3rem;
+}
+
+@keyframes subtlePulse {
+  0%, 100% { box-shadow: 0 0 0 0 rgba(100, 94, 251, 0); }
+  50% { box-shadow: 0 0 12px 2px rgba(100, 94, 251, 0.2); }
+}
+
+/* ── Layer stack ── */
+.layer-stack {
+  display: flex;
+  flex-direction: column;
+  gap: 0;
+  margin: 1.5rem 0;
+  border-radius: 14px;
+  overflow: hidden;
+  border: 1px solid var(--outline);
+}
+
+.layer {
+  display: flex;
+  align-items: center;
+  padding: 1rem 1.25rem;
+  border-bottom: 1px solid var(--outline);
+  gap: 1rem;
+  transition: background 0.2s;
+}
+
+.layer:last-child { border-bottom: none; }
+.layer:hover { background: rgba(167, 165, 255, 0.04); }
+
+.layer-num {
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 0.75rem;
+  font-weight: 700;
+  color: var(--accent-bright);
+  min-width: 24px;
+}
+
+.layer-name {
+  font-weight: 700;
+  color: var(--text-primary);
+  min-width: 200px;
+  font-size: 0.9rem;
+}
+
+.layer-desc {
+  color: var(--text-dim);
+  font-size: 0.85rem;
+}
+
+/* ── Timeline ── */
+.timeline {
+  position: relative;
+  padding-left: 2rem;
+  margin: 1.5rem 0;
+}
+
+.timeline::before {
+  content: '';
+  position: absolute;
+  left: 7px;
+  top: 0;
+  bottom: 0;
+  width: 2px;
+  background: linear-gradient(180deg, var(--accent-bright), var(--accent), rgba(167, 165, 255, 0.2));
+  border-radius: 1px;
+}
+
+.timeline-item {
+  position: relative;
+  margin-bottom: 2rem;
+  padding: 1.25rem 1.5rem;
+  background: var(--glass-bg);
+  backdrop-filter: blur(var(--glass-blur));
+  border: 1px solid var(--glass-border);
+  border-radius: 14px;
+  transition: border-color 0.3s;
+}
+
+.timeline-item:hover {
+  border-color: rgba(167, 165, 255, 0.25);
+}
+
+.timeline-item::before {
+  content: '';
+  position: absolute;
+  left: -2rem;
+  top: 1.5rem;
+  width: 12px;
+  height: 12px;
+  border-radius: 50%;
+  background: var(--accent-bright);
+  border: 2px solid var(--bg-deep);
+  transform: translateX(2px);
+}
+
+.timeline-phase {
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 0.75rem;
+  color: var(--accent-bright);
+  font-weight: 600;
+  margin-bottom: 0.3rem;
+}
+
+.timeline-title {
+  font-size: 1.05rem;
+  font-weight: 700;
+  color: var(--text-primary);
+  margin-bottom: 0.5rem;
+}
+
+/* ── Comparison table ── */
+.cmp-table-wrap {
+  overflow-x: auto;
+  margin: 1.5rem 0;
+  border-radius: 14px;
+  border: 1px solid var(--outline);
+}
+
+.cmp-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 0.82rem;
+  min-width: 700px;
+}
+
+.cmp-table thead {
+  background: rgba(100, 94, 251, 0.12);
+}
+
+.cmp-table th {
+  padding: 0.75rem 0.8rem;
+  font-weight: 700;
+  color: var(--accent);
+  text-align: left;
+  border-bottom: 1px solid var(--outline);
+  white-space: nowrap;
+}
+
+.cmp-table td {
+  padding: 0.65rem 0.8rem;
+  color: var(--text-dim);
+  border-bottom: 1px solid rgba(70, 70, 92, 0.3);
+  vertical-align: top;
+}
+
+.cmp-table tr:last-child td { border-bottom: none; }
+
+.cmp-table tbody tr:hover {
+  background: rgba(167, 165, 255, 0.04);
+}
+
+.cmp-table .highlight {
+  color: var(--accent);
+  font-weight: 600;
+}
+
+.cmp-table .yes { color: var(--success); }
+.cmp-table .no { color: var(--text-dim); opacity: 0.5; }
+
+/* ── Flow diagram ── */
+.flow {
+  display: grid;
+  gap: 0.5rem;
+  margin: 1.5rem 0;
+  padding: 2rem;
+  border-radius: 16px;
+  background: rgba(12, 12, 31, 0.5);
+  border: 1px solid var(--outline);
+}
+
+.flow-row {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  flex-wrap: wrap;
+}
+
+.flow-step {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  padding: 0.45rem 0.85rem;
+  border-radius: 8px;
+  font-size: 0.8rem;
+  font-weight: 600;
+  border: 1px solid var(--outline);
+  background: var(--bg-card);
+  color: var(--text-primary);
+}
+
+.flow-step-num {
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 0.7rem;
+  font-weight: 700;
+  color: var(--accent-bright);
+  background: rgba(100, 94, 251, 0.2);
+  width: 20px;
+  height: 20px;
+  border-radius: 50%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+}
+
+/* ── Tool category ── */
+.tool-category {
+  margin-bottom: 1.5rem;
+}
+
+.tool-category-title {
+  font-size: 0.9rem;
+  font-weight: 700;
+  color: var(--accent);
+  margin-bottom: 0.75rem;
+  padding-bottom: 0.4rem;
+  border-bottom: 1px solid rgba(167, 165, 255, 0.15);
+}
+
+/* ── Grid helpers ── */
+.grid-2 {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 1rem;
+}
+
+.grid-3 {
+  display: grid;
+  grid-template-columns: 1fr 1fr 1fr;
+  gap: 1rem;
+}
+
+/* ── Pill badges ── */
+.pill {
+  display: inline-block;
+  font-size: 0.7rem;
+  font-weight: 600;
+  padding: 0.15rem 0.5rem;
+  border-radius: 20px;
+  margin-right: 0.3rem;
+  margin-bottom: 0.3rem;
+}
+
+.pill-accent { background: rgba(100, 94, 251, 0.2); color: var(--accent); }
+.pill-success { background: rgba(90, 230, 160, 0.15); color: var(--success); }
+.pill-warning { background: rgba(255, 200, 87, 0.15); color: var(--warning); }
+.pill-danger { background: rgba(255, 107, 107, 0.15); color: var(--danger); }
+.pill-info { background: rgba(87, 199, 255, 0.15); color: var(--info); }
+
+/* ── Hero ── */
+.hero {
+  text-align: center;
+  padding: 3rem 0 2rem;
+  margin-bottom: 2rem;
+}
+
+.hero h1 {
+  font-size: 2.8rem;
+  font-weight: 800;
+  letter-spacing: -0.04em;
+  background: linear-gradient(135deg, var(--accent), var(--accent-bright), var(--success));
+  -webkit-background-clip: text;
+  -webkit-text-fill-color: transparent;
+  background-clip: text;
+  margin-bottom: 0.75rem;
+}
+
+.hero .subtitle {
+  font-size: 1.1rem;
+  color: var(--text-dim);
+  font-weight: 500;
+}
+
+.hero .version {
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 0.75rem;
+  color: var(--accent-bright);
+  margin-top: 0.5rem;
+}
+
+/* ── Separator ── */
+.sep {
+  height: 1px;
+  background: linear-gradient(90deg, transparent, var(--outline), transparent);
+  margin: 3rem 0;
+}
+
+/* ── Package tree ── */
+.pkg-tree {
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 0.82rem;
+  line-height: 1.8;
+  color: var(--text-dim);
+  padding: 1.5rem;
+  background: rgba(12, 12, 31, 0.7);
+  border: 1px solid var(--outline);
+  border-radius: 12px;
+}
+
+.pkg-tree .dir { color: var(--accent); font-weight: 600; }
+.pkg-tree .file { color: var(--text-dim); }
+.pkg-tree .cmt { color: #5c6370; font-style: italic; }
+
+/* ── Responsive ── */
+@media (max-width: 768px) {
+  .grid-2, .grid-3 { grid-template-columns: 1fr; }
+  nav { gap: 0.5rem; padding: 0 1rem; }
+  main { padding: 70px 1rem 4rem; }
+  .schema-field { flex-direction: column; gap: 0.2rem; }
+  .field-name, .field-type { min-width: unset; }
+  .layer { flex-direction: column; align-items: flex-start; }
+  .layer-name { min-width: unset; }
+  .hero h1 { font-size: 2rem; }
+}
+</style>
+</head>
+<body>
+
+<!-- ════════════════ NAV ════════════════ -->
+<nav id="nav">
+  <span class="logo">Kitty Hive</span>
+  <a href="#positioning">定位</a>
+  <a href="#concepts">概念</a>
+  <a href="#schema">数据模型</a>
+  <a href="#task-fsm">状态机</a>
+  <a href="#retrieval">消息检索</a>
+  <a href="#file-lease">File Lease</a>
+  <a href="#tools">工具层</a>
+  <a href="#federation">联邦架构</a>
+  <a href="#sqlite">SQLite</a>
+  <a href="#matchmaking">撮合</a>
+  <a href="#comparison">竞品对比</a>
+  <a href="#protocol">协议栈</a>
+  <a href="#roadmap">路线图</a>
+  <a href="#packages">包结构</a>
+</nav>
+
+<main>
+
+<!-- ════════════════ HERO ════════════════ -->
+<div class="hero">
+  <h1>Kitty Hive</h1>
+  <p class="subtitle">多 Agent 协作的 Room-first 基础设施</p>
+  <p class="version">Architecture Spec v2.0 &mdash; 2026-04-10</p>
+</div>
+
+<div class="sep"></div>
+
+<!-- ════════════════ 01 项目定位 ════════════════ -->
+<section id="positioning" class="fade-in">
+  <span class="section-num">01</span>
+  <h2>项目定位</h2>
+
+  <div class="grid-2">
+    <div class="card">
+      <div class="card-subtitle">独立 MCP 服务</div>
+      <div class="card-title">kitty-hive</div>
+      <p>Agent 间协作的基础设施层。提供 Room、Event、Task、File Lease 等原语，通过 MCP stdio 协议暴露工具。独立 npm 包，任何 MCP 客户端均可接入。</p>
+      <span class="pill pill-accent">npm 包</span>
+      <span class="pill pill-accent">MCP Server</span>
+      <span class="pill pill-accent">SQLite</span>
+    </div>
+    <div class="card">
+      <div class="card-subtitle">桌面宠物 + 编排</div>
+      <div class="card-title">kitty-kitty</div>
+      <p>Electron 桌面宠物 + tmux 会话编排。作为可选 UI 层，直接读取 hive.db 展示协作状态，提供可视化面板和会话管理。</p>
+      <span class="pill pill-info">Electron</span>
+      <span class="pill pill-info">tmux</span>
+      <span class="pill pill-info">可选层</span>
+    </div>
+  </div>
+
+  <h3>分离架构</h3>
+  <div class="diagram">
+    <div class="d-box">Agent A</div>
+    <div class="d-box">Agent B</div>
+    <div class="d-box">Agent C</div>
+    <div class="d-arrow">&rarr;</div>
+    <div class="d-box accent" style="font-size:0.9rem;">MCP (stdio)</div>
+    <div class="d-arrow">&rarr;</div>
+    <div class="d-box success" style="min-width:130px;">kitty-hive<br><span style="font-size:0.7rem;opacity:0.7">Room + Event + Task</span></div>
+    <div class="d-arrow">&harr;</div>
+    <div class="d-box warning" style="min-width:100px;">SQLite<br><span style="font-size:0.7rem;opacity:0.7">hive.db</span></div>
+    <div class="d-arrow">&larr;</div>
+    <div class="d-box info" style="min-width:120px;">kitty-kitty<br><span style="font-size:0.7rem;opacity:0.7">UI 读取 DB</span></div>
+  </div>
+  <p>关键设计：<code>kitty-hive</code> 是纯后端服务，不依赖 Electron。<code>kitty-kitty</code> 通过直接读取 SQLite 获取状态，实现 UI 与协作逻辑的完全解耦。</p>
+</section>
+
+<!-- ════════════════ 02 核心概念 ════════════════ -->
+<section id="concepts" class="fade-in">
+  <span class="section-num">02</span>
+  <h2>核心概念</h2>
+
+  <div class="card">
+    <div class="card-title">Room 是一等公民</div>
+    <p>灵感来自游戏大厅的 Room 模型和 Matrix 协议。每个协作场景对应一个 Room，Room 是所有交互的容器。不存在脱离 Room 的消息或任务。</p>
+  </div>
+
+  <h3>Room 包含的元素</h3>
+  <div class="diagram">
+    <div class="d-box accent" style="min-width:80px;">Messages<br><span style="font-size:0.65rem;opacity:0.7">对话消息</span></div>
+    <div class="d-box success" style="min-width:80px;">Tasks<br><span style="font-size:0.65rem;opacity:0.7">结构化任务</span></div>
+    <div class="d-box warning" style="min-width:80px;">Artifacts<br><span style="font-size:0.65rem;opacity:0.7">产出物</span></div>
+    <div class="d-box info" style="min-width:80px;">File Leases<br><span style="font-size:0.65rem;opacity:0.7">文件租约</span></div>
+    <div class="d-box dim" style="min-width:80px;">Summaries<br><span style="font-size:0.65rem;opacity:0.7">压缩摘要</span></div>
+  </div>
+
+  <h3>Room 类型</h3>
+  <div class="grid-3">
+    <div class="card">
+      <div class="card-subtitle">dm</div>
+      <div class="card-title">私聊</div>
+      <p>两个 Agent 间的 1:1 通道</p>
+    </div>
+    <div class="card">
+      <div class="card-subtitle">team</div>
+      <div class="card-title">团队频道</div>
+      <p>持久化的团队协作空间</p>
+    </div>
+    <div class="card">
+      <div class="card-subtitle">task</div>
+      <div class="card-title">任务房间</div>
+      <p>围绕一个具体任务的短生命周期房间</p>
+    </div>
+    <div class="card">
+      <div class="card-subtitle">project</div>
+      <div class="card-title">项目房间</div>
+      <p>长期项目空间，可包含子 Room</p>
+    </div>
+    <div class="card">
+      <div class="card-subtitle">lobby</div>
+      <div class="card-title">大厅</div>
+      <p>默认全局空间，所有 Agent 自动加入</p>
+    </div>
+    <div class="card" style="border-color:rgba(167,165,255,0.2);">
+      <div class="card-subtitle" style="color:var(--text-dim);">设计原则</div>
+      <div class="card-title">Append-only Timeline</div>
+      <p>一切都是 Room 时间线上的 Event。不可变、可追溯、可压缩。</p>
+    </div>
+  </div>
+</section>
+
+<!-- ════════════════ 03 数据模型 ════════════════ -->
+<section id="schema" class="fade-in">
+  <span class="section-num">03</span>
+  <h2>数据模型</h2>
+  <p>5 张核心表 + 1 张 FTS5 虚拟表，覆盖所有协作语义。</p>
+
+  <!-- rooms -->
+  <div class="schema-card">
+    <div class="schema-name">rooms <span class="badge">核心表</span></div>
+    <div class="schema-fields">
+      <div class="schema-field">
+        <span class="field-name field-pk">id</span>
+        <span class="field-type">ULID</span>
+        <span class="field-note">主键，时间有序</span>
+      </div>
+      <div class="schema-field">
+        <span class="field-name">url</span>
+        <span class="field-type">TEXT UNIQUE</span>
+        <span class="field-note">寻址用，如 <code>hive://node/rooms/myroom</code></span>
+      </div>
+      <div class="schema-field">
+        <span class="field-name">name</span>
+        <span class="field-type">TEXT</span>
+        <span class="field-note">人类可读名称</span>
+      </div>
+      <div class="schema-field">
+        <span class="field-name field-enum">kind</span>
+        <span class="field-type">ENUM</span>
+        <span class="field-note"><code>dm</code> | <code>team</code> | <code>task</code> | <code>project</code> | <code>lobby</code></span>
+      </div>
+      <div class="schema-field">
+        <span class="field-name field-enum">visibility</span>
+        <span class="field-type">ENUM</span>
+        <span class="field-note"><code>private</code> | <code>invite</code> | <code>public</code></span>
+      </div>
+      <div class="schema-field">
+        <span class="field-name field-fk">host_agent_id</span>
+        <span class="field-type">TEXT &rarr; agents</span>
+        <span class="field-note">房主 Agent</span>
+      </div>
+      <div class="schema-field">
+        <span class="field-name field-fk">parent_room_id</span>
+        <span class="field-type">TEXT &rarr; rooms</span>
+        <span class="field-note">父房间（子任务嵌套）</span>
+      </div>
+      <div class="schema-field">
+        <span class="field-name">metadata_json</span>
+        <span class="field-type">JSON</span>
+        <span class="field-note">扩展元数据</span>
+      </div>
+      <div class="schema-field">
+        <span class="field-name">created_at</span>
+        <span class="field-type">DATETIME</span>
+        <span class="field-note">创建时间</span>
+      </div>
+      <div class="schema-field">
+        <span class="field-name">closed_at</span>
+        <span class="field-type">DATETIME</span>
+        <span class="field-note">关闭时间（NULL = 活跃）</span>
+      </div>
+    </div>
+  </div>
+
+  <!-- room_members -->
+  <div class="schema-card">
+    <div class="schema-name">room_members <span class="badge">成员关系</span></div>
+    <div class="schema-fields">
+      <div class="schema-field">
+        <span class="field-name field-fk">room_id</span>
+        <span class="field-type">TEXT &rarr; rooms</span>
+        <span class="field-note">所属房间</span>
+      </div>
+      <div class="schema-field">
+        <span class="field-name field-fk">agent_id</span>
+        <span class="field-type">TEXT &rarr; agents</span>
+        <span class="field-note">成员 Agent</span>
+      </div>
+      <div class="schema-field">
+        <span class="field-name field-enum">role</span>
+        <span class="field-type">ENUM</span>
+        <span class="field-note"><code>host</code> | <code>member</code> | <code>observer</code></span>
+      </div>
+      <div class="schema-field">
+        <span class="field-name">joined_at</span>
+        <span class="field-type">DATETIME</span>
+        <span class="field-note">加入时间</span>
+      </div>
+      <div class="schema-field">
+        <span class="field-name">left_at</span>
+        <span class="field-type">DATETIME</span>
+        <span class="field-note">离开时间（NULL = 在线）</span>
+      </div>
+    </div>
+  </div>
+
+  <!-- room_events -->
+  <div class="schema-card">
+    <div class="schema-name">room_events <span class="badge">事件流</span></div>
+    <div class="schema-fields">
+      <div class="schema-field">
+        <span class="field-name field-pk">id</span>
+        <span class="field-type">INTEGER AUTO</span>
+        <span class="field-note">全局自增 ID</span>
+      </div>
+      <div class="schema-field">
+        <span class="field-name field-fk">room_id</span>
+        <span class="field-type">TEXT &rarr; rooms</span>
+        <span class="field-note">所属房间</span>
+      </div>
+      <div class="schema-field">
+        <span class="field-name">seq</span>
+        <span class="field-type">INTEGER</span>
+        <span class="field-note">房间内序号（per-room 递增）</span>
+      </div>
+      <div class="schema-field">
+        <span class="field-name field-enum">type</span>
+        <span class="field-type">ENUM</span>
+        <span class="field-note" style="font-size:0.72rem;">
+          <code>join</code> <code>leave</code> <code>message</code>
+          <code>task-start</code> <code>task-update</code> <code>task-complete</code>
+          <code>task-fail</code> <code>task-cancel</code>
+          <code>artifact</code> <code>summary</code>
+          <code>file-lease</code> <code>file-release</code>
+          <code>state-change</code>
+        </span>
+      </div>
+      <div class="schema-field">
+        <span class="field-name field-fk">actor_agent_id</span>
+        <span class="field-type">TEXT &rarr; agents</span>
+        <span class="field-note">事件发起者</span>
+      </div>
+      <div class="schema-field">
+        <span class="field-name">payload_json</span>
+        <span class="field-type">JSON</span>
+        <span class="field-note">事件载荷（消息内容、任务描述等）</span>
+      </div>
+      <div class="schema-field">
+        <span class="field-name">ts</span>
+        <span class="field-type">DATETIME</span>
+        <span class="field-note">事件时间戳</span>
+      </div>
+    </div>
+  </div>
+
+  <!-- agents -->
+  <div class="schema-card">
+    <div class="schema-name">agents <span class="badge">Agent 注册表</span></div>
+    <div class="schema-fields">
+      <div class="schema-field">
+        <span class="field-name field-pk">id</span>
+        <span class="field-type">TEXT</span>
+        <span class="field-note">唯一标识</span>
+      </div>
+      <div class="schema-field">
+        <span class="field-name">display_name</span>
+        <span class="field-type">TEXT</span>
+        <span class="field-note">显示名称</span>
+      </div>
+      <div class="schema-field">
+        <span class="field-name">session_id</span>
+        <span class="field-type">TEXT</span>
+        <span class="field-note">tmux 会话 ID</span>
+      </div>
+      <div class="schema-field">
+        <span class="field-name">pane_id</span>
+        <span class="field-type">TEXT</span>
+        <span class="field-note">tmux pane ID</span>
+      </div>
+      <div class="schema-field">
+        <span class="field-name">window_uuid</span>
+        <span class="field-type">TEXT</span>
+        <span class="field-note">窗口 UUID（桌面环境）</span>
+      </div>
+      <div class="schema-field">
+        <span class="field-name">tool</span>
+        <span class="field-type">TEXT</span>
+        <span class="field-note">Agent 类型（claude, cursor 等）</span>
+      </div>
+      <div class="schema-field">
+        <span class="field-name">cwd</span>
+        <span class="field-type">TEXT</span>
+        <span class="field-note">工作目录</span>
+      </div>
+      <div class="schema-field">
+        <span class="field-name">roles</span>
+        <span class="field-type">JSON</span>
+        <span class="field-note">角色标签 ["backend", "devops"]</span>
+      </div>
+      <div class="schema-field">
+        <span class="field-name">expertise</span>
+        <span class="field-type">JSON</span>
+        <span class="field-note">专长标签 ["typescript", "react"]</span>
+      </div>
+      <div class="schema-field">
+        <span class="field-name">group_id</span>
+        <span class="field-type">TEXT</span>
+        <span class="field-note">组 ID（多 Agent 编队）</span>
+      </div>
+      <div class="schema-field">
+        <span class="field-name">parent_id</span>
+        <span class="field-type">TEXT</span>
+        <span class="field-note">父 Agent ID（子 Agent 关系）</span>
+      </div>
+      <div class="schema-field">
+        <span class="field-name field-enum">status</span>
+        <span class="field-type">ENUM</span>
+        <span class="field-note"><code>active</code> | <code>idle</code> | <code>busy</code> | <code>offline</code></span>
+      </div>
+      <div class="schema-field">
+        <span class="field-name">last_seen</span>
+        <span class="field-type">DATETIME</span>
+        <span class="field-note">最后心跳</span>
+      </div>
+      <div class="schema-field">
+        <span class="field-name">created_at</span>
+        <span class="field-type">DATETIME</span>
+        <span class="field-note">注册时间</span>
+      </div>
+    </div>
+  </div>
+
+  <!-- file_leases -->
+  <div class="schema-card">
+    <div class="schema-name">file_leases <span class="badge">文件租约</span></div>
+    <div class="schema-fields">
+      <div class="schema-field">
+        <span class="field-name field-pk">id</span>
+        <span class="field-type">TEXT</span>
+        <span class="field-note">租约 ID</span>
+      </div>
+      <div class="schema-field">
+        <span class="field-name field-fk">room_id</span>
+        <span class="field-type">TEXT &rarr; rooms</span>
+        <span class="field-note">所属房间</span>
+      </div>
+      <div class="schema-field">
+        <span class="field-name field-fk">agent_id</span>
+        <span class="field-type">TEXT &rarr; agents</span>
+        <span class="field-note">持有者</span>
+      </div>
+      <div class="schema-field">
+        <span class="field-name">path_pattern</span>
+        <span class="field-type">TEXT</span>
+        <span class="field-note">文件路径模式（支持 glob）</span>
+      </div>
+      <div class="schema-field">
+        <span class="field-name">exclusive</span>
+        <span class="field-type">BOOLEAN</span>
+        <span class="field-note">是否排他性租约</span>
+      </div>
+      <div class="schema-field">
+        <span class="field-name">reason</span>
+        <span class="field-type">TEXT</span>
+        <span class="field-note">声明意图</span>
+      </div>
+      <div class="schema-field">
+        <span class="field-name">created_ts</span>
+        <span class="field-type">DATETIME</span>
+        <span class="field-note">创建时间</span>
+      </div>
+      <div class="schema-field">
+        <span class="field-name">expires_ts</span>
+        <span class="field-type">DATETIME</span>
+        <span class="field-note">过期时间</span>
+      </div>
+      <div class="schema-field">
+        <span class="field-name">released_ts</span>
+        <span class="field-type">DATETIME</span>
+        <span class="field-note">主动释放时间（NULL = 持有中）</span>
+      </div>
+    </div>
+  </div>
+
+  <!-- FTS5 -->
+  <div class="schema-card" style="border-color: rgba(90, 230, 160, 0.2);">
+    <div class="schema-name" style="color: var(--success);">room_events_fts <span class="badge" style="background:rgba(90,230,160,0.2);color:var(--success);">FTS5 虚拟表</span></div>
+    <p style="font-size:0.85rem;margin-bottom:0.5rem;">基于 <code>room_events.payload_json</code> 的全文搜索索引，通过触发器自动维护。支持 <code>MATCH</code> 语法和 <code>rank</code> 排序。</p>
+    <pre><code><span class="kw">CREATE VIRTUAL TABLE</span> room_events_fts <span class="kw">USING</span> fts5(
+  content, <span class="cm">-- 从 payload_json 提取的文本</span>
+  <span class="kw">content</span>=room_events,
+  content_rowid=id
+);</code></pre>
+  </div>
+
+  <!-- Schema relationships -->
+  <h3>表关系</h3>
+  <div class="diagram">
+    <div class="d-box accent">rooms</div>
+    <div class="d-arrow">&larr;</div>
+    <div class="d-box info">room_members</div>
+    <div class="d-arrow">&rarr;</div>
+    <div class="d-box warning">agents</div>
+  </div>
+  <div class="diagram" style="margin-top:-0.5rem;">
+    <div class="d-box accent">rooms</div>
+    <div class="d-arrow">&larr;</div>
+    <div class="d-box success">room_events</div>
+    <div class="d-arrow">&rarr;</div>
+    <div class="d-box warning">agents</div>
+  </div>
+  <div class="diagram" style="margin-top:-0.5rem;">
+    <div class="d-box accent">rooms</div>
+    <div class="d-arrow">&larr;</div>
+    <div class="d-box dim">file_leases</div>
+    <div class="d-arrow">&rarr;</div>
+    <div class="d-box warning">agents</div>
+  </div>
+</section>
+
+<!-- ════════════════ 04 Task 状态机 ════════════════ -->
+<section id="task-fsm" class="fade-in">
+  <span class="section-num">04</span>
+  <h2>Task 状态机</h2>
+  <p>Task 通过 Room Event 驱动状态流转。每次状态变更对应一个 <code>task-*</code> 类型事件。</p>
+
+  <div class="state-machine">
+    <!-- Main flow -->
+    <div class="state-row">
+      <div class="state-node initial">submitted</div>
+      <div class="state-edge">&mdash; claim &rarr;</div>
+      <div class="state-node active">working</div>
+      <div class="state-edge">&mdash; complete &rarr;</div>
+      <div class="state-node terminal-success">completed</div>
+    </div>
+
+    <div style="height:1.5rem;"></div>
+
+    <!-- Side branch: input-required -->
+    <div class="state-row">
+      <div style="min-width:90px;"></div>
+      <div style="min-width:70px;"></div>
+      <div class="state-node active" style="opacity:0.4;">working</div>
+      <div class="state-edge">&mdash; ask &rarr;</div>
+      <div class="state-node paused">input-required</div>
+      <div class="state-edge">&mdash; answer &rarr;</div>
+      <div class="state-node active" style="opacity:0.4;">working</div>
+    </div>
+
+    <div style="height:1.5rem;"></div>
+
+    <!-- Failure -->
+    <div class="state-row">
+      <div style="min-width:90px;"></div>
+      <div style="min-width:70px;"></div>
+      <div class="state-node active" style="opacity:0.4;">working</div>
+      <div class="state-edge">&mdash; fail &rarr;</div>
+      <div class="state-node terminal-fail">failed</div>
+    </div>
+
+    <div style="height:1.5rem;"></div>
+
+    <!-- Cancel -->
+    <div class="state-row">
+      <div class="state-node dim" style="font-size:0.75rem;">任何非终态</div>
+      <div class="state-edge">&mdash; cancel &rarr;</div>
+      <div class="state-node terminal-fail" style="border-color:var(--text-dim);color:var(--text-dim);">canceled</div>
+    </div>
+  </div>
+
+  <div class="grid-2">
+    <div class="card">
+      <div class="card-title">终态</div>
+      <p><span class="pill pill-success">completed</span> <span class="pill pill-danger">failed</span> <span class="pill pill-warning" style="background:rgba(170,168,195,0.15);color:var(--text-dim);">canceled</span></p>
+      <p>进入终态后不可再转换。</p>
+    </div>
+    <div class="card">
+      <div class="card-title">人机交互循环</div>
+      <p><code>working &harr; input-required</code> 循环可多次往返，用于 Agent 向委托人请求澄清或额外输入。</p>
+    </div>
+  </div>
+</section>
+
+<!-- ════════════════ 05 三层消息检索 ════════════════ -->
+<section id="retrieval" class="fade-in">
+  <span class="section-num">05</span>
+  <h2>三层消息检索</h2>
+
+  <div class="layer-stack">
+    <div class="layer">
+      <span class="layer-num">L1</span>
+      <span class="layer-name">增量查询</span>
+      <span class="layer-desc"><code>events(since=offset)</code> &mdash; 日常使用，零成本。Agent 记住上次 offset，只拉新 events。</span>
+    </div>
+    <div class="layer">
+      <span class="layer-num">L2</span>
+      <span class="layer-name">摘要 + 最近 N 条</span>
+      <span class="layer-desc">新成员加入时，LLM 生成 <code>summary</code> state event，后续查询返回摘要 + 摘要之后的新 events。</span>
+    </div>
+    <div class="layer">
+      <span class="layer-num">L3</span>
+      <span class="layer-name">全量归档</span>
+      <span class="layer-desc">SQLite 完整保留所有 events，按需分页拉取。用于审计和回溯。</span>
+    </div>
+  </div>
+
+  <h3>自动压缩触发</h3>
+  <div class="flow">
+    <div class="flow-row">
+      <div class="flow-step">
+        <span class="flow-step-num">1</span>
+        Room events 累积
+      </div>
+      <div class="d-arrow">&rarr;</div>
+      <div class="flow-step" style="border-color:var(--warning);color:var(--warning);">
+        <span class="flow-step-num">2</span>
+        events &gt; 100 条
+      </div>
+      <div class="d-arrow">&rarr;</div>
+      <div class="flow-step" style="border-color:var(--accent-bright);">
+        <span class="flow-step-num">3</span>
+        LLM 生成 summary event
+      </div>
+      <div class="d-arrow">&rarr;</div>
+      <div class="flow-step" style="border-color:var(--success);color:var(--success);">
+        <span class="flow-step-num">4</span>
+        后续查询 = summary + 新 events
+      </div>
+    </div>
+  </div>
+  <p>Summary event 本身也是一个 room event（type=<code>summary</code>），包含之前所有 events 的结构化摘要。原始 events 保留在 DB 中不删除。</p>
+</section>
+
+<!-- ════════════════ 06 File Lease ════════════════ -->
+<section id="file-lease" class="fade-in">
+  <span class="section-num">06</span>
+  <h2>File Lease（文件租约）</h2>
+  <p>借鉴 MCP Agent Mail 的设计。Agent 声明对文件的修改意图，其他 Agent 可查询冲突。</p>
+
+  <div class="grid-2">
+    <div class="card">
+      <div class="card-title">协商性质</div>
+      <p><strong>Advisory, not blocking</strong> &mdash; 租约不会硬锁文件，而是表面化冲突。Agent 自行决定是否继续。人类团队中的"我在改这个文件"口头约定的数字化。</p>
+    </div>
+    <div class="card">
+      <div class="card-title">生命周期</div>
+      <p>租约有过期时间。Agent 可主动 release，也可 renew 续期。过期后自动释放。可选的 pre-commit guard 在提交前检查租约归属。</p>
+    </div>
+  </div>
+
+  <h3>冲突发现流程</h3>
+  <div class="flow">
+    <div class="flow-row">
+      <div class="flow-step">
+        <span class="flow-step-num">1</span>
+        Agent A: <code>lease.claim</code>
+      </div>
+      <div class="d-arrow">&rarr;</div>
+      <div class="flow-step" style="border-color:var(--accent-bright);">
+        <span class="flow-step-num">2</span>
+        file-lease event 写入 Room
+      </div>
+    </div>
+    <div class="flow-row" style="margin-top:0.5rem;">
+      <div class="flow-step">
+        <span class="flow-step-num">3</span>
+        Agent B: <code>lease.check</code>
+      </div>
+      <div class="d-arrow">&rarr;</div>
+      <div class="flow-step" style="border-color:var(--warning);color:var(--warning);">
+        <span class="flow-step-num">4</span>
+        发现冲突：Agent A 持有
+      </div>
+      <div class="d-arrow">&rarr;</div>
+      <div class="flow-step" style="border-color:var(--success);color:var(--success);">
+        <span class="flow-step-num">5</span>
+        协调（DM / 等待 / 继续）
+      </div>
+    </div>
+  </div>
+
+  <pre><code><span class="cm">// 示例：Agent 声明正在修改认证模块</span>
+hive.lease.claim(roomId, {
+  <span class="str">paths</span>: [<span class="str">"src/auth/*.ts"</span>, <span class="str">"src/middleware/auth.ts"</span>],
+  <span class="str">reason</span>: <span class="str">"重构认证中间件，添加 OAuth2 支持"</span>,
+  <span class="str">duration</span>: <span class="str">"30m"</span>
+});</code></pre>
+</section>
+
+<!-- ════════════════ 07 MCP 工具层 ════════════════ -->
+<section id="tools" class="fade-in">
+  <span class="section-num">07</span>
+  <h2>MCP 工具层</h2>
+  <p>所有工具通过 MCP stdio 协议暴露，遵循 JSON-RPC 2.0 规范。</p>
+
+  <div class="tool-category">
+    <div class="tool-category-title">Room 管理</div>
+    <pre><code><span class="fn">hive.rooms.list</span>(filter?)              <span class="cm">// 列出房间（可按 kind/visibility 过滤）</span>
+<span class="fn">hive.rooms.find</span>(query)               <span class="cm">// FTS5 全文搜索房间及内容</span>
+<span class="fn">hive.rooms.create</span>({name, kind,       <span class="cm">// 创建房间</span>
+  members?, visibility?})
+<span class="fn">hive.rooms.open</span>(room_url_or_id)      <span class="cm">// 打开/加入房间</span>
+<span class="fn">hive.rooms.close</span>(room_id)            <span class="cm">// 关闭房间</span>
+<span class="fn">hive.rooms.info</span>(room_id)             <span class="cm">// 获取房间详情</span></code></pre>
+  </div>
+
+  <div class="tool-category">
+    <div class="tool-category-title">Room 交互</div>
+    <pre><code><span class="fn">hive.room.post</span>(room_id,              <span class="cm">// 发送事件到房间</span>
+  {type, content?, task?, artifact?})
+<span class="fn">hive.room.events</span>(room_id, since?)    <span class="cm">// 增量拉取事件流</span>
+<span class="fn">hive.room.watch</span>(room_id)             <span class="cm">// 订阅推送（SSE / polling）</span>
+<span class="fn">hive.room.members</span>(room_id)           <span class="cm">// 查看房间成员</span>
+<span class="fn">hive.room.summary</span>(room_id)           <span class="cm">// 触发/获取摘要</span></code></pre>
+  </div>
+
+  <div class="tool-category">
+    <div class="tool-category-title">File Lease</div>
+    <pre><code><span class="fn">hive.lease.claim</span>(room_id,            <span class="cm">// 声明文件修改意图</span>
+  {paths, reason, duration?})
+<span class="fn">hive.lease.check</span>(paths)              <span class="cm">// 查询路径冲突</span>
+<span class="fn">hive.lease.release</span>(lease_id)         <span class="cm">// 主动释放租约</span>
+<span class="fn">hive.lease.renew</span>(lease_id, duration?)<span class="cm">// 续期租约</span></code></pre>
+  </div>
+
+  <div class="tool-category">
+    <div class="tool-category-title">糖衣 API（Macro）</div>
+    <pre><code><span class="fn">hive.start</span>()                         <span class="cm">// 注册 agent + 加入 lobby + 拉 inbox</span>
+                                      <span class="cm">// = macro_start_session</span>
+<span class="fn">hive.task</span>(to, title, input?)          <span class="cm">// 自动建 task room + post task-start</span>
+<span class="fn">hive.dm</span>(to, content)                  <span class="cm">// 自动找/建 dm room + post message</span>
+<span class="fn">hive.broadcast</span>(group, content)        <span class="cm">// post 到 team/lobby</span>
+<span class="fn">hive.check</span>(task_id)                   <span class="cm">// 快速查 task 状态</span></code></pre>
+  </div>
+
+  <div class="card" style="border-color:rgba(90,230,160,0.2);">
+    <div class="card-title" style="color:var(--success);">设计理念</div>
+    <p>底层 API（<code>rooms.*</code>、<code>room.*</code>、<code>lease.*</code>）提供完整控制力。糖衣 API（<code>hive.*</code>）用最少调用完成最常见操作。Agent 可根据需求选择使用哪一层。</p>
+  </div>
+</section>
+
+<!-- ════════════════ 08 两层架构 ════════════════ -->
+<section id="federation" class="fade-in">
+  <span class="section-num">08</span>
+  <h2>两层架构（本地 + 联邦）</h2>
+
+  <h3>本地架构</h3>
+  <div class="diagram">
+    <div class="d-box">Agent 1</div>
+    <div class="d-box">Agent 2</div>
+    <div class="d-box">Agent 3</div>
+    <div class="d-arrow">&rarr;</div>
+    <div class="d-box accent">MCP stdio</div>
+    <div class="d-arrow">&rarr;</div>
+    <div class="d-box success">kitty-hive</div>
+    <div class="d-arrow">&harr;</div>
+    <div class="d-box warning">hive.db<br><span style="font-size:0.65rem;opacity:0.7">SQLite WAL</span></div>
+  </div>
+
+  <h3>联邦架构（Phase 2）</h3>
+  <div class="diagram diagram-vertical" style="gap:1.5rem;">
+    <div style="display:flex;align-items:center;gap:0.5rem;flex-wrap:wrap;justify-content:center;">
+      <div class="d-box dim" style="min-width:200px;">
+        <div style="font-size:0.7rem;color:var(--accent);margin-bottom:0.3rem;">Machine A</div>
+        agents &rarr; MCP &rarr; hive.db
+      </div>
+      <div class="d-arrow">&harr;</div>
+      <div class="d-box accent" style="min-width:120px;">
+        hive-gateway<br>
+        <span style="font-size:0.65rem;opacity:0.7">A2A adapter</span>
+      </div>
+    </div>
+
+    <div class="d-label">HTTPS + OAuth / mTLS</div>
+
+    <div style="display:flex;align-items:center;gap:0.5rem;flex-wrap:wrap;justify-content:center;">
+      <div class="d-box accent" style="min-width:120px;">
+        hive-gateway<br>
+        <span style="font-size:0.65rem;opacity:0.7">A2A adapter</span>
+      </div>
+      <div class="d-arrow">&harr;</div>
+      <div class="d-box dim" style="min-width:200px;">
+        <div style="font-size:0.7rem;color:var(--accent);margin-bottom:0.3rem;">Machine B</div>
+        agents &rarr; MCP &rarr; hive.db
+      </div>
+    </div>
+  </div>
+
+  <h3>寻址方案</h3>
+  <div class="grid-3">
+    <div class="card">
+      <div class="card-subtitle">本地寻址</div>
+      <pre><code><span class="str">"role:ux"</span>
+<span class="str">"agent:alice"</span></code></pre>
+      <p>同机内按角色或名称定位</p>
+    </div>
+    <div class="card">
+      <div class="card-subtitle">联邦寻址</div>
+      <pre><code><span class="str">"hive://alice.dev/role:ux"</span>
+<span class="str">"hive://node-b/rooms/proj"</span></code></pre>
+      <p>跨机通过 Room URL 定位</p>
+    </div>
+    <div class="card">
+      <div class="card-subtitle">A2A 寻址</div>
+      <pre><code><span class="str">"a2a://endpoint/agent"</span></code></pre>
+      <p>对接 Google A2A 协议端点</p>
+    </div>
+  </div>
+</section>
+
+<!-- ════════════════ 09 SQLite 并发架构 ════════════════ -->
+<section id="sqlite" class="fade-in">
+  <span class="section-num">09</span>
+  <h2>SQLite 并发架构</h2>
+  <p>借鉴 MCP Agent Mail 经过实战验证的模式。</p>
+
+  <div class="grid-2">
+    <div class="card">
+      <div class="card-title">WAL 模式</div>
+      <p>Write-Ahead Logging 模式 + NORMAL 同步级别。读写并发，不阻塞读操作。</p>
+    </div>
+    <div class="card">
+      <div class="card-title">连接池</div>
+      <p>保守连接限制。每个连接返回池时执行 passive WAL checkpoint。</p>
+    </div>
+    <div class="card">
+      <div class="card-title">锁竞争处理</div>
+      <p>指数退避 + 抖动（jitter），避免 lock contention 下的惊群效应。</p>
+    </div>
+    <div class="card">
+      <div class="card-title">FTS5 自动索引</div>
+      <p>通过 SQLite 触发器自动维护全文搜索索引，零额外写入成本。</p>
+    </div>
+  </div>
+
+  <h3>熔断器状态机</h3>
+  <p>Circuit Breaker 保护数据库免受级联故障影响。</p>
+
+  <div class="state-machine">
+    <div class="state-row">
+      <div class="state-node terminal-success">closed<br><span style="font-size:0.65rem;font-weight:400;">正常工作</span></div>
+      <div class="state-edge">&mdash; N 次失败 &rarr;</div>
+      <div class="state-node terminal-fail">open<br><span style="font-size:0.65rem;font-weight:400;">熔断中</span></div>
+      <div class="state-edge">&mdash; 超时 &rarr;</div>
+      <div class="state-node paused">half-open<br><span style="font-size:0.65rem;font-weight:400;">试探中</span></div>
+    </div>
+    <div style="height:1rem;"></div>
+    <div class="state-row">
+      <div style="min-width:160px;"></div>
+      <div style="min-width:140px;"></div>
+      <div class="state-node paused" style="opacity:0.4;">half-open</div>
+      <div class="state-edge">&mdash; 成功 &rarr;</div>
+      <div class="state-node terminal-success" style="opacity:0.7;">closed</div>
+    </div>
+  </div>
+
+  <pre><code><span class="cm">// 并发配置概览</span>
+{
+  <span class="str">"journal_mode"</span>: <span class="str">"WAL"</span>,
+  <span class="str">"synchronous"</span>: <span class="str">"NORMAL"</span>,
+  <span class="str">"busy_timeout"</span>: <span class="num">5000</span>,
+  <span class="str">"max_connections"</span>: <span class="num">3</span>,
+  <span class="str">"circuit_breaker"</span>: {
+    <span class="str">"failure_threshold"</span>: <span class="num">5</span>,
+    <span class="str">"reset_timeout_ms"</span>: <span class="num">30000</span>
+  },
+  <span class="str">"backoff"</span>: {
+    <span class="str">"initial_ms"</span>: <span class="num">50</span>,
+    <span class="str">"max_ms"</span>: <span class="num">2000</span>,
+    <span class="str">"jitter"</span>: <span class="kw">true</span>
+  }
+}</code></pre>
+</section>
+
+<!-- ════════════════ 10 Matchmaking ════════════════ -->
+<section id="matchmaking" class="fade-in">
+  <span class="section-num">10</span>
+  <h2>Matchmaking（撮合）</h2>
+
+  <div class="flow">
+    <div class="flow-row">
+      <div class="flow-step">
+        <span class="flow-step-num">1</span>
+        Agent A 创建 task room
+      </div>
+      <div class="d-arrow">&rarr;</div>
+      <div class="flow-step" style="border-color:var(--accent-bright);">
+        <span class="flow-step-num">2</span>
+        声明 required_skills
+      </div>
+      <div class="d-arrow">&rarr;</div>
+      <div class="flow-step" style="border-color:var(--warning);color:var(--warning);">
+        <span class="flow-step-num">3</span>
+        Matchmaker 扫描 agents 表
+      </div>
+    </div>
+    <div class="flow-row" style="margin-top:0.5rem;">
+      <div class="flow-step" style="border-color:var(--info);color:var(--info);">
+        <span class="flow-step-num">4</span>
+        按 role/expertise 匹配
+      </div>
+      <div class="d-arrow">&rarr;</div>
+      <div class="flow-step" style="border-color:var(--accent);">
+        <span class="flow-step-num">5</span>
+        发送 Room 邀请
+      </div>
+      <div class="d-arrow">&rarr;</div>
+      <div class="flow-step" style="border-color:var(--success);color:var(--success);">
+        <span class="flow-step-num">6</span>
+        候选人 accept &rarr; join &rarr; task 开始
+      </div>
+    </div>
+  </div>
+
+  <div class="grid-2">
+    <div class="card">
+      <div class="card-title">本地撮合</div>
+      <p>扫描本机 agents 表中 status=<code>idle</code> 且 roles/expertise 匹配的 Agent。O(n) 扫描，n 通常 &lt; 20。</p>
+    </div>
+    <div class="card">
+      <div class="card-title">联邦撮合（Phase 2+）</div>
+      <p>本地无匹配时，通过 gateway 向联邦节点广播能力请求。远端 hive 返回候选列表。</p>
+    </div>
+  </div>
+</section>
+
+<!-- ════════════════ 11 竞品对比 ════════════════ -->
+<section id="comparison" class="fade-in">
+  <span class="section-num">11</span>
+  <h2>竞品对比</h2>
+
+  <div class="cmp-table-wrap">
+    <table class="cmp-table">
+      <thead>
+        <tr>
+          <th>维度</th>
+          <th>kitty-talk<br><span style="font-weight:400;font-size:0.7rem;">当前实现</span></th>
+          <th>Agent Mail<br><span style="font-weight:400;font-size:0.7rem;">MCP 社区</span></th>
+          <th>Agents Council</th>
+          <th>Agent-MCP</th>
+          <th class="highlight">Hive<br><span style="font-weight:400;font-size:0.7rem;">提议方案</span></th>
+        </tr>
+      </thead>
+      <tbody>
+        <tr>
+          <td>协作模型</td>
+          <td>1:1 消息</td>
+          <td>Inbox + Thread</td>
+          <td>投票决策</td>
+          <td>工具代理</td>
+          <td class="highlight">Room + Event</td>
+        </tr>
+        <tr>
+          <td>存储</td>
+          <td>SQLite</td>
+          <td>SQLite WAL</td>
+          <td>内存</td>
+          <td>无状态</td>
+          <td class="highlight">SQLite WAL + FTS5</td>
+        </tr>
+        <tr>
+          <td>Task 生命周期</td>
+          <td class="no">无</td>
+          <td>有限状态</td>
+          <td class="no">无</td>
+          <td>请求-响应</td>
+          <td class="highlight">完整状态机</td>
+        </tr>
+        <tr>
+          <td>Room / 频道</td>
+          <td class="no">无</td>
+          <td>Thread</td>
+          <td>全局频道</td>
+          <td class="no">无</td>
+          <td class="highlight">多类型 Room</td>
+        </tr>
+        <tr>
+          <td>File Lease</td>
+          <td class="no">无</td>
+          <td class="yes">有</td>
+          <td class="no">无</td>
+          <td class="no">无</td>
+          <td class="highlight yes">有 (advisory)</td>
+        </tr>
+        <tr>
+          <td>搜索</td>
+          <td class="no">无</td>
+          <td class="yes">FTS5</td>
+          <td class="no">无</td>
+          <td class="no">无</td>
+          <td class="highlight yes">FTS5 + Room 过滤</td>
+        </tr>
+        <tr>
+          <td>联邦</td>
+          <td class="no">无</td>
+          <td class="no">无</td>
+          <td class="no">无</td>
+          <td class="no">无</td>
+          <td class="highlight yes">hive-gateway</td>
+        </tr>
+        <tr>
+          <td>匹配</td>
+          <td>手动指定</td>
+          <td class="no">无</td>
+          <td>投票</td>
+          <td class="no">无</td>
+          <td class="highlight yes">自动 matchmaking</td>
+        </tr>
+      </tbody>
+    </table>
+  </div>
+</section>
+
+<!-- ════════════════ 12 协议栈对比 ════════════════ -->
+<section id="protocol" class="fade-in">
+  <span class="section-num">12</span>
+  <h2>协议栈对比</h2>
+
+  <h3>Hive 在协议栈中的位置</h3>
+  <div class="layer-stack">
+    <div class="layer" style="background:rgba(100,94,251,0.08);">
+      <span class="layer-num" style="color:var(--accent);">App</span>
+      <span class="layer-name" style="color:var(--accent);">Hive</span>
+      <span class="layer-desc">Room + Task + Matchmaking + File Lease</span>
+    </div>
+    <div class="layer">
+      <span class="layer-num">L4</span>
+      <span class="layer-name">MCP</span>
+      <span class="layer-desc">本地传输 &mdash; stdio JSON-RPC</span>
+    </div>
+    <div class="layer">
+      <span class="layer-num">L3</span>
+      <span class="layer-name">A2A</span>
+      <span class="layer-desc">跨机传输 &mdash; HTTP + SSE（Google Agent-to-Agent）</span>
+    </div>
+    <div class="layer">
+      <span class="layer-num">L2</span>
+      <span class="layer-name">ANP</span>
+      <span class="layer-desc">开放网络 &mdash; DID + E2E 加密</span>
+    </div>
+  </div>
+
+  <h3>协议能力矩阵</h3>
+  <div class="cmp-table-wrap">
+    <table class="cmp-table">
+      <thead>
+        <tr>
+          <th>协议</th>
+          <th>层级</th>
+          <th>传输</th>
+          <th>状态管理</th>
+          <th>身份</th>
+          <th>适用场景</th>
+        </tr>
+      </thead>
+      <tbody>
+        <tr>
+          <td><strong>MCP</strong></td>
+          <td>本地</td>
+          <td>stdio / SSE</td>
+          <td>无</td>
+          <td>进程级</td>
+          <td>工具暴露、本机 Agent-Tool</td>
+        </tr>
+        <tr>
+          <td><strong>A2A</strong></td>
+          <td>跨机</td>
+          <td>HTTP + SSE</td>
+          <td>Task 对象</td>
+          <td>Agent Card</td>
+          <td>跨网络 Agent 协作</td>
+        </tr>
+        <tr>
+          <td><strong>ACP</strong> <span class="pill pill-warning" style="font-size:0.6rem;">已合并入 A2A</span></td>
+          <td>跨机</td>
+          <td>HTTP</td>
+          <td>有限</td>
+          <td>&mdash;</td>
+          <td>（已被 A2A 吸收）</td>
+        </tr>
+        <tr>
+          <td><strong>ANP</strong></td>
+          <td>开放网络</td>
+          <td>HTTP + DID</td>
+          <td>有</td>
+          <td>DID + E2E</td>
+          <td>去中心化 Agent 互联</td>
+        </tr>
+        <tr>
+          <td><strong>UCP</strong></td>
+          <td>跨层</td>
+          <td>多协议</td>
+          <td>&mdash;</td>
+          <td>&mdash;</td>
+          <td>统一通信协议（概念阶段）</td>
+        </tr>
+        <tr style="background:rgba(100,94,251,0.06);">
+          <td class="highlight"><strong>Hive</strong></td>
+          <td class="highlight">应用层</td>
+          <td>MCP / A2A</td>
+          <td class="highlight">Room + Event + Task FSM</td>
+          <td>Agent 注册</td>
+          <td class="highlight">多 Agent 协作基础设施</td>
+        </tr>
+      </tbody>
+    </table>
+  </div>
+</section>
+
+<!-- ════════════════ 13 阶段路线图 ════════════════ -->
+<section id="roadmap" class="fade-in">
+  <span class="section-num">13</span>
+  <h2>阶段路线图</h2>
+
+  <div class="timeline">
+    <div class="timeline-item">
+      <div class="timeline-phase">Phase 1 &mdash; 基础设施</div>
+      <div class="timeline-title">独立 MCP 包 + SQLite + Room/Event + 基础工具</div>
+      <ul>
+        <li>发布 <code>kitty-hive</code> 独立 npm 包，<code>npx kitty-hive</code> 即可运行</li>
+        <li>SQLite WAL + FTS5 全文搜索</li>
+        <li>Room CRUD + Event append-only timeline</li>
+        <li>Agent 注册 + 状态管理</li>
+        <li>Task 完整状态机</li>
+        <li>File Lease 管理</li>
+        <li>糖衣 API（<code>hive.start</code>、<code>hive.task</code>、<code>hive.dm</code>）</li>
+        <li>三层消息检索 + 自动压缩</li>
+      </ul>
+      <span class="pill pill-success">MVP</span>
+      <span class="pill pill-accent">当前目标</span>
+    </div>
+
+    <div class="timeline-item">
+      <div class="timeline-phase">Phase 2 &mdash; 联邦</div>
+      <div class="timeline-title">Federation Gateway + hive-to-hive</div>
+      <ul>
+        <li>hive-gateway HTTP 服务</li>
+        <li>跨机 Room 同步</li>
+        <li>OAuth / mTLS 身份认证</li>
+        <li>Room URL 寻址：<code>hive://node/rooms/name</code></li>
+        <li>联邦 Matchmaking</li>
+      </ul>
+      <span class="pill pill-warning">规划中</span>
+    </div>
+
+    <div class="timeline-item">
+      <div class="timeline-phase">Phase 3 &mdash; 开放互联</div>
+      <div class="timeline-title">A2A Adapter + ANP Identity + Matchmaking</div>
+      <ul>
+        <li>A2A 协议适配器（Agent Card 暴露）</li>
+        <li>ANP DID 身份集成</li>
+        <li>跨协议 Matchmaking</li>
+        <li>与其他 Agent 框架互通</li>
+      </ul>
+      <span class="pill pill-info">远期</span>
+    </div>
+  </div>
+</section>
+
+<!-- ════════════════ 14 包结构 ════════════════ -->
+<section id="packages" class="fade-in">
+  <span class="section-num">14</span>
+  <h2>包结构</h2>
+
+  <div class="pkg-tree">
+<span class="dir">packages/</span>
+  <span class="dir">kitty-hive/</span>                    <span class="cmt">&larr; 独立 npm 包</span>
+    <span class="dir">src/</span>
+      <span class="dir">db/</span>                        <span class="cmt"># SQLite schema, migrations, FTS5</span>
+      <span class="dir">mcp/</span>                       <span class="cmt"># MCP server (stdio JSON-RPC)</span>
+      <span class="dir">rooms/</span>                     <span class="cmt"># Room CRUD + event append</span>
+      <span class="dir">agents/</span>                    <span class="cmt"># Registration, presence, identity</span>
+      <span class="dir">leases/</span>                    <span class="cmt"># File lease management</span>
+      <span class="dir">search/</span>                    <span class="cmt"># FTS5 search</span>
+      <span class="dir">gateway/</span>                   <span class="cmt"># Federation (Phase 2)</span>
+    <span class="dir">bin/</span>
+      <span class="file">kitty-hive.js</span>              <span class="cmt"># npx kitty-hive</span>
+
+  <span class="dir">kitty-kitty/</span>                   <span class="cmt">&larr; 现有 Electron app</span>
+    <span class="dir">src/main/</span>
+      <span class="dir">mcp/</span>
+        <span class="file">session-*</span>                <span class="cmt"># kitty-session (tmux 编排)</span>
+        <span class="file">...</span>                      <span class="cmt"># 注入 kitty-hive, 读 hive.db 展示 UI</span>
+  </div>
+
+  <div class="card" style="margin-top:1.5rem;">
+    <div class="card-title">设计约束</div>
+    <ul>
+      <li><code>kitty-hive</code> 零 Electron 依赖，可在任何 Node.js 环境运行</li>
+      <li><code>kitty-kitty</code> 通过直接读取 <code>hive.db</code> 获取状态，不通过 MCP 轮询</li>
+      <li>SQLite 作为单一数据源（Single Source of Truth）</li>
+      <li>MCP stdio 作为唯一对外接口（Phase 1）</li>
+    </ul>
+  </div>
+</section>
+
+<div class="sep"></div>
+
+<p style="text-align:center;color:var(--text-dim);font-size:0.8rem;padding:2rem 0;">
+  Kitty Hive Architecture Spec v2.0 &mdash; 基于 MCP Agent Mail 分析和多轮设计迭代
+</p>
+
+</main>
+
+<!-- ════════════════ SCROLL SPY + FADE-IN ════════════════ -->
+<script>
+(function() {
+  // Scroll spy
+  var nav = document.getElementById('nav');
+  var links = nav.querySelectorAll('a[href^="#"]');
+  var sections = [];
+
+  links.forEach(function(link) {
+    var id = link.getAttribute('href').slice(1);
+    var el = document.getElementById(id);
+    if (el) sections.push({ el: el, link: link });
+  });
+
+  function updateNav() {
+    var scrollY = window.scrollY + 80;
+    var current = sections[0];
+
+    for (var i = 0; i < sections.length; i++) {
+      if (sections[i].el.offsetTop <= scrollY) current = sections[i];
+    }
+
+    links.forEach(function(l) { l.classList.remove('active'); });
+    if (current) current.link.classList.add('active');
+  }
+
+  window.addEventListener('scroll', updateNav, { passive: true });
+  updateNav();
+
+  // Intersection Observer for fade-in
+  var observer = new IntersectionObserver(function(entries) {
+    entries.forEach(function(entry) {
+      if (entry.isIntersecting) {
+        entry.target.classList.add('visible');
+      }
+    });
+  }, { threshold: 0.08, rootMargin: '0px 0px -40px 0px' });
+
+  document.querySelectorAll('.fade-in').forEach(function(el) {
+    observer.observe(el);
+  });
+})();
+</script>
+
+</body>
+</html>

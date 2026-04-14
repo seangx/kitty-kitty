@@ -17,26 +17,74 @@ export const MCP_SERVER_SCRIPT = `#!/usr/bin/env node
 const fs = require('fs');
 const path = require('path');
 
-const AGENT_ID = process.env.KITTY_AGENT_ID || 'unknown';
-const AGENT_NAME = process.env.KITTY_AGENT_NAME || 'unknown';
+// Pane agents inherit parent .mcp.json but get unique identity via TMUX_PANE.
+// Every pane in tmux gets a unique TMUX_PANE env var. If not :0.0, this is
+// a sub-pane → generate a unique agent ID to avoid collisions with parent.
+const BASE_AGENT_ID = process.env.KITTY_PANE_AGENT_ID || process.env.KITTY_AGENT_ID || 'unknown';
+const BASE_AGENT_NAME = process.env.KITTY_PANE_AGENT_NAME || process.env.KITTY_AGENT_NAME || 'unknown';
 const BUS_DIR = process.env.KITTY_BUS_DIR || '/tmp/kitty-bus';
-const GROUP_ID = process.env.KITTY_GROUP_ID || '__ungrouped__';
+let GROUP_ID = process.env.KITTY_GROUP_ID || '__ungrouped__';
+let GROUP_NAME = process.env.KITTY_GROUP_NAME || '';
+const TMUX_NAME = process.env.KITTY_TMUX_NAME || '';
+const TMUX_PANE = process.env.TMUX_PANE || '';
+const AGENT_ROLES = (process.env.KITTY_AGENT_ROLES || '').split(',').map(s => s.trim()).filter(Boolean);
+const AGENT_EXPERTISE = process.env.KITTY_AGENT_EXPERTISE || '';
+const PARENT_ID = process.env.KITTY_PANE_PARENT_ID || '';
 
 // Ensure bus directory exists
 if (!fs.existsSync(BUS_DIR)) fs.mkdirSync(BUS_DIR, { recursive: true });
 
-// Register this agent
+// Resolve unique agent identity.
+// Sub-panes created by create_pane get KITTY_PANE_AGENT_ID set explicitly.
+// Main panes use the base ID directly.
+let AGENT_ID = BASE_AGENT_ID;
+let AGENT_NAME = BASE_AGENT_NAME;
+
+// Register this agent (atomic write-rename to avoid race conditions)
 const agentsFile = path.join(BUS_DIR, 'agents.json');
+const agentsTmpFile = path.join(BUS_DIR, '.agents.' + AGENT_ID + '.tmp');
 function registerAgent() {
+  for (let attempt = 0; attempt < 3; attempt++) {
+    let agents = {};
+    try { agents = JSON.parse(fs.readFileSync(agentsFile, 'utf-8')); } catch {}
+    agents[AGENT_ID] = {
+      id: AGENT_ID,
+      name: AGENT_NAME,
+      groupId: GROUP_ID,
+      groupName: GROUP_NAME,
+      roles: AGENT_ROLES,
+      expertise: AGENT_EXPERTISE,
+      parentId: PARENT_ID || null,
+      tool: process.env.KITTY_TOOL || '',
+      cwd: process.env.KITTY_CWD || '',
+      tmuxName: TMUX_NAME,
+      tmuxPane: TMUX_PANE,
+      lastSeen: Date.now()
+    };
+    // If another process updated our group while we were running, pick it up
+    if (agents[AGENT_ID] && agents[AGENT_ID].groupId && agents[AGENT_ID].groupId !== GROUP_ID) {
+      GROUP_ID = agents[AGENT_ID].groupId;
+      GROUP_NAME = agents[AGENT_ID].groupName || '';
+      agents[AGENT_ID].groupId = GROUP_ID;
+      agents[AGENT_ID].groupName = GROUP_NAME;
+    }
+    try {
+      fs.writeFileSync(agentsTmpFile, JSON.stringify(agents, null, 2));
+      fs.renameSync(agentsTmpFile, agentsFile);
+      return;
+    } catch {
+      // rename failed (concurrent write) — retry with fresh read
+      try { fs.unlinkSync(agentsTmpFile); } catch {}
+    }
+  }
+  // Last resort: direct write
   let agents = {};
   try { agents = JSON.parse(fs.readFileSync(agentsFile, 'utf-8')); } catch {}
   agents[AGENT_ID] = {
-    id: AGENT_ID,
-    name: AGENT_NAME,
-    groupId: GROUP_ID,
-    groupName: process.env.KITTY_GROUP_NAME || '',
-    tool: process.env.KITTY_TOOL || '',
-    cwd: process.env.KITTY_CWD || '',
+    id: AGENT_ID, name: AGENT_NAME, groupId: GROUP_ID,
+    groupName: GROUP_NAME, roles: AGENT_ROLES, expertise: AGENT_EXPERTISE,
+    parentId: PARENT_ID || null, tool: process.env.KITTY_TOOL || '',
+    cwd: process.env.KITTY_CWD || '', tmuxName: TMUX_NAME, tmuxPane: TMUX_PANE,
     lastSeen: Date.now()
   };
   fs.writeFileSync(agentsFile, JSON.stringify(agents, null, 2));
@@ -81,11 +129,11 @@ function writeProtocolMessage(msg) {
 const TOOLS = [
   {
     name: 'talk',
-    description: 'Send a message to another agent. Messages are queued and delivered asynchronously — the target does NOT need to be active. When the user says "@name <message>", call this tool directly without asking follow-up questions.',
+    description: 'Send a message to another agent. Messages are queued and delivered asynchronously — the target does NOT need to be active. When the user says "@name <message>", call this tool directly without asking follow-up questions. Use "role:ux" to route by role, or "parent" to message your parent agent.',
     inputSchema: {
       type: 'object',
       properties: {
-        to: { type: 'string', description: 'Target agent name or id. Leading @ is allowed.' },
+        to: { type: 'string', description: 'Target: agent name/id, "role:<role>" for role-based routing, or "parent" for parent agent.' },
         message: { type: 'string', description: 'Message content' },
         done: { type: 'boolean', description: 'Set true to signal conversation is complete', default: false }
       },
@@ -104,11 +152,13 @@ const TOOLS = [
   },
   {
     name: 'peers',
-    description: 'List available agents. By default lists agents in your group. Use all=true to list all agents.',
+    description: 'List available agents. By default lists agents in your group. Use all=true to list all agents, role to filter by role, keyword to search.',
     inputSchema: {
       type: 'object',
       properties: {
-        all: { type: 'boolean', description: 'List all agents across all groups', default: false }
+        all: { type: 'boolean', description: 'List all agents across all groups', default: false },
+        role: { type: 'string', description: 'Filter by role (e.g. "ux", "backend")' },
+        keyword: { type: 'string', description: 'Search name, roles, and expertise' }
       },
       additionalProperties: false
     }
@@ -132,15 +182,55 @@ function handleToolCall(name, args) {
     case 'talk': {
       const { to, message, done } = args;
       const agents = readAgents();
-      const targetKey = normalizeTarget(String(to || ''));
+      const rawTo = String(to || '').trim();
       const messageText = String(message || '').trim();
-      if (!targetKey) {
+      if (!rawTo) {
         return { content: [{ type: 'text', text: 'Missing target. Use talk({ to: "@name", message: "..." }).' }], isError: true };
       }
       if (!messageText) {
         return { content: [{ type: 'text', text: 'Missing message body.' }], isError: true };
       }
-      // Group broadcast: @@groupName (normalizeTarget strips leading @, so one @ remains)
+
+      // Special routing: "parent" → send to parent agent
+      if (rawTo.toLowerCase() === 'parent') {
+        if (!PARENT_ID) {
+          return { content: [{ type: 'text', text: 'No parent agent. This is a main session, not a sub-pane.' }], isError: true };
+        }
+        const parentAgent = agents[PARENT_ID];
+        if (!parentAgent) {
+          return { content: [{ type: 'text', text: 'Parent agent ' + PARENT_ID + ' not found in registry.' }], isError: true };
+        }
+        const parentInbox = path.join(BUS_DIR, PARENT_ID + '.inbox.jsonl');
+        const msg = JSON.stringify({ from: AGENT_NAME, fromId: AGENT_ID, message: messageText, done: !!done, ts: Date.now() }) + '\\n';
+        fs.appendFileSync(parentInbox, msg);
+        return { content: [{ type: 'text', text: 'Delivered to parent ' + (parentAgent.name || PARENT_ID) + ' [' + PARENT_ID + ']' }] };
+      }
+
+      // Role-based routing: "role:ux"
+      if (rawTo.startsWith('role:')) {
+        const role = rawTo.slice(5).trim().toLowerCase();
+        const matches = Object.entries(agents).filter(([id, v]) => {
+          if (!v || id === AGENT_ID) return false;
+          return Array.isArray(v.roles) && v.roles.some(r => r.toLowerCase() === role);
+        });
+        if (matches.length === 0) {
+          return { content: [{ type: 'text', text: 'No agent with role "' + role + '". Use peers({ role: "' + role + '" }) to check.' }], isError: true };
+        }
+        const msg = JSON.stringify({ from: AGENT_NAME, fromId: AGENT_ID, message: messageText, done: !!done, ts: Date.now() }) + '\\n';
+        const delivered = [];
+        for (const [id, v] of matches) {
+          const inbox = path.join(BUS_DIR, id + '.inbox.jsonl');
+          fs.appendFileSync(inbox, msg);
+          delivered.push((v.name || id) + ' [' + id + ']');
+        }
+        if (delivered.length === 1) {
+          return { content: [{ type: 'text', text: 'Delivered to ' + delivered[0] + (done ? ' (marked as done)' : '') }] };
+        }
+        return { content: [{ type: 'text', text: 'Broadcast to ' + delivered.length + ' agents with role "' + role + '":\\n' + delivered.join('\\n') }] };
+      }
+
+      const targetKey = normalizeTarget(rawTo);
+      // Group broadcast: @@groupName (normalizeTarget strips one @, so one @ remains)
       if (targetKey.startsWith('@')) {
         const groupName = targetKey.slice(1);
         return handleGroupBroadcast(agents, groupName, messageText, done);
@@ -162,9 +252,20 @@ function handleToolCall(name, args) {
     }
     case 'listen': {
       try {
-        const content = fs.readFileSync(inboxFile, 'utf-8');
-        const newContent = content.slice(readOffset);
-        readOffset = content.length;
+        const buf = fs.readFileSync(inboxFile);
+        if (buf.length < readOffset) readOffset = 0;
+        if (buf.length <= readOffset) {
+          return { content: [{ type: 'text', text: 'No new messages.' }] };
+        }
+        const newBuf = buf.slice(readOffset);
+        // Only consume up to the last complete line
+        const lastNl = newBuf.lastIndexOf(0x0a);
+        if (lastNl < 0) {
+          return { content: [{ type: 'text', text: 'No new messages.' }] };
+        }
+        const completeBuf = newBuf.slice(0, lastNl + 1);
+        const newContent = completeBuf.toString('utf-8');
+        readOffset = readOffset + completeBuf.length;
         if (!newContent.trim()) {
           return { content: [{ type: 'text', text: 'No new messages.' }] };
         }
@@ -181,33 +282,73 @@ function handleToolCall(name, args) {
     }
     case 'peers': {
       const agents = readAgents();
-      const showAll = !!args.all;
+      const showAll = !!args.all || !!args.role || !!args.keyword;
+      const filterRole = String(args.role || '').trim().toLowerCase();
+      const filterKeyword = String(args.keyword || '').trim().toLowerCase();
       const hasGroup = GROUP_ID && GROUP_ID !== '__ungrouped__';
-      const allEntries = Object.entries(agents).filter(([id, v]) => id !== AGENT_ID && v);
-      if (!showAll && hasGroup) {
-        const list = allEntries
-          .filter(([id, v]) => v.groupId === GROUP_ID)
-          .map(([id, v]) => {
-            const ago = Math.round((Date.now() - (v.lastSeen || 0)) / 1000);
-            const label = ago < 60 ? 'active' : ago < 300 ? Math.round(ago / 60) + 'm ago' : 'idle';
-            const meta = [v.tool, v.cwd].filter(Boolean).join(' | ');
-            return v.name + ' [' + id + '] (' + label + ')' + (meta ? ' — ' + meta : '');
-          })
-          .join('\\n');
-        return { content: [{ type: 'text', text: (list || 'No other agents in this group.') + '\\n\\nTip: Use peers({ all: true }) to see agents across all groups.\\nNote: Messages are queued and will be delivered when the agent is ready. You can always send even if they appear idle.' }] };
-      }
-      // Show all, grouped by group
-      const groups = {};
-      for (const [id, v] of allEntries) {
-        const gName = v.groupName || v.groupId || '__ungrouped__';
-        if (!groups[gName]) groups[gName] = [];
+
+      function formatAgent(id, v) {
         const ago = Math.round((Date.now() - (v.lastSeen || 0)) / 1000);
         const label = ago < 60 ? 'active' : ago < 300 ? Math.round(ago / 60) + 'm ago' : 'idle';
+        const parts = [v.name + ' [' + id + '] (' + label + ')'];
+        const roles = Array.isArray(v.roles) && v.roles.length ? v.roles.join(', ') : '';
+        if (roles) parts.push('roles: ' + roles);
+        if (v.expertise) parts.push(v.expertise);
         const meta = [v.tool, v.cwd].filter(Boolean).join(' | ');
-        groups[gName].push(v.name + ' [' + id + '] (' + label + ')' + (meta ? ' — ' + meta : ''));
+        if (meta) parts.push(meta);
+        if (v.parentId) parts.push('parent: ' + v.parentId);
+        return parts.join(' — ');
       }
+
+      function matchesFilter(id, v) {
+        if (id === AGENT_ID || !v) return false;
+        if (filterRole) {
+          if (!Array.isArray(v.roles) || !v.roles.some(r => r.toLowerCase() === filterRole)) return false;
+        }
+        if (filterKeyword) {
+          const haystack = [v.name, ...(v.roles || []), v.expertise || '', v.cwd || ''].join(' ').toLowerCase();
+          if (!haystack.includes(filterKeyword)) return false;
+        }
+        return true;
+      }
+
+      let entries = Object.entries(agents);
+      if (!showAll && hasGroup) {
+        entries = entries.filter(([id, v]) => v && v.groupId === GROUP_ID);
+      }
+      entries = entries.filter(([id, v]) => matchesFilter(id, v));
+
+      // Separate main agents and sub-panes
+      const mainAgents = entries.filter(([id, v]) => !v.parentId);
+      const subPanes = entries.filter(([id, v]) => !!v.parentId);
+
+      // Group by group
+      const groups = {};
+      for (const [id, v] of mainAgents) {
+        const gName = v.groupName || v.groupId || '__ungrouped__';
+        if (!groups[gName]) groups[gName] = [];
+        let line = formatAgent(id, v);
+        // Append sub-panes under this agent
+        const children = subPanes.filter(([, sv]) => sv.parentId === id);
+        if (children.length) {
+          line += '\\n' + children.map(([cid, cv]) => '  └─ ' + formatAgent(cid, cv)).join('\\n');
+        }
+        groups[gName].push(line);
+      }
+      // Orphan sub-panes (parent not in current view)
+      const shownParents = new Set(mainAgents.map(([id]) => id));
+      const orphans = subPanes.filter(([, v]) => !shownParents.has(v.parentId));
+      if (orphans.length) {
+        for (const [id, v] of orphans) {
+          const gName = v.groupName || v.groupId || '__ungrouped__';
+          if (!groups[gName]) groups[gName] = [];
+          groups[gName].push(formatAgent(id, v));
+        }
+      }
+
       const sections = Object.keys(groups).sort().map(g => '## ' + g + '\\n' + groups[g].join('\\n')).join('\\n\\n');
-      return { content: [{ type: 'text', text: (sections || 'No other agents found.') + '\\n\\nNote: Messages are queued and will be delivered when the agent is ready. You can always send even if they appear idle.' }] };
+      const suffix = !showAll && hasGroup ? '\\n\\nTip: Use peers({ all: true }) to see agents across all groups.' : '';
+      return { content: [{ type: 'text', text: (sections || 'No matching agents found.') + suffix + '\\nNote: Messages are queued and will be delivered when the agent is ready. You can always send even if they appear idle.' }] };
     }
     case 'slash': {
       const raw = String(args?.command || '').trim();
@@ -235,7 +376,7 @@ function handleToolCall(name, args) {
 }
 
 function normalizeTarget(value) {
-  return String(value || '').trim().replace(/^@+/, '').trim();
+  return String(value || '').trim().replace(/^@/, '').trim();
 }
 
 function readAgents() {
@@ -379,7 +520,10 @@ function handleRequest(req) {
     case 'notifications/cancelled':
       break; // no response needed for notifications
     default:
-      sendError(req.id, -32601, 'Method not found: ' + req.method);
+      // JSON-RPC: notifications (no id) must not get a response
+      if (req.id !== undefined && req.id !== null) {
+        sendError(req.id, -32601, 'Method not found: ' + req.method);
+      }
   }
 }
 
@@ -454,6 +598,17 @@ process.stdin.on('data', (chunk) => {
 });
 process.stdin.resume();
 
-process.on('SIGTERM', () => process.exit(0));
-process.on('SIGINT', () => process.exit(0));
+function unregisterAgent() {
+  try {
+    const agents = JSON.parse(fs.readFileSync(agentsFile, 'utf-8'));
+    delete agents[AGENT_ID];
+    fs.writeFileSync(agentsTmpFile, JSON.stringify(agents, null, 2));
+    fs.renameSync(agentsTmpFile, agentsFile);
+  } catch {
+    try { fs.unlinkSync(agentsTmpFile); } catch {}
+  }
+}
+process.on('SIGTERM', () => { unregisterAgent(); process.exit(0); });
+process.on('SIGINT', () => { unregisterAgent(); process.exit(0); });
+process.on('exit', () => { unregisterAgent(); });
 `

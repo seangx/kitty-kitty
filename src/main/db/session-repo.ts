@@ -148,18 +148,18 @@ export function setGroupCollabEnabled(id: string, enabled: boolean): void {
   db.prepare('UPDATE groups SET collab_enabled = ? WHERE id = ?').run(enabled ? 1 : 0, id)
 }
 
-export function listSessionsByGroup(groupId: string): SessionRow[] {
+export function listSessionsByGroup(groupId: string): (SessionRow & { hidden?: number })[] {
   const db = getDB()
   return db.prepare(`
     SELECT s.id, s.tmux_name as tmuxName, s.title, s.tool, s.cwd, s.status,
-           s.main_pane as mainPane,
+           s.main_pane as mainPane, s.hidden,
            s.created_at as createdAt, s.updated_at as updatedAt,
            s.group_id as groupId, g.name as groupName, g.color as groupColor
     FROM sessions s
     LEFT JOIN groups g ON s.group_id = g.id
     WHERE s.group_id = ?
     ORDER BY s.updated_at DESC
-  `).all(groupId) as SessionRow[]
+  `).all(groupId) as (SessionRow & { hidden?: number })[]
 }
 
 export function deleteGroup(id: string): void {

@@ -34,7 +34,7 @@
 
 当用户输入 "publish" 时，执行以下步骤：
 
-1. 杀掉所有 kitty-kitty Electron 进程：`ps aux | grep '[E]lectron.app.*kitty-kitty' | awk '{print $2}' | xargs kill 2>/dev/null; pkill -f 'Kitty Kitty' 2>/dev/null`
+1. 杀掉所有 kitty-kitty Electron 进程：`ps aux | grep 'kitty-kitty' | grep -v grep | awk '{print $2}' | xargs kill 2>/dev/null`
 2. `npm run build` 编译项目
 3. `npm run pack` 打包
 4. 找到打包产物中的 .app，复制到 /Applications/ 覆盖安装
@@ -45,7 +45,7 @@
 
 当用户输入 "debug" 时，执行以下步骤：
 
-1. 杀掉所有 kitty-kitty Electron 进程：`ps aux | grep '[E]lectron.app.*kitty-kitty' | awk '{print $2}' | xargs kill 2>/dev/null; pkill -f 'Kitty Kitty' 2>/dev/null`
+1. 杀掉所有 kitty-kitty Electron 进程：`ps aux | grep 'kitty-kitty' | grep -v grep | awk '{print $2}' | xargs kill 2>/dev/null`
 2. 在项目根目录执行 `npm run dev`
 3. 保持该开发进程运行，并报告启动结果（成功/失败）
 

@@ -15,6 +15,7 @@ interface SessionState {
   renameSession: (id: string, title: string) => void
   createWorktreePane: (sessionId: string, branch: string, baseBranch?: string, tool?: string) => Promise<void>
   removeWorktreePane: (paneId: string, keepWorktree?: boolean) => Promise<void>
+  setAgentMetadata: (id: string, roles: string, expertise: string) => Promise<void>
 }
 
 export const useSessionStore = create<SessionState>((set, get) => ({
@@ -79,6 +80,18 @@ export const useSessionStore = create<SessionState>((set, get) => ({
 
   removeWorktreePane: async (paneId, keepWorktree) => {
     await ipc.removeWorktreePane(paneId, { keepWorktree })
+    await get().loadSessions()
+  },
+
+  setAgentMetadata: async (id, roles, expertise) => {
+    // Optimistic update
+    set((state) => ({
+      sessions: state.sessions.map((s) =>
+        s.id === id ? { ...s, roles, expertise } : s
+      )
+    }))
+    await ipc.setAgentMetadata(id, roles, expertise)
+    // Re-sync to get authoritative state
     await get().loadSessions()
   }
 }))

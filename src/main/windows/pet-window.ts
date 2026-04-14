@@ -19,8 +19,8 @@ function loadPosition(): { x: number; y: number } | null {
       // Verify position is within a visible display
       const displays = screen.getAllDisplays()
       const visible = displays.some((d) => {
-        const { x, y, width, height } = d.bounds
-        return data.x >= x - 100 && data.x < x + width && data.y >= y - 100 && data.y < y + height
+        const { x, y, width, height } = d.workArea
+        return data.x >= x && data.x < x + width - 50 && data.y >= y && data.y < y + height - 50
       })
       if (visible) return { x: data.x, y: data.y }
     }

@@ -6,7 +6,7 @@ import { homedir } from 'os'
 import { execSync } from 'child_process'
 import { log } from '../logger'
 import * as tmux from '../tmux/session-manager'
-import { generateLaunchScript, isToolInstalled, getInstallHint } from '../tmux/cli-wrapper'
+import { generateLaunchScript, isToolInstalled, getInstallHint, getPaneMode } from '../tmux/cli-wrapper'
 import * as collab from '../mcp/collab-manager'
 import * as sessionMcp from '../mcp/session-mcp-manager'
 import * as sessionRepo from '../db/session-repo'
@@ -504,7 +504,7 @@ export function registerSessionHandlers(): void {
 
   // --- Pane mode ---
   ipcMain.handle(IPC.PANE_MODE_GET, () => {
-    const { getPaneMode } = require('../tmux/cli-wrapper')
+
     return getPaneMode()
   })
 
@@ -522,14 +522,38 @@ export function registerSessionHandlers(): void {
       migrateToPane()
     } else {
       migrateToSession()
+      // Restore sessions that were merged (their tmux sessions were destroyed by join-pane)
+      // Re-run the session restore logic to recreate them
+      const liveNames = new Set(tmux.listTmuxSessions().map(s => s.name))
+      for (const row of sessionRepo.listSessions()) {
+        if (!liveNames.has(row.tmuxName) && row.cwd && existsSync(row.cwd) && !row.hidden) {
+          try {
+            const script = generateLaunchScript(row.tool, 'restore')
+            execSync(
+              `${tmux.TMUX} new-session -d -s "${row.tmuxName}" -c "${row.cwd}" "${script}"`,
+              { stdio: 'ignore', env: { ...process.env, TERM: 'xterm-256color' } }
+            )
+            tmux.applyKittyStatusBar(row.tmuxName)
+            sessionRepo.updateSessionStatus(row.id, 'detached')
+            log('pane-mode', `restored session: ${row.title} (${row.tmuxName})`)
+          } catch (err) {
+            log('pane-mode', `restore failed for ${row.tmuxName}:`, err)
+          }
+        }
+      }
     }
 
+    // Re-apply status bar to ALL live sessions (mode changed, need fresh config)
+    const allLive = tmux.listTmuxSessions()
+    for (const s of allLive) {
+      tmux.applyKittyStatusBar(s.name)
+    }
     tmux.refreshAllStatusBars()
     return { success: true }
   })
 
   ipcMain.handle(IPC.SESSION_CREATE_IN_GROUP, (_event, groupId: string) => {
-    const { getPaneMode } = require('../tmux/cli-wrapper')
+
     ensureReady('claude')
 
     const group = sessionRepo.getGroupById(groupId)
@@ -600,13 +624,48 @@ export function registerSessionHandlers(): void {
   ipcMain.handle(IPC.GROUP_SET_MAIN_SESSION, (_event, groupId: string, sessionId: string) => {
     sessionRepo.setGroupMainSession(groupId, sessionId)
 
-    const { getPaneMode } = require('../tmux/cli-wrapper')
     if (getPaneMode()) {
       const session = sessionRepo.listSessions().find(s => s.id === sessionId)
-      if (session && tmux.isSessionAlive(session.tmuxName)) {
-        const mainPane = session.mainPane || '0.0'
-        const target = mainPane.startsWith('%') ? mainPane : `${session.tmuxName}:${mainPane}`
-        tmux.swapMainPane(session.tmuxName, target)
+      if (!session) return { success: true }
+
+      // Find the tmux session hosting this group's panes
+      const groupSessions = sessionRepo.listSessionsByGroup(groupId)
+        .filter(s => !s.hidden && tmux.isSessionAlive(s.tmuxName))
+      const hostTmux = groupSessions[0]?.tmuxName
+      if (!hostTmux) return { success: true }
+
+      // Find the pane matching this session's cwd
+      try {
+        const panes = execSync(
+          `${tmux.TMUX} list-panes -t "${hostTmux}" -F '#{pane_id} #{pane_current_path}'`,
+          { encoding: 'utf-8' }
+        ).trim().split('\n')
+
+        const sessionCwd = session.cwd
+        let targetPaneId = ''
+        for (const line of panes) {
+          const [paneId, ...pathParts] = line.split(' ')
+          const panePath = pathParts.join(' ')
+          if (sessionCwd && panePath.includes(require('path').basename(sessionCwd))) {
+            targetPaneId = paneId
+            break
+          }
+        }
+
+        if (targetPaneId) {
+          tmux.swapMainPane(hostTmux, targetPaneId)
+          // Reapply main-vertical layout with 35% main pane
+          execSync(`${tmux.TMUX} select-layout -t "${hostTmux}" main-vertical`, { stdio: 'ignore' })
+          const width = parseInt(execSync(
+            `${tmux.TMUX} display-message -t "${hostTmux}" -p '#{window_width}'`,
+            { encoding: 'utf-8' }
+          ).trim(), 10)
+          if (width > 0) {
+            execSync(`${tmux.TMUX} resize-pane -t "${hostTmux}:0.0" -x ${Math.floor(width * 0.35)}`, { stdio: 'ignore' })
+          }
+        }
+      } catch (err) {
+        log('pane-mode', `swap main pane failed:`, err)
       }
     }
     return { success: true }
@@ -616,19 +675,67 @@ export function registerSessionHandlers(): void {
 function migrateToPane(): void {
   const groups = sessionRepo.listGroups()
   for (const group of groups) {
+    // Only consider visible, alive sessions with unique tmux names
     const sessions = sessionRepo.listSessionsByGroup(group.id)
-      .filter(s => tmux.isSessionAlive(s.tmuxName))
-    if (sessions.length <= 1) continue
+      .filter(s => !s.hidden && tmux.isSessionAlive(s.tmuxName))
+    const uniqueSessions = sessions.filter((s, i, arr) =>
+      arr.findIndex(x => x.tmuxName === s.tmuxName) === i
+    )
+    if (uniqueSessions.length <= 1) continue
 
-    const mainSession = sessions.find(s => s.id === group.mainSessionId) || sessions[0]
-    const others = sessions.filter(s => s.id !== mainSession.id)
+    const mainSession = uniqueSessions.find(s => s.id === group.mainSessionId) || uniqueSessions[0]
+    const others = uniqueSessions.filter(s => s.tmuxName !== mainSession.tmuxName)
 
-    for (let i = 0; i < others.length; i++) {
+    // Kill extra panes on main session first (worktree forks etc.)
+    const mainPanes = tmux.getPaneCount(mainSession.tmuxName)
+    if (mainPanes > 1) {
       try {
-        tmux.joinSessionAsPane(others[i].tmuxName, mainSession.tmuxName, i === 0)
+        const panes = execSync(
+          `${tmux.TMUX} list-panes -t "${mainSession.tmuxName}" -F '#{pane_id}'`,
+          { encoding: 'utf-8' }
+        ).trim().split('\n')
+        for (let p = panes.length - 1; p >= 1; p--) {
+          try { execSync(`${tmux.TMUX} kill-pane -t ${panes[p]}`, { stdio: 'ignore' }) } catch { /* ignore */ }
+        }
+      } catch { /* ignore */ }
+    }
+
+    for (const other of others) {
+      try {
+        // Kill extra panes in source session first (keep only the main pane 0.0)
+        const srcPaneCount = tmux.getPaneCount(other.tmuxName)
+        if (srcPaneCount > 1) {
+          const srcPanes = execSync(
+            `${tmux.TMUX} list-panes -t "${other.tmuxName}" -F '#{pane_id}'`,
+            { encoding: 'utf-8' }
+          ).trim().split('\n')
+          // Kill all except the first pane
+          for (let p = srcPanes.length - 1; p >= 1; p--) {
+            try { execSync(`${tmux.TMUX} kill-pane -t ${srcPanes[p]}`, { stdio: 'ignore' }) } catch { /* ignore */ }
+          }
+        }
+        tmux.joinSessionAsPane(other.tmuxName, mainSession.tmuxName, false)
       } catch (err) {
-        log('pane-mode', `join failed for ${others[i].tmuxName}:`, err)
+        log('pane-mode', `join failed for ${other.tmuxName}:`, err)
       }
+    }
+
+
+
+    // Apply main-vertical layout: first pane on left, rest stacked on right
+    try {
+      execSync(`${tmux.TMUX} select-layout -t "${mainSession.tmuxName}" main-vertical`, { stdio: 'ignore' })
+      // Resize main pane to 35%
+      const width = parseInt(execSync(
+        `${tmux.TMUX} display-message -t "${mainSession.tmuxName}" -p '#{window_width}'`,
+        { encoding: 'utf-8' }
+      ).trim(), 10)
+      if (width > 0) {
+        const mainWidth = Math.floor(width * 0.35)
+        execSync(`${tmux.TMUX} resize-pane -t "${mainSession.tmuxName}:0.0" -x ${mainWidth}`, { stdio: 'ignore' })
+      }
+    } catch (err) {
+      log('pane-mode', `layout failed for ${mainSession.tmuxName}:`, err)
     }
 
     if (!group.mainSessionId) {
@@ -638,35 +745,28 @@ function migrateToPane(): void {
 }
 
 function migrateToSession(): void {
-  const groups = sessionRepo.listGroups()
-  for (const group of groups) {
-    const sessions = sessionRepo.listSessionsByGroup(group.id)
-    if (sessions.length <= 1) continue
-
-    const hostSession = sessions.find(s => tmux.isSessionAlive(s.tmuxName))
-    if (!hostSession) continue
-
-    const paneCount = tmux.getPaneCount(hostSession.tmuxName)
+  // Kill extra panes in all kitty sessions — restore logic in syncAndList
+  // will recreate the dead sessions as independent tmux sessions.
+  const allSessions = tmux.listTmuxSessions()
+  for (const s of allSessions) {
+    const paneCount = tmux.getPaneCount(s.name)
     if (paneCount <= 1) continue
 
     try {
       const panes = execSync(
-        `${tmux.TMUX} list-panes -t "${hostSession.tmuxName}" -F '#{pane_id}'`,
+        `${tmux.TMUX} list-panes -t "${s.name}" -F '#{pane_id}'`,
         { encoding: 'utf-8' }
       ).trim().split('\n')
 
-      for (let i = 1; i < panes.length; i++) {
-        const { v4: uuid } = require('uuid')
-        const newTmuxName = `kitty_${uuid().slice(0, 8)}`
+      // Kill all panes except the first (main pane stays)
+      for (let i = panes.length - 1; i >= 1; i--) {
         try {
-          tmux.breakPaneToSession(panes[i], newTmuxName)
-          tmux.applyKittyStatusBar(newTmuxName)
-        } catch (err) {
-          log('pane-mode', `break failed for pane ${panes[i]}:`, err)
-        }
+          execSync(`${tmux.TMUX} kill-pane -t ${panes[i]}`, { stdio: 'ignore' })
+        } catch { /* ignore */ }
       }
+      log('pane-mode', `killed ${panes.length - 1} extra panes in ${s.name}`)
     } catch (err) {
-      log('pane-mode', `migration failed for group ${group.id}:`, err)
+      log('pane-mode', `migration failed for ${s.name}:`, err)
     }
   }
 }
@@ -709,7 +809,15 @@ function syncAndList(): SessionInfo[] {
       }
     }
 
-      // Restore worktree panes for all live sessions
+    // Auto-migrate layout based on pane mode
+    // Session mode: kill extra panes BEFORE restoring worktree panes
+    // Pane mode: merge sessions AFTER restore (worktree panes not needed in pane mode)
+    if (!getPaneMode()) {
+      migrateToSession()
+    }
+
+    // Restore worktree panes for all live sessions (session mode only)
+    if (!getPaneMode()) {
       for (const row of sessionRepo.listSessions()) {
         if (liveNames.has(row.tmuxName)) {
           try {
@@ -719,6 +827,11 @@ function syncAndList(): SessionInfo[] {
           }
         }
       }
+    }
+
+    if (getPaneMode()) {
+      migrateToPane()
+    }
 
     // Apply status bar to all live sessions
     for (const name of liveNames) {
