@@ -1,7 +1,7 @@
-import { writeFileSync, chmodSync, existsSync } from 'fs'
+import { writeFileSync, chmodSync, existsSync, readFileSync, mkdirSync } from 'fs'
 import { execSync } from 'child_process'
 import { join } from 'path'
-import { tmpdir } from 'os'
+import { tmpdir, homedir } from 'os'
 
 /** Common binary directories not in GUI app's PATH */
 const EXTRA_BIN_DIRS = [
@@ -40,10 +40,55 @@ export type LaunchMode = 'continue' | 'new' | 'resume' | 'restore'
 interface ToolConfig {
   /** Base command */
   cmd: string
+  /** Default arguments appended to every invocation */
+  defaultArgs?: string
   /** Flag to continue most recent session */
   continueFlag?: string
   /** Flag to resume a specific session, followed by session ID */
   resumeFlag?: string
+}
+
+/**
+ * User config file: ~/.kitty-kitty/config.json
+ *
+ * Example:
+ * {
+ *   "toolArgs": {
+ *     "claude": "--dangerously-skip-permissions",
+ *     "codex": "--some-flag"
+ *   }
+ * }
+ */
+const CONFIG_PATH = join(homedir(), '.kitty-kitty', 'config.json')
+
+interface KittyConfig {
+  toolArgs?: Record<string, string>
+  paneMode?: boolean
+}
+
+function loadConfig(): KittyConfig {
+  try {
+    if (existsSync(CONFIG_PATH)) {
+      return JSON.parse(readFileSync(CONFIG_PATH, 'utf-8'))
+    }
+  } catch { /* ignore parse errors */ }
+  // Create default config if missing
+  const defaultConfig: KittyConfig = { toolArgs: { claude: '' }, paneMode: false }
+  try {
+    mkdirSync(join(homedir(), '.kitty-kitty'), { recursive: true })
+    writeFileSync(CONFIG_PATH, JSON.stringify(defaultConfig, null, 2))
+  } catch { /* ignore */ }
+  return defaultConfig
+}
+
+export function getUserToolArgs(tool: string): string {
+  const config = loadConfig()
+  return config.toolArgs?.[tool] ?? ''
+}
+
+export function getPaneMode(): boolean {
+  const config = loadConfig()
+  return config.paneMode ?? false
 }
 
 const TOOLS: Record<string, ToolConfig> = {
@@ -132,17 +177,27 @@ export function getToolCommand(tool: string): string {
 
 const PATH_PREAMBLE = 'export PATH="/opt/homebrew/bin:/usr/local/bin:$HOME/.local/bin:$PATH"'
 
+/** Build the full base command: cmd + hardcoded defaultArgs + user config toolArgs */
+function baseCmd(config: ToolConfig): string {
+  const parts = [config.cmd]
+  if (config.defaultArgs) parts.push(config.defaultArgs)
+  const userArgs = getUserToolArgs(config.cmd)
+  if (userArgs) parts.push(userArgs)
+  return parts.join(' ')
+}
+
 function buildContinueScript(config: ToolConfig): string {
   if (!config.continueFlag) return buildNewScript(config)
+  const cmd = baseCmd(config)
 
   return `#!/bin/bash
 ${PATH_PREAMBLE}
 # Try to continue most recent session, fallback to new
-${config.cmd} ${config.continueFlag} 2>/dev/null
+${cmd} ${config.continueFlag} 2>/dev/null
 EXIT=$?
 if [ $EXIT -ne 0 ]; then
   echo "No session to continue, starting new..."
-  ${config.cmd}
+  ${cmd}
 fi
 # Keep shell alive if tool exits
 exec $SHELL
@@ -150,9 +205,10 @@ exec $SHELL
 }
 
 function buildNewScript(config: ToolConfig): string {
+  const cmd = baseCmd(config)
   return `#!/bin/bash
 ${PATH_PREAMBLE}
-${config.cmd}
+${cmd}
 # Keep shell alive if tool exits
 exec $SHELL
 `
@@ -160,15 +216,16 @@ exec $SHELL
 
 function buildResumeScript(config: ToolConfig, resumeId: string): string {
   if (!config.resumeFlag) return buildNewScript(config)
+  const cmd = baseCmd(config)
 
   return `#!/bin/bash
 ${PATH_PREAMBLE}
 # Resume specific session, fallback to continue, then new
-${config.cmd} ${config.resumeFlag} "${resumeId}" 2>/dev/null
+${cmd} ${config.resumeFlag} "${resumeId}" 2>/dev/null
 EXIT=$?
 if [ $EXIT -ne 0 ]; then
   echo "Resume failed, trying continue..."
-  ${config.cmd} ${config.continueFlag || ''} 2>/dev/null || ${config.cmd}
+  ${cmd} ${config.continueFlag || ''} 2>/dev/null || ${cmd}
 fi
 # Keep shell alive if tool exits
 exec $SHELL
@@ -176,21 +233,22 @@ exec $SHELL
 }
 
 function buildRestoreScript(config: ToolConfig): string {
+  const cmd = baseCmd(config)
   // Best-effort: try continue → new → shell
   if (!config.continueFlag) {
     return `#!/bin/bash
 ${PATH_PREAMBLE}
-${config.cmd} 2>/dev/null || exec $SHELL
+${cmd} 2>/dev/null || exec $SHELL
 `
   }
 
   return `#!/bin/bash
 ${PATH_PREAMBLE}
 # Restore: try continue, then new, then fallback to shell
-${config.cmd} ${config.continueFlag} 2>/dev/null
+${cmd} ${config.continueFlag} 2>/dev/null
 EXIT=$?
 if [ $EXIT -ne 0 ]; then
-  ${config.cmd} 2>/dev/null || true
+  ${cmd} 2>/dev/null || true
 fi
 # Keep shell alive if tool exits
 exec $SHELL
