@@ -419,8 +419,9 @@ export function capturePane(tmuxName: string, lines = 3): string {
  */
 export function applyKittyStatusBar(tmuxName: string): void {
   try {
+    const { getPaneMode } = require('./cli-wrapper')
+    const isPaneMode = getPaneMode()
     const groupBarScript = ensureGroupBarScript()
-    const sessionBarScript = ensureSessionBarScript()
     const sq = shellQuote(tmuxName)
 
     // Initialize KITTY_ACTIVE_GROUP if not set
@@ -437,15 +438,26 @@ export function applyKittyStatusBar(tmuxName: string): void {
       `set-option -t ${sq} status on`,
       `set-option -t ${sq} status-position bottom`,
       `set-option -t ${sq} status-style "bg=#2a2a45,fg=#aaa8c3"`,
-      `set-option -t ${sq} status 2`,
-      `set-option -t ${sq} status-format[0] "#[bg=#1e1e36]#(${groupBarScript})#[fill=#1e1e36]"`,
-      `set-option -t ${sq} status-format[1] "#(${sessionBarScript})#[align=right]#[fg=#aaa8c3] %H:%M "`,
       // No window list — everything is in status-format
       `set-window-option -t ${sq} window-status-format ""`,
       `set-window-option -t ${sq} window-status-current-format ""`,
       `set-option -t ${sq} status-interval 5`,
       `set-option -t ${sq} mouse on`,
     ]
+
+    if (isPaneMode) {
+      opts.push(
+        `set-option -t ${sq} status 1`,
+        `set-option -t ${sq} status-format[0] "#[bg=#1e1e36]#(${groupBarScript})#[fill=#1e1e36,align=right]#[fg=#aaa8c3] %H:%M "`,
+      )
+    } else {
+      const sessionBarScript = ensureSessionBarScript()
+      opts.push(
+        `set-option -t ${sq} status 2`,
+        `set-option -t ${sq} status-format[0] "#[bg=#1e1e36]#(${groupBarScript})#[fill=#1e1e36]"`,
+        `set-option -t ${sq} status-format[1] "#[bg=#2a2a45]#(${sessionBarScript})#[fill=#2a2a45,align=right]#[fg=#aaa8c3] %H:%M "`,
+      )
+    }
 
     for (const cmd of opts) {
       try { execSync(`${TMUX} ${cmd}`, { stdio: 'ignore' }) } catch { /* ignore */ }
@@ -473,7 +485,9 @@ export function applyKittyStatusBar(tmuxName: string): void {
 
     // Ctrl+1~9 to switch groups, Alt+1~9 to switch sessions within group
     bindGroupKeys()
-    bindSessionKeys()
+    if (!isPaneMode) {
+      bindSessionKeys()
+    }
   } catch { /* ignore */ }
 }
 
