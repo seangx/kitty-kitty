@@ -1,8 +1,10 @@
 import { useState, useMemo, useCallback, useEffect, useRef } from 'react'
 import type { SessionInfo } from '@shared/types/session'
 import { useConfigStore } from '../store/config-store'
+import { useSessionStore } from '../store/session-store'
 import { COLOR_THEMES } from '@shared/types/config'
 import { useAutoClose } from './useAutoClose'
+import AgentMetadataPopup from './AgentMetadataPopup'
 
 interface Props {
   sessions: SessionInfo[]
@@ -30,6 +32,7 @@ function setBubblePriorityLS(id: string, priority: number) {
   if (priority) localStorage.setItem(`kitty-bubble-priority-${id}`, String(priority))
   else localStorage.removeItem(`kitty-bubble-priority-${id}`)
 }
+
 
 function getGroupPriority(groupId: string): number {
   try { return parseInt(localStorage.getItem(`kitty-group-priority-${groupId}`) || '0', 10) } catch { return 0 }
@@ -97,19 +100,38 @@ export default function TagCloud({ sessions, onAttach, onKill, onRename, onCreat
   const [ctxMenu, setCtxMenu] = useState<{ id: string; x: number; y: number } | null>(null)
   const [editingId, setEditingId] = useState<string | null>(null)
   const [editTitle, setEditTitle] = useState('')
+  const [metadataPopup, setMetadataPopup] = useState<SessionInfo | null>(null)
+  const setAgentMetadata = useSessionStore((s) => s.setAgentMetadata)
   const [expandedSessionId, setExpandedSessionId] = useState<string | null>(null)
   const [expandedGroupId, setExpandedGroupId] = useState<string | null>(null)
   const [showAllUngrouped, setShowAllUngrouped] = useState(false)
+  const [showHidden, setShowHidden] = useState(false)
   const [wtBranchInput, setWtBranchInput] = useState('')
   const [wtInputSessionId, setWtInputSessionId] = useState<string | null>(null)
   const { bubble } = useConfigStore()
+  const [paneMode, setPaneMode] = useState(false)
 
   useEffect(() => { injectAnimations() }, [])
+  useEffect(() => {
+    window.api.invoke('pane-mode:get').then(setPaneMode).catch(() => {})
+  }, [])
+
+  const hiddenIds = useMemo(() => {
+    const h = new Set<string>()
+    sessions.forEach((s) => { if (s.hidden) h.add(s.id) })
+    return h
+  }, [sessions])
+
+  const handleToggleHidden = useCallback(async (id: string) => {
+    const isHidden = hiddenIds.has(id)
+    await window.api.invoke('session:set-hidden', id, !isHidden)
+    setCtxMenu(null)
+  }, [hiddenIds])
 
   // Sort: priority (desc) → running first → newest first
   const alive = useMemo(() => {
     return sessions
-      .filter((s) => s.status !== 'dead')
+      .filter((s) => s.status !== 'dead' && !hiddenIds.has(s.id))
       .sort((a, b) => {
         const pa = getBubblePriority(a.id), pb = getBubblePriority(b.id)
         if (pa !== pb) return pb - pa
@@ -117,7 +139,7 @@ export default function TagCloud({ sessions, onAttach, onKill, onRename, onCreat
         return 0
       })
       .slice(0, 8)
-  }, [sessions])
+  }, [sessions, hiddenIds])
 
   const [bubbleColors, setBubbleColors] = useState<Record<string, string>>({})
 
@@ -192,6 +214,7 @@ export default function TagCloud({ sessions, onAttach, onKill, onRename, onCreat
 
   const [groups, setGroups] = useState<Array<{ id: string; name: string }>>([])
   const [groupMenuId, setGroupMenuId] = useState<string | null>(null)
+  const [groupCtxMenu, setGroupCtxMenu] = useState<{ id: string; x: number; y: number } | null>(null)
   const [newGroupName, setNewGroupName] = useState('')
   const showCollabError = useCallback((error: unknown) => {
     const message = error instanceof Error ? error.message : '未知错误'
@@ -228,11 +251,11 @@ export default function TagCloud({ sessions, onAttach, onKill, onRename, onCreat
 
   // Group sessions: grouped ones by group, ungrouped separate
   const grouped = useMemo(() => {
-    const map = new Map<string, { name: string; sessions: SessionInfo[] }>()
+    const map = new Map<string, { name: string; color?: string; sessions: SessionInfo[] }>()
     const ungrouped: SessionInfo[] = []
     for (const s of alive) {
       if (s.groupId && s.groupName) {
-        if (!map.has(s.groupId)) map.set(s.groupId, { name: s.groupName, sessions: [] })
+        if (!map.has(s.groupId)) map.set(s.groupId, { name: s.groupName, color: s.groupColor, sessions: [] })
         map.get(s.groupId)!.sessions.push(s)
       } else {
         ungrouped.push(s)
@@ -264,6 +287,10 @@ export default function TagCloud({ sessions, onAttach, onKill, onRename, onCreat
     const n = nudge(tierIdx)
     const branch = branchColor(session.cwd || '')
     const hasPriority = (priorities[session.id] || 0) > 0
+    const hasMetadata = !!(session.roles && session.roles.length > 0) || !!(session.expertise && session.expertise.length > 0)
+    const metadataTooltip = hasMetadata
+      ? `\n🏷 ${session.roles || ''}${session.expertise ? '\n' + session.expertise.slice(0, 60) + (session.expertise.length > 60 ? '...' : '') : ''}`
+      : ''
 
     // Float animation: different duration per bubble for organic feel
     const floatDuration = 3 + (tierIdx * 0.5)
@@ -300,7 +327,7 @@ export default function TagCloud({ sessions, onAttach, onKill, onRename, onCreat
           maxWidth: Math.round((isHero ? 240 : 170) * scale),
           animation: `kitty-float ${floatDuration}s ease-in-out ${floatDelay}s infinite`,
         }}
-        title={`${session.tool}: ${session.title}\n📂 ${session.cwd || '未设置'}${hasPriority ? '\n📌 已置顶' : ''}\n点击 attach · 右键菜单`}
+        title={`${session.tool}: ${session.title}\n📂 ${session.cwd || '未设置'}${hasPriority ? '\n📌 已置顶' : ''}${metadataTooltip}\n点击 attach · 右键菜单`}
       >
         {/* Title + optional branch below */}
         <div style={{ overflow: 'hidden', minWidth: 0 }}>
@@ -339,6 +366,9 @@ export default function TagCloud({ sessions, onAttach, onKill, onRename, onCreat
         )}
         {hasPriority && (
           <span style={{ fontSize: Math.max(fontSize - 4, 7), flexShrink: 0, opacity: 0.7 }}>📌</span>
+        )}
+        {hasMetadata && (
+          <span style={{ fontSize: Math.max(fontSize - 4, 7), flexShrink: 0, opacity: 0.7 }}>🏷</span>
         )}
       </div>
     )
@@ -470,14 +500,13 @@ export default function TagCloud({ sessions, onAttach, onKill, onRename, onCreat
           <div key={groupId} style={{
             display: 'flex', flexDirection: 'column', alignItems: 'stretch',
             borderRadius: Math.round(10 * scale),
-            background: '#23233f88',
-            border: '1px solid #46465c33',
+            background: g.color ? `${g.color}22` : '#23233f88',
+            border: g.color ? `1px solid ${g.color}44` : '1px solid #46465c33',
             maxWidth: Math.round(400 * scale),
-            width: '100%',
           }}>
-            {/* Compact group header row */}
             <div
               onClick={() => setExpandedGroupId(isExpanded ? null : groupId)}
+              onContextMenu={(e) => { e.preventDefault(); e.stopPropagation(); setGroupCtxMenu({ id: groupId, x: e.clientX, y: e.clientY }) }}
               style={{
                 display: 'flex', alignItems: 'center', gap: 6,
                 padding: `${Math.round(5 * scale)}px ${Math.round(10 * scale)}px`,
@@ -489,7 +518,6 @@ export default function TagCloud({ sessions, onAttach, onKill, onRename, onCreat
               <span style={{ fontSize: Math.round(11 * scale), color: '#a7a5ff', fontWeight: 600, flex: 1, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
                 {g.name}
               </span>
-              {/* Status dots */}
               {runningCount > 0 && <span style={{ fontSize: 9, color: '#10b981' }}>●{runningCount > 1 ? runningCount : ''}</span>}
               {detachedCount > 0 && <span style={{ fontSize: 9, color: '#d97706' }}>●{detachedCount > 1 ? detachedCount : ''}</span>}
               <span style={{ fontSize: 9, color: '#aaa8c3' }}>({g.sessions.length})</span>
@@ -503,14 +531,13 @@ export default function TagCloud({ sessions, onAttach, onKill, onRename, onCreat
                 title={(groupPriorities[groupId] || 0) > 0 ? '取消置顶' : '置顶显示'}
               >📌</button>
             </div>
-            {/* Expanded: show session bubbles vertically */}
             {isExpanded && (
               <div style={{
-                display: 'flex', flexDirection: 'column', alignItems: 'center', gap: Math.round(4 * scale),
+                display: 'flex', flexWrap: 'wrap', justifyContent: 'center', gap: Math.round(4 * scale),
                 padding: `0 ${Math.round(8 * scale)}px ${Math.round(6 * scale)}px`,
               }}>
                 {g.sessions.map((s) => (
-                  <div key={s.id} style={{ position: 'relative', display: 'flex', flexDirection: 'column', alignItems: 'center' }}>
+                  <div key={s.id} style={{ display: 'flex', flexDirection: 'column', alignItems: 'center' }}>
                     {renderTag(s, tierMap.get(s.id) || 3)}
                     {renderWorktreePanes(s)}
                   </div>
@@ -521,9 +548,27 @@ export default function TagCloud({ sessions, onAttach, onKill, onRename, onCreat
         )
       })}
 
-      {/* Ungrouped sessions — show up to 3, fold the rest */}
-      {small.length > 0 && (
+      {/* Ungrouped sessions — layout-dependent */}
+      {bubble.layout === 'stack' ? (
+        <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: Math.round(4 * scale) }}>
+          {grouped.ungrouped.map((s) => (
+            <div key={s.id} style={{ display: 'flex', flexDirection: 'column', alignItems: 'center' }}>
+              {renderTag(s, 2)}
+              {renderWorktreePanes(s)}
+            </div>
+          ))}
+        </div>
+      ) : bubble.layout === 'arc' ? (
         <div style={{ display: 'flex', flexWrap: 'wrap', gap: Math.round(6 * scale), justifyContent: 'center' }}>
+          {grouped.ungrouped.map((s) => (
+            <div key={s.id} style={{ display: 'flex', flexDirection: 'column', alignItems: 'center' }}>
+              {renderTag(s, 2)}
+              {renderWorktreePanes(s)}
+            </div>
+          ))}
+        </div>
+      ) : (
+        <div style={{ display: 'flex', flexWrap: 'wrap', gap: Math.round(5 * scale), justifyContent: 'center', alignItems: 'flex-end' }}>
           {(showAllUngrouped ? small : small.slice(0, 3)).map((s) => (
             <div key={s.id} style={{ display: 'flex', flexDirection: 'column', alignItems: 'center' }}>
               {renderTag(s, tierMap.get(s.id) || 3)}
@@ -537,28 +582,56 @@ export default function TagCloud({ sessions, onAttach, onKill, onRename, onCreat
                 fontSize: Math.round(9 * scale), color: '#aaa8c3', background: '#23233f66',
                 border: '1px solid #46465c33', borderRadius: 9999,
                 padding: `${Math.round(3 * scale)}px ${Math.round(10 * scale)}px`,
-                cursor: 'pointer', fontFamily: "'Plus Jakarta Sans', -apple-system, sans-serif",
+                cursor: 'pointer', fontFamily: "'Plus Jakarta Sans', -apple-system, sans-serif", alignSelf: 'center',
               }}
             >+{small.length - 3} more</button>
           )}
-        </div>
-      )}
-      {medium.length > 0 && (
-        <div style={{ display: 'flex', flexWrap: 'wrap', gap: Math.round(8 * scale), justifyContent: 'center' }}>
           {medium.map((s) => (
-            <div key={s.id} style={{ position: 'relative', display: 'flex', flexDirection: 'column', alignItems: 'center' }}>
+            <div key={s.id} style={{ display: 'flex', flexDirection: 'column', alignItems: 'center' }}>
               {renderTag(s, tierMap.get(s.id) || 1)}
               {renderWorktreePanes(s)}
             </div>
           ))}
+          {hero && (
+            <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center' }}>
+              {renderTag(hero, 0)}
+              {renderWorktreePanes(hero)}
+            </div>
+          )}
         </div>
       )}
-      {hero && (
-        <div style={{ position: 'relative', display: 'flex', flexDirection: 'column', alignItems: 'center' }}>
-          {renderTag(hero, 0)}
-          {renderWorktreePanes(hero)}
-        </div>
-      )}
+
+      {/* Hidden sessions toggle */}
+      {(() => {
+        const hiddenAlive = sessions.filter((s) => s.status !== 'dead' && hiddenIds.has(s.id))
+        if (hiddenAlive.length === 0) return null
+        return (
+          <div style={{ display: 'flex', flexWrap: 'wrap', gap: Math.round(4 * scale), justifyContent: 'center', alignItems: 'center' }}>
+            <button
+              onClick={() => setShowHidden(!showHidden)}
+              style={{
+                fontSize: Math.round(9 * scale), color: '#8886a5', background: '#23233f44',
+                border: '1px dashed #46465c44', borderRadius: 9999,
+                padding: `${Math.round(2 * scale)}px ${Math.round(8 * scale)}px`,
+                cursor: 'pointer', fontFamily: "'Plus Jakarta Sans', -apple-system, sans-serif",
+              }}
+            >{showHidden ? '收起' : `👻 ${hiddenAlive.length} 个已隐藏`}</button>
+            {showHidden && hiddenAlive.map((s) => (
+              <button key={s.id}
+                onClick={() => onAttach(s.id)}
+                onContextMenu={(e) => { e.preventDefault(); e.stopPropagation(); handleToggleHidden(s.id) }}
+                title="右键取消隐藏"
+                style={{
+                  fontSize: Math.round(9 * scale), color: '#e5e3ff', background: '#23233fcc',
+                  border: '1px solid #46465c55', borderRadius: 9999,
+                  padding: `${Math.round(2 * scale)}px ${Math.round(8 * scale)}px`,
+                  cursor: 'pointer', fontFamily: "'Plus Jakarta Sans', -apple-system, sans-serif",
+                }}
+              >{s.title}</button>
+            ))}
+          </div>
+        )
+      })()}
 
       {/* Context menu */}
       {ctxMenu && (
@@ -587,21 +660,29 @@ export default function TagCloud({ sessions, onAttach, onKill, onRename, onCreat
             >{(priorities[ctxMenu.id] || 0) > 0 ? '📌 取消置顶' : '📌 置顶显示'}</button>
             {[
               { label: '✏️ 重命名', action: () => { const s = alive.find(x => x.id === ctxMenu.id); if (s) startRename(s) } },
-              { label: '⚡ 切换为 Claude', action: async () => {
-                try { await window.api.invoke('session:set-tool', ctxMenu.id, 'claude'); setCtxMenu(null) }
-                catch (error) { showCollabError(error) }
-              }},
-              { label: '🔧 切换为 Codex', action: async () => {
-                try { await window.api.invoke('session:set-tool', ctxMenu.id, 'codex'); setCtxMenu(null) }
-                catch (error) { showCollabError(error) }
-              }},
               { label: '♻️ 重启会话', action: async () => {
                 try { await window.api.invoke('session:restart-agent', ctxMenu.id); setCtxMenu(null) }
                 catch (error) { showCollabError(error) }
               }},
               { label: '📂 打开目录', action: () => { const s = alive.find(x => x.id === ctxMenu.id); if (s?.cwd) window.api.invoke('shell:open-path', s.cwd); setCtxMenu(null) } },
               { label: '📦 技能', action: () => { onOpenSkills(ctxMenu.id); setCtxMenu(null) } },
+              { label: '🏷 设置角色/专长', action: () => {
+                const s = alive.find(x => x.id === ctxMenu.id)
+                if (s) setMetadataPopup(s)
+                setCtxMenu(null)
+              } },
               { label: '👥 移到 Group...', action: () => setGroupMenuId(groupMenuId ? null : ctxMenu.id) },
+              { label: '👻 从底栏隐藏', action: () => handleToggleHidden(ctxMenu.id) },
+              ...(paneMode && ctxMenu && sessions.find(s => s.id === ctxMenu.id)?.groupId ? [{
+                label: '📌 设为主窗口',
+                action: async () => {
+                  const session = sessions.find(s => s.id === ctxMenu!.id)
+                  if (session?.groupId) {
+                    await window.api.invoke('group:set-main-session', session.groupId, session.id)
+                  }
+                  setCtxMenu(null)
+                }
+              }] : []),
               null,
               { label: '✕ 退出', action: () => { onKill(ctxMenu.id); setCtxMenu(null) }, color: '#ff6e84' },
             ].map((item, i) => {
@@ -650,6 +731,71 @@ export default function TagCloud({ sessions, onAttach, onKill, onRename, onCreat
             )}
         </TagCtxMenu>
       )}
+
+      {/* Group context menu */}
+      {groupCtxMenu && (
+        <TagCtxMenu x={groupCtxMenu.x} y={groupCtxMenu.y} glass={theme.glass} dim={theme.dim}
+          onClose={() => setGroupCtxMenu(null)}>
+          {/* Create session in this group */}
+          <button onClick={async () => {
+            try {
+              await window.api.invoke('session:create-in-group', groupCtxMenu.id)
+            } catch (e: any) {
+              console.error('create-in-group failed:', e)
+            }
+            setGroupCtxMenu(null)
+          }}
+            style={{
+              display: 'block', width: '100%', padding: '6px 12px', textAlign: 'left',
+              background: 'none', border: 'none', color: '#e5e3ff', cursor: 'pointer',
+              fontSize: 12, fontFamily: 'inherit', borderRadius: 6,
+            }}
+            onMouseEnter={(e) => { (e.target as HTMLElement).style.background = `${theme.dim}33` }}
+            onMouseLeave={(e) => { (e.target as HTMLElement).style.background = 'none' }}
+          >+ 在此组创建会话</button>
+          <div style={{ padding: '6px 10px 4px', display: 'flex', gap: 5, alignItems: 'center' }}>
+            <span style={{ fontSize: 10, color: '#aaa8c3' }}>🎨</span>
+            {BUBBLE_PRESETS.map((c) => (
+              <button key={c} onClick={async () => { await window.api.invoke('group:set-color', groupCtxMenu.id, c); setGroupCtxMenu(null) }}
+                style={{
+                  width: 16, height: 16, borderRadius: '50%', background: c, border: 'none', cursor: 'pointer',
+                  outline: sessions.find(s => s.groupId === groupCtxMenu.id)?.groupColor === c ? '2px solid #fff' : 'none', outlineOffset: 1,
+                }} />
+            ))}
+            <button onClick={async () => { await window.api.invoke('group:set-color', groupCtxMenu.id, null); setGroupCtxMenu(null) }}
+              style={{ width: 16, height: 16, borderRadius: '50%', background: '#333', border: '1px dashed #666', cursor: 'pointer', fontSize: 8, color: '#999' }}
+              title="恢复默认">✕</button>
+          </div>
+        </TagCtxMenu>
+      )}
+
+      {/* Agent metadata editor popup */}
+      {metadataPopup && (
+        <div
+          style={{
+            position: 'fixed',
+            top: '50%',
+            left: '50%',
+            transform: 'translate(-50%, -50%)',
+            zIndex: 300,
+          }}
+          onClick={(e) => e.stopPropagation()}
+          onMouseDown={(e) => e.stopPropagation()}
+        >
+          <AgentMetadataPopup
+            session={metadataPopup}
+            onSave={async (roles, expertise) => {
+              try {
+                await setAgentMetadata(metadataPopup.id, roles, expertise)
+                setMetadataPopup(null)
+              } catch (err) {
+                console.error('[kitty] set agent metadata failed:', err)
+              }
+            }}
+            onClose={() => setMetadataPopup(null)}
+          />
+        </div>
+      )}
     </div>
   )
 }
@@ -658,12 +804,14 @@ function TagCtxMenu({ x, y, glass, onClose, children }: {
   x: number; y: number; glass: string; dim?: string; onClose: () => void; children: React.ReactNode
 }) {
   const autoCloseRef = useAutoClose(true, onClose)
+  const nodeRef = useRef<HTMLDivElement | null>(null)
   const [pos, setPos] = useState({ left: x, top: y })
+  const [maxH, setMaxH] = useState<number | undefined>(undefined)
 
-  const setRef = useCallback((node: HTMLDivElement | null) => {
-    (autoCloseRef as any).current = node
+  // Reposition menu to stay within viewport, called on mount and resize
+  const reposition = useCallback(() => {
+    const node = nodeRef.current
     if (!node) return
-    // Adjust position to stay within viewport
     const rect = node.getBoundingClientRect()
     const vw = window.innerWidth
     const vh = window.innerHeight
@@ -671,16 +819,35 @@ function TagCtxMenu({ x, y, glass, onClose, children }: {
     let top = y
     if (rect.right > vw) left = Math.max(4, vw - rect.width - 4)
     if (rect.bottom > vh) top = Math.max(4, vh - rect.height - 4)
-    if (left !== x || top !== y) setPos({ left, top })
-  }, [x, y, autoCloseRef])
+    if (top < 4) top = 4
+    const available = vh - top - 4
+    setMaxH(rect.height > available ? available : undefined)
+    setPos({ left, top })
+  }, [x, y])
 
-  useEffect(() => { setPos({ left: x, top: y }) }, [x, y])
+  const setRef = useCallback((node: HTMLDivElement | null) => {
+    (autoCloseRef as any).current = node
+    nodeRef.current = node
+    if (node) reposition()
+  }, [autoCloseRef, reposition])
+
+  // Re-measure when children change size (e.g. group submenu expands)
+  useEffect(() => {
+    const node = nodeRef.current
+    if (!node) return
+    const ro = new ResizeObserver(() => reposition())
+    ro.observe(node)
+    return () => ro.disconnect()
+  }, [reposition])
+
+  useEffect(() => { setPos({ left: x, top: y }); setMaxH(undefined) }, [x, y])
 
   return (
     <div ref={setRef} style={{
       position: 'fixed', left: pos.left, top: pos.top, zIndex: 200,
       background: `${glass}f0`, backdropFilter: 'blur(24px)', WebkitBackdropFilter: 'blur(24px)',
-      borderRadius: 12, padding: '4px 0', minWidth: 150, maxHeight: '85vh', overflowY: 'auto',
+      borderRadius: 12, padding: '4px 0', minWidth: 150,
+      maxHeight: maxH ?? '85vh', overflowY: 'auto',
       boxShadow: '0 8px 32px rgba(0,0,0,0.5)', fontFamily: "'Plus Jakarta Sans', -apple-system, sans-serif"
     }}>
       {children}
