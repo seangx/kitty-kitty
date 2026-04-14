@@ -12,6 +12,9 @@ export interface SessionInfo {
   groupId?: string
   groupName?: string
   groupColor?: string
+  hidden?: boolean
+  roles?: string
+  expertise?: string
   isGitRepo?: boolean
   worktreePanes?: WorktreePaneInfo[]
 }
@@ -21,4 +24,5 @@ export interface GroupInfo {
   name: string
   color?: string
   collabEnabled?: boolean
+  mainSessionId?: string
 }

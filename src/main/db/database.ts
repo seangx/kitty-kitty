@@ -55,10 +55,22 @@ function runMigrations(database: Database.Database): void {
       database.exec("ALTER TABLE groups ADD COLUMN collab_enabled INTEGER NOT NULL DEFAULT 0")
     } catch { /* column already exists */ }
     try {
+      database.exec("ALTER TABLE groups ADD COLUMN main_session_id TEXT REFERENCES sessions(id) ON DELETE SET NULL")
+    } catch { /* column already exists */ }
+    try {
       database.exec("ALTER TABLE sessions ADD COLUMN group_id TEXT REFERENCES groups(id) ON DELETE SET NULL")
     } catch { /* column already exists */ }
     try {
       database.exec("ALTER TABLE sessions ADD COLUMN main_pane TEXT NOT NULL DEFAULT '0.0'")
+    } catch { /* column already exists */ }
+    try {
+      database.exec("ALTER TABLE sessions ADD COLUMN hidden INTEGER NOT NULL DEFAULT 0")
+    } catch { /* column already exists */ }
+    try {
+      database.exec("ALTER TABLE sessions ADD COLUMN roles TEXT NOT NULL DEFAULT ''")
+    } catch { /* column already exists */ }
+    try {
+      database.exec("ALTER TABLE sessions ADD COLUMN expertise TEXT NOT NULL DEFAULT ''")
     } catch { /* column already exists */ }
 
     // Add worktree_panes table

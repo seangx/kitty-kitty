@@ -14,6 +14,8 @@ export interface SessionRow {
   groupId: string | null
   groupName: string | null
   groupColor: string | null
+  roles: string
+  expertise: string
 }
 
 export interface GroupRow {
@@ -21,6 +23,7 @@ export interface GroupRow {
   name: string
   color: string | null
   collabEnabled: number
+  mainSessionId: string | null
 }
 
 // --- Sessions ---
@@ -37,7 +40,8 @@ export function listSessions(): SessionRow[] {
   const db = getDB()
   return db.prepare(`
     SELECT s.id, s.tmux_name as tmuxName, s.title, s.tool, s.cwd, s.status,
-           s.main_pane as mainPane,
+           s.main_pane as mainPane, s.hidden,
+           s.roles, s.expertise,
            s.created_at as createdAt, s.updated_at as updatedAt,
            s.group_id as groupId, g.name as groupName, g.color as groupColor
     FROM sessions s
@@ -76,6 +80,21 @@ export function updateSessionMainPane(id: string, mainPane: string): void {
   db.prepare("UPDATE sessions SET main_pane = ?, updated_at = datetime('now') WHERE id = ?").run(mainPane, id)
 }
 
+export function updateSessionHidden(id: string, hidden: boolean): void {
+  const db = getDB()
+  db.prepare("UPDATE sessions SET hidden = ?, updated_at = datetime('now') WHERE id = ?").run(hidden ? 1 : 0, id)
+}
+
+export function updateSessionRoles(id: string, roles: string): void {
+  const db = getDB()
+  db.prepare("UPDATE sessions SET roles = ?, updated_at = datetime('now') WHERE id = ?").run(roles, id)
+}
+
+export function updateSessionExpertise(id: string, expertise: string): void {
+  const db = getDB()
+  db.prepare("UPDATE sessions SET expertise = ?, updated_at = datetime('now') WHERE id = ?").run(expertise, id)
+}
+
 export function deleteSession(id: string): void {
   const db = getDB()
   db.prepare('DELETE FROM sessions WHERE id = ?').run(id)
@@ -104,7 +123,7 @@ export function createGroup(id: string, name: string, color?: string): void {
 export function listGroups(): GroupRow[] {
   const db = getDB()
   return db.prepare(`
-    SELECT id, name, color, collab_enabled as collabEnabled
+    SELECT id, name, color, collab_enabled as collabEnabled, main_session_id as mainSessionId
     FROM groups
     ORDER BY created_at
   `).all() as GroupRow[]
@@ -113,10 +132,15 @@ export function listGroups(): GroupRow[] {
 export function getGroupById(id: string): GroupRow | undefined {
   const db = getDB()
   return db.prepare(`
-    SELECT id, name, color, collab_enabled as collabEnabled
+    SELECT id, name, color, collab_enabled as collabEnabled, main_session_id as mainSessionId
     FROM groups
     WHERE id = ?
   `).get(id) as GroupRow | undefined
+}
+
+export function setGroupMainSession(groupId: string, sessionId: string | null): void {
+  const db = getDB()
+  db.prepare('UPDATE groups SET main_session_id = ? WHERE id = ?').run(sessionId, groupId)
 }
 
 export function setGroupCollabEnabled(id: string, enabled: boolean): void {
@@ -147,4 +171,9 @@ export function deleteGroup(id: string): void {
 export function renameGroup(id: string, name: string): void {
   const db = getDB()
   db.prepare('UPDATE groups SET name = ? WHERE id = ?').run(name, id)
+}
+
+export function updateGroupColor(id: string, color: string | null): void {
+  const db = getDB()
+  db.prepare('UPDATE groups SET color = ? WHERE id = ?').run(color, id)
 }
