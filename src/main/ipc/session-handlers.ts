@@ -605,7 +605,6 @@ export function registerSessionHandlers(): void {
               const [paneId, ...pathParts] = line.split(' ')
               if (session.cwd && pathParts.join(' ').includes(basename(session.cwd))) {
                 execSync(`${tmux.TMUX} kill-pane -t ${paneId}`, { stdio: 'ignore' })
-                // Reapply layout if panes remain
                 if (tmux.getPaneCount(hostTmux) > 1) {
                   tmux.applyMainVerticalLayout(hostTmux)
                 }
@@ -613,6 +612,30 @@ export function registerSessionHandlers(): void {
               }
             }
           } catch { /* ignore */ }
+        }
+      } else {
+        // Unhide: restore pane into the group's host tmux session
+        if (session.groupId) {
+          const groupSessions = sessionRepo.listSessionsByGroup(session.groupId)
+            .filter(s => s.id !== sessionId && !s.hidden && tmux.isSessionAlive(s.tmuxName))
+          const hostTmux = groupSessions[0]?.tmuxName
+          if (hostTmux && session.cwd && existsSync(session.cwd)) {
+            try {
+              // Create a temp session, then join it as pane
+              const tempName = `kitty_tmp_${Date.now()}`
+              const script = generateLaunchScript('claude', 'restore')
+              execSync(
+                `${tmux.TMUX} new-session -d -s "${tempName}" -c "${session.cwd}" "${script}"`,
+                { stdio: 'ignore', env: { ...process.env, TERM: 'xterm-256color' } }
+              )
+              tmux.joinSessionAsPane(tempName, hostTmux, false)
+              // Update DB tmux_name
+              const db = require('../db/database').getDB()
+              db.prepare("UPDATE sessions SET tmux_name = ? WHERE id = ?").run(hostTmux, sessionId)
+            } catch (err) {
+              log('pane-mode', `unhide restore pane failed:`, err)
+            }
+          }
         }
       }
     }

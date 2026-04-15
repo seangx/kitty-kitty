@@ -123,11 +123,18 @@ export default function TagCloud({ sessions, onAttach, onKill, onRename, onCreat
     return h
   }, [sessions])
 
+  const [hiddenLoading, setHiddenLoading] = useState<string | null>(null)
   const handleToggleHidden = useCallback(async (id: string) => {
     const isHidden = hiddenIds.has(id)
-    await window.api.invoke('session:set-hidden', id, !isHidden)
+    setHiddenLoading(id)
     setCtxMenu(null)
-  }, [hiddenIds])
+    try {
+      await window.api.invoke('session:set-hidden', id, !isHidden)
+      await loadSessions()
+    } finally {
+      setHiddenLoading(null)
+    }
+  }, [hiddenIds, loadSessions])
 
   // Sort: priority (desc) → running first → newest first
   const alive = useMemo(() => {
@@ -643,7 +650,7 @@ export default function TagCloud({ sessions, onAttach, onKill, onRename, onCreat
               <button key={s.id}
                 onClick={() => onAttach(s.id)}
                 onContextMenu={(e) => { e.preventDefault(); e.stopPropagation(); handleToggleHidden(s.id) }}
-                title="右键取消隐藏"
+                title="右键显示"
                 style={{
                   fontSize: Math.round(9 * scale), color: '#e5e3ff', background: '#23233fcc',
                   border: '1px solid #46465c55', borderRadius: 9999,
@@ -694,7 +701,7 @@ export default function TagCloud({ sessions, onAttach, onKill, onRename, onCreat
                 if (s) setMetadataPopup(s)
                 setCtxMenu(null)
               } },
-              { label: '👻 从底栏隐藏', action: () => handleToggleHidden(ctxMenu.id) },
+              { label: hiddenLoading === ctxMenu.id ? '⏳ 处理中...' : '👻 隐藏', action: () => handleToggleHidden(ctxMenu.id) },
               ...(paneMode && ctxMenu && sessions.find(s => s.id === ctxMenu.id)?.groupId ? [{
                 label: '📌 设为主窗口',
                 action: async () => {
