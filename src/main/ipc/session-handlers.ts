@@ -562,32 +562,37 @@ export function registerSessionHandlers(): void {
           }
         }
       } else {
-        // Unhide: restore pane into the group's host tmux session
+        // Unhide: restore pane in background so IPC returns fast for UI refresh
         if (session.groupId) {
-          const groupSessions = sessionRepo.listSessionsByGroup(session.groupId)
-            .filter(s => s.id !== sessionId && !s.hidden && tmux.isSessionAlive(s.tmuxName))
-          const hostTmux = groupSessions[0]?.tmuxName
-          if (hostTmux && session.cwd && existsSync(session.cwd)) {
+          const gid = session.groupId
+          const sid = sessionId
+          const sCwd = session.cwd
+          const sTool = session.tool
+          setTimeout(() => {
             try {
-              const tempName = `kitty_tmp_${Date.now()}`
-              const script = generateLaunchScript('claude', 'restore')
-              execSync(
-                `${tmux.TMUX} new-session -d -s "${tempName}" -c "${session.cwd}" "${script}"`,
-                { stdio: 'ignore', env: { ...process.env, TERM: 'xterm-256color' } }
-              )
-              tmux.joinSessionAsPane(tempName, hostTmux)
-              // Save the new paneId
-              const newPanes = execSync(
-                `${tmux.TMUX} list-panes -t "${hostTmux}" -F '#{pane_id}'`,
-                { encoding: 'utf-8' }
-              ).trim().split('\n')
-              sessionRepo.updateSessionPaneId(sessionId, newPanes[newPanes.length - 1])
-              const db = getDB()
-              db.prepare("UPDATE sessions SET tmux_name = ? WHERE id = ?").run(hostTmux, sessionId)
+              const groupSessions = sessionRepo.listSessionsByGroup(gid)
+                .filter(s => s.id !== sid && !s.hidden && tmux.isSessionAlive(s.tmuxName))
+              const hostTmux = groupSessions[0]?.tmuxName
+              if (hostTmux && sCwd && existsSync(sCwd)) {
+                const tempName = `kitty_tmp_${Date.now()}`
+                const script = generateLaunchScript(sTool || 'claude', 'restore')
+                execSync(
+                  `${tmux.TMUX} new-session -d -s "${tempName}" -c "${sCwd}" "${script}"`,
+                  { stdio: 'ignore', env: { ...process.env, TERM: 'xterm-256color' } }
+                )
+                tmux.joinSessionAsPane(tempName, hostTmux)
+                const newPanes = execSync(
+                  `${tmux.TMUX} list-panes -t "${hostTmux}" -F '#{pane_id}'`,
+                  { encoding: 'utf-8' }
+                ).trim().split('\n')
+                sessionRepo.updateSessionPaneId(sid, newPanes[newPanes.length - 1])
+                getDB().prepare("UPDATE sessions SET tmux_name = ? WHERE id = ?").run(hostTmux, sid)
+                tmux.applyMainVerticalLayout(hostTmux)
+              }
             } catch (err) {
               log('pane-mode', `unhide restore pane failed:`, err)
             }
-          }
+          }, 0)
         }
       }
     }

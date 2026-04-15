@@ -533,7 +533,16 @@ export default function TagCloud({ sessions, onAttach, onKill, onRename, onCreat
                 (e.currentTarget as HTMLElement).style.outline = 'none'
                 const sessionId = e.dataTransfer.getData('text/plain')
                 if (sessionId) {
-                  await window.api.invoke('session:set-group', sessionId, groupId)
+                  const s = sessions.find(x => x.id === sessionId)
+                  if (s?.hidden) {
+                    setShowHidden(false)
+                    await window.api.invoke('session:set-hidden', sessionId, false)
+                    if (s.groupId !== groupId) {
+                      await window.api.invoke('session:set-group', sessionId, groupId)
+                    }
+                  } else {
+                    await window.api.invoke('session:set-group', sessionId, groupId)
+                  }
                   await loadSessions()
                 }
               }}
@@ -639,6 +648,17 @@ export default function TagCloud({ sessions, onAttach, onKill, onRename, onCreat
           <div style={{ display: 'flex', flexWrap: 'wrap', gap: Math.round(4 * scale), justifyContent: 'center', alignItems: 'center' }}>
             <button
               onClick={() => setShowHidden(!showHidden)}
+              onDragOver={(e) => { e.preventDefault(); e.dataTransfer.dropEffect = 'move'; (e.currentTarget as HTMLElement).style.outline = '2px solid #8886a5'; (e.currentTarget as HTMLElement).style.outlineOffset = '-2px' }}
+              onDragLeave={(e) => { (e.currentTarget as HTMLElement).style.outline = 'none' }}
+              onDrop={async (e) => {
+                e.preventDefault();
+                (e.currentTarget as HTMLElement).style.outline = 'none'
+                const sessionId = e.dataTransfer.getData('text/plain')
+                if (sessionId) {
+                  await window.api.invoke('session:set-hidden', sessionId, true)
+                  await loadSessions()
+                }
+              }}
               style={{
                 fontSize: Math.round(9 * scale), color: '#8886a5', background: '#23233f44',
                 border: '1px dashed #46465c44', borderRadius: 9999,
@@ -647,17 +667,20 @@ export default function TagCloud({ sessions, onAttach, onKill, onRename, onCreat
               }}
             >{showHidden ? '收起' : `👻 ${hiddenAlive.length} 个已隐藏`}</button>
             {showHidden && hiddenAlive.map((s) => (
-              <button key={s.id}
+              <div key={s.id}
+                draggable
+                onDragStart={(e) => { e.dataTransfer.setData('text/plain', s.id); e.dataTransfer.effectAllowed = 'move' }}
                 onClick={() => onAttach(s.id)}
                 onContextMenu={(e) => { e.preventDefault(); e.stopPropagation(); handleToggleHidden(s.id) }}
-                title="右键显示"
+                title="拖到分组中显示"
                 style={{
+                  display: 'inline-block',
                   fontSize: Math.round(9 * scale), color: '#e5e3ff', background: '#23233fcc',
                   border: '1px solid #46465c55', borderRadius: 9999,
                   padding: `${Math.round(2 * scale)}px ${Math.round(8 * scale)}px`,
-                  cursor: 'pointer', fontFamily: "'Plus Jakarta Sans', -apple-system, sans-serif",
+                  cursor: 'grab', fontFamily: "'Plus Jakarta Sans', -apple-system, sans-serif",
                 }}
-              >{s.title}</button>
+              >{s.title}</div>
             ))}
           </div>
         )
