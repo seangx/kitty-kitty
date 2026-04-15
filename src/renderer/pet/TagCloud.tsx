@@ -753,6 +753,23 @@ export default function TagCloud({ sessions, onAttach, onKill, onRename, onCreat
             onMouseEnter={(e) => { (e.target as HTMLElement).style.background = `${theme.dim}33` }}
             onMouseLeave={(e) => { (e.target as HTMLElement).style.background = 'none' }}
           >+ 在此组创建会话</button>
+          {/* Rename group inline */}
+          <div style={{ display: 'flex', gap: 4, padding: '4px 10px' }}>
+            <input
+              defaultValue={sessions.find(s => s.groupId === groupCtxMenu.id)?.groupName || ''}
+              onKeyDown={async (e) => {
+                if (e.key === 'Enter') {
+                  const val = (e.target as HTMLInputElement).value.trim()
+                  if (val) {
+                    await window.api.invoke('group:rename', groupCtxMenu.id, val)
+                    setGroupCtxMenu(null)
+                  }
+                }
+              }}
+              placeholder="重命名..."
+              style={{ flex: 1, padding: '3px 6px', borderRadius: 6, fontSize: 11, background: '#17172f', border: '1px solid #46465c44', color: '#e5e3ff', outline: 'none', fontFamily: 'inherit' }}
+            />
+          </div>
           <div style={{ padding: '6px 10px 4px', display: 'flex', gap: 5, alignItems: 'center' }}>
             <span style={{ fontSize: 10, color: '#aaa8c3' }}>🎨</span>
             {BUBBLE_PRESETS.map((c) => (

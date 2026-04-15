@@ -489,13 +489,8 @@ export function applyKittyStatusBar(tmuxName: string): void {
     }
 
     // Ctrl+1~9 to switch groups, Alt+1~9 to switch sessions within group
-    bindGroupKeys()
-    if (isPaneMode) {
-      // Pane mode: Alt+number switches groups (sessions are visible as panes)
-      bindAltGroupKeys()
-    } else {
-      bindSessionKeys()
-    }
+    // Key bindings are global (not per-session), only bind once via refreshAllStatusBars
+    // to avoid race conditions between multiple applyKittyStatusBar calls
   } catch { /* ignore */ }
 }
 

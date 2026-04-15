@@ -561,7 +561,13 @@ export function registerSessionHandlers(): void {
 
     const groupSessions = sessionRepo.listSessionsByGroup(groupId)
     const mainSession = groupSessions.find(s => s.id === group.mainSessionId) || groupSessions[0]
-    const cwd = mainSession?.cwd || undefined
+
+    // Create a fresh cwd so claude doesn't auto-continue an existing session
+    const { v4: uuid } = require('uuid')
+    const freshId = uuid().slice(0, 8)
+    const { mkdirSync } = require('fs')
+    const freshCwd = join(homedir(), '.kitty-kitty', 'sessions', freshId)
+    mkdirSync(freshCwd, { recursive: true })
 
     const script = generateLaunchScript('claude', 'new')
 
@@ -575,27 +581,25 @@ export function registerSessionHandlers(): void {
       const isFirstSplit = tmux.getPaneCount(hostTmuxName) === 1
       const paneId = tmux.createPaneInSession(hostTmuxName, script, isFirstSplit)
 
-      const { v4: uuid } = require('uuid')
-      const id = uuid().slice(0, 8)
       const session: tmux.TmuxSession = {
-        id,
+        id: freshId,
         tmuxName: hostTmuxName,
         title: `${group.name} agent`,
         tool: 'claude',
-        cwd: cwd || '',
+        cwd: freshCwd,
         status: 'running',
         createdAt: new Date().toISOString(),
       }
       sessionRepo.saveSession(session)
-      sessionRepo.updateSessionGroup(id, groupId)
+      sessionRepo.updateSessionGroup(freshId, groupId)
 
       if (!group.mainSessionId) {
-        sessionRepo.setGroupMainSession(groupId, groupSessions[0]?.id || id)
+        sessionRepo.setGroupMainSession(groupId, groupSessions[0]?.id || freshId)
       }
 
       try {
-        sessionMcp.injectSessionMcp(id, cwd || '', hostTmuxName, session.title, groupId, group.name, 'claude', '', '')
-        collab.watchInbox(id, hostTmuxName, 'claude')
+        sessionMcp.injectSessionMcp(freshId, freshCwd, hostTmuxName, session.title, groupId, group.name, 'claude', '', '')
+        collab.watchInbox(freshId, hostTmuxName, 'claude')
       } catch (e) { log('session', 'mcp inject failed:', e) }
 
       tmux.focusSession(hostTmuxName)
@@ -603,7 +607,7 @@ export function registerSessionHandlers(): void {
       return toSessionInfo(session)
     } else {
       // Session mode or first session: create independent
-      const session = tmux.createTmuxSession('claude', undefined, cwd, script)
+      const session = tmux.createTmuxSession('claude', undefined, freshCwd, script)
       sessionRepo.saveSession(session)
       sessionRepo.updateSessionGroup(session.id, groupId)
 
@@ -837,6 +841,8 @@ function syncAndList(): SessionInfo[] {
     for (const name of liveNames) {
       tmux.applyKittyStatusBar(name)
     }
+    // Bind global keys once after all status bars are applied
+    tmux.refreshAllStatusBars()
   }
 
   // Start/refresh inbox watcher for all live sessions with cwd (every sync, idempotent)
