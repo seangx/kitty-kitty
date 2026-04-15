@@ -72,6 +72,9 @@ function runMigrations(database: Database.Database): void {
     try {
       database.exec("ALTER TABLE sessions ADD COLUMN expertise TEXT NOT NULL DEFAULT ''")
     } catch { /* column already exists */ }
+    try {
+      database.exec("ALTER TABLE sessions ADD COLUMN pane_id TEXT DEFAULT ''")
+    } catch { /* column already exists */ }
 
     // Add worktree_panes table
     try {

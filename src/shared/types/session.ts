@@ -15,6 +15,7 @@ export interface SessionInfo {
   hidden?: boolean
   roles?: string
   expertise?: string
+  paneId?: string
   isGitRepo?: boolean
   worktreePanes?: WorktreePaneInfo[]
 }
