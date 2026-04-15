@@ -252,7 +252,7 @@ export function importTmuxSession(tmuxName: string): TmuxSession {
 export function isSessionAttached(tmuxName: string): boolean {
   try {
     const output = execSync(
-      `tmux list-sessions -F "#{session_name}:#{session_attached}"`,
+      `${TMUX} list-sessions -F "#{session_name}:#{session_attached}"`,
       { encoding: 'utf-8', stdio: ['ignore', 'pipe', 'ignore'] }
     )
     const line = output.trim().split('\n').find((l) => l.startsWith(tmuxName + ':'))
@@ -291,9 +291,6 @@ export function isSessionAlive(tmuxName: string): boolean {
   }
 }
 
-/**
- * Kill a tmux session
- */
 /**
  * Focus the Ghostty window that has this tmux session, and switch client to it
  */
@@ -340,11 +337,12 @@ export function killSession(tmuxName: string): void {
  * Subsequent splits: vertical within the right side.
  * Returns the new pane's tmux pane ID (e.g., %5).
  */
-export function createPaneInSession(tmuxName: string, command: string, isFirstSplit: boolean): string {
+export function createPaneInSession(tmuxName: string, command: string, isFirstSplit: boolean, cwd?: string): string {
+  const cwdFlag = cwd ? `-c ${shellQuote(cwd)}` : ''
   let paneId: string
   if (isFirstSplit) {
     paneId = execSync(
-      `${TMUX} split-window -t ${shellQuote(tmuxName)} -h -p 65 -P -F '#{pane_id}' ${shellQuote(command)}`,
+      `${TMUX} split-window -t ${shellQuote(tmuxName)} -h -p 65 ${cwdFlag} -P -F '#{pane_id}' ${shellQuote(command)}`,
       { encoding: 'utf-8', env: { ...process.env, TERM: 'xterm-256color' } }
     ).trim()
   } else {
@@ -354,7 +352,7 @@ export function createPaneInSession(tmuxName: string, command: string, isFirstSp
     ).trim().split('\n')
     const lastPane = panes[panes.length - 1]
     paneId = execSync(
-      `${TMUX} split-window -t ${lastPane} -v -P -F '#{pane_id}' ${shellQuote(command)}`,
+      `${TMUX} split-window -t ${lastPane} -v ${cwdFlag} -P -F '#{pane_id}' ${shellQuote(command)}`,
       { encoding: 'utf-8', env: { ...process.env, TERM: 'xterm-256color' } }
     ).trim()
   }
@@ -385,7 +383,7 @@ export function swapMainPane(tmuxName: string, targetPaneId: string): void {
   } catch { /* ignore */ }
 }
 
-export function joinSessionAsPane(sourceSession: string, targetSession: string, _isFirstJoin: boolean): void {
+export function joinSessionAsPane(sourceSession: string, targetSession: string): void {
   // Join to the last pane in target (right side), then reapply layout
   const panes = execSync(
     `${TMUX} list-panes -t ${shellQuote(targetSession)} -F '#{pane_id}'`,
@@ -413,27 +411,6 @@ export function applyMainVerticalLayout(tmuxName: string): void {
       execSync(`${TMUX} resize-pane -t ${shellQuote(tmuxName + ':0.0')} -x ${Math.floor(width * 0.35)}`, { stdio: 'ignore' })
     }
   } catch { /* ignore */ }
-}
-
-export function breakPaneToSession(paneId: string, newTmuxName: string): void {
-  execSync(
-    `${TMUX} break-pane -s ${paneId} -t ${shellQuote(newTmuxName)}`,
-    { stdio: 'ignore' }
-  )
-}
-
-/**
- * Get the last line of output from a tmux pane (for status detection)
- */
-export function capturePane(tmuxName: string, lines = 3): string {
-  try {
-    return execSync(
-      `${TMUX} capture-pane -t ${shellQuote(tmuxName)} -p -J | tail -${lines}`,
-      { encoding: 'utf-8', stdio: ['ignore', 'pipe', 'ignore'] }
-    ).trim()
-  } catch {
-    return ''
-  }
 }
 
 /**
@@ -662,7 +639,7 @@ while IFS='|' read -r GID GNAME; do
     [ "\$N" -gt 1 ] && printf '#[fg=#3a3a5c,bg=%s] ' "\$GBG"
     printf '#[fg=#706f8a,bg=%s]  %d  %s (%d)  ' "\$GBG" "\$N" "\$GNAME" "\$COUNT"
   fi
-done < <(sqlite3 "\$DB" "SELECT id, name FROM groups ORDER BY created_at;" 2>/dev/null | tr '|' '|')
+done < <(sqlite3 "\$DB" "SELECT id, name FROM groups ORDER BY created_at;" 2>/dev/null)
 
 # Ungrouped count
 UCOUNT=0
