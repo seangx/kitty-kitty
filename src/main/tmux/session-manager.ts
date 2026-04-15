@@ -386,10 +386,33 @@ export function swapMainPane(tmuxName: string, targetPaneId: string): void {
 }
 
 export function joinSessionAsPane(sourceSession: string, targetSession: string, _isFirstJoin: boolean): void {
+  // Join to the last pane in target (right side), then reapply layout
+  const panes = execSync(
+    `${TMUX} list-panes -t ${shellQuote(targetSession)} -F '#{pane_id}'`,
+    { encoding: 'utf-8', stdio: ['ignore', 'pipe', 'ignore'] }
+  ).trim().split('\n')
+  const lastPane = panes[panes.length - 1]
   execSync(
-    `${TMUX} join-pane -s ${shellQuote(sourceSession + ':0.0')} -t ${shellQuote(targetSession)} -v`,
+    `${TMUX} join-pane -s ${shellQuote(sourceSession + ':0.0')} -t ${lastPane} -v`,
     { stdio: 'ignore' }
   )
+  applyMainVerticalLayout(targetSession)
+}
+
+/**
+ * Apply main-vertical layout: first pane left 35%, rest stacked right.
+ */
+export function applyMainVerticalLayout(tmuxName: string): void {
+  try {
+    execSync(`${TMUX} select-layout -t ${shellQuote(tmuxName)} main-vertical`, { stdio: 'ignore' })
+    const width = parseInt(execSync(
+      `${TMUX} display-message -t ${shellQuote(tmuxName)} -p '#{window_width}'`,
+      { encoding: 'utf-8', stdio: ['ignore', 'pipe', 'ignore'] }
+    ).trim(), 10)
+    if (width > 0) {
+      execSync(`${TMUX} resize-pane -t ${shellQuote(tmuxName + ':0.0')} -x ${Math.floor(width * 0.35)}`, { stdio: 'ignore' })
+    }
+  } catch { /* ignore */ }
 }
 
 export function breakPaneToSession(paneId: string, newTmuxName: string): void {

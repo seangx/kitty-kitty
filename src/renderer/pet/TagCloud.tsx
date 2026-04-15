@@ -102,6 +102,7 @@ export default function TagCloud({ sessions, onAttach, onKill, onRename, onCreat
   const [editTitle, setEditTitle] = useState('')
   const [metadataPopup, setMetadataPopup] = useState<SessionInfo | null>(null)
   const setAgentMetadata = useSessionStore((s) => s.setAgentMetadata)
+  const loadSessions = useSessionStore((s) => s.loadSessions)
   const [expandedSessionId, setExpandedSessionId] = useState<string | null>(null)
   const [expandedGroupId, setExpandedGroupId] = useState<string | null>(null)
   const [showAllUngrouped, setShowAllUngrouped] = useState(false)
@@ -250,13 +251,22 @@ export default function TagCloud({ sessions, onAttach, onKill, onRename, onCreat
   }, [newGroupName])
 
   // Group sessions: grouped ones by group, ungrouped separate
+  // All groups are shown (even empty ones) for drag-drop targets
   const grouped = useMemo(() => {
     const map = new Map<string, { name: string; color?: string; sessions: SessionInfo[] }>()
+    // Initialize all groups (even empty)
+    for (const g of groups) {
+      map.set(g.id, { name: g.name, color: undefined, sessions: [] })
+    }
     const ungrouped: SessionInfo[] = []
     for (const s of alive) {
-      if (s.groupId && s.groupName) {
-        if (!map.has(s.groupId)) map.set(s.groupId, { name: s.groupName, color: s.groupColor, sessions: [] })
-        map.get(s.groupId)!.sessions.push(s)
+      if (s.groupId && map.has(s.groupId)) {
+        const entry = map.get(s.groupId)!
+        if (s.groupColor) entry.color = s.groupColor
+        entry.sessions.push(s)
+      } else if (s.groupId && s.groupName) {
+        // Group not in list yet (shouldn't happen, but handle)
+        map.set(s.groupId, { name: s.groupName, color: s.groupColor, sessions: [s] })
       } else {
         ungrouped.push(s)
       }
@@ -265,7 +275,7 @@ export default function TagCloud({ sessions, onAttach, onKill, onRename, onCreat
       return getGroupPriority(b[0]) - getGroupPriority(a[0])
     })
     return { groups: sortedGroups, ungrouped }
-  }, [alive])
+  }, [alive, groups])
 
   if (alive.length === 0) return null
 
@@ -299,6 +309,8 @@ export default function TagCloud({ sessions, onAttach, onKill, onRename, onCreat
     return (
       <div
         key={session.id}
+        draggable
+        onDragStart={(e) => { e.dataTransfer.setData('text/plain', session.id); e.dataTransfer.effectAllowed = 'move' }}
         onMouseEnter={() => setHoveredId(session.id)}
         onMouseLeave={() => setHoveredId(null)}
         onClick={(e) => { e.stopPropagation(); if (!isEditing) onAttach(session.id) }}
@@ -507,6 +519,17 @@ export default function TagCloud({ sessions, onAttach, onKill, onRename, onCreat
             <div
               onClick={() => setExpandedGroupId(isExpanded ? null : groupId)}
               onContextMenu={(e) => { e.preventDefault(); e.stopPropagation(); setGroupCtxMenu({ id: groupId, x: e.clientX, y: e.clientY }) }}
+              onDragOver={(e) => { e.preventDefault(); e.dataTransfer.dropEffect = 'move'; (e.currentTarget as HTMLElement).style.outline = '2px solid #645efb'; (e.currentTarget as HTMLElement).style.outlineOffset = '-2px' }}
+              onDragLeave={(e) => { (e.currentTarget as HTMLElement).style.outline = 'none' }}
+              onDrop={async (e) => {
+                e.preventDefault();
+                (e.currentTarget as HTMLElement).style.outline = 'none'
+                const sessionId = e.dataTransfer.getData('text/plain')
+                if (sessionId) {
+                  await window.api.invoke('session:set-group', sessionId, groupId)
+                  await loadSessions()
+                }
+              }}
               style={{
                 display: 'flex', alignItems: 'center', gap: 6,
                 padding: `${Math.round(5 * scale)}px ${Math.round(10 * scale)}px`,
@@ -671,7 +694,6 @@ export default function TagCloud({ sessions, onAttach, onKill, onRename, onCreat
                 if (s) setMetadataPopup(s)
                 setCtxMenu(null)
               } },
-              { label: '👥 移到 Group...', action: () => setGroupMenuId(groupMenuId ? null : ctxMenu.id) },
               { label: '👻 从底栏隐藏', action: () => handleToggleHidden(ctxMenu.id) },
               ...(paneMode && ctxMenu && sessions.find(s => s.id === ctxMenu.id)?.groupId ? [{
                 label: '📌 设为主窗口',
@@ -740,6 +762,7 @@ export default function TagCloud({ sessions, onAttach, onKill, onRename, onCreat
           <button onClick={async () => {
             try {
               await window.api.invoke('session:create-in-group', groupCtxMenu.id)
+              await loadSessions()
             } catch (e: any) {
               console.error('create-in-group failed:', e)
             }

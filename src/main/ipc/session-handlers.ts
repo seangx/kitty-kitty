@@ -492,14 +492,131 @@ export function registerSessionHandlers(): void {
     const session = rows.find((s) => s.id === sessionId)
     if (!session) throw new Error('Session not found')
 
+    const oldGroupId = session.groupId
     sessionRepo.updateSessionGroup(sessionId, groupId)
 
     const nextGroup = groupId ? sessionRepo.getGroupById(groupId) : undefined
     sessionMcp.updateGroupId(sessionId, session.cwd, groupId || '', nextGroup?.name || '')
+
+    // In pane mode, move the pane between group tmux sessions
+    if (getPaneMode()) {
+      // Find the actual tmux session hosting this session's pane
+      // It may be its own tmuxName, or the old group's host session
+      let hostTmux = session.tmuxName
+      if (!tmux.isSessionAlive(hostTmux) && oldGroupId) {
+        // Look for alive session in the old group
+        const oldGroupSessions = sessionRepo.listSessionsByGroup(oldGroupId)
+          .filter(s => tmux.isSessionAlive(s.tmuxName))
+        if (oldGroupSessions.length > 0) hostTmux = oldGroupSessions[0].tmuxName
+      }
+
+      if (tmux.isSessionAlive(hostTmux)) {
+      try {
+        // Find the pane belonging to this session (match by cwd)
+        const panes = execSync(
+          `${tmux.TMUX} list-panes -t "${hostTmux}" -F '#{pane_id} #{pane_current_path}'`,
+          { encoding: 'utf-8' }
+        ).trim().split('\n')
+        const sessionCwd = session.cwd
+        let sourcePaneId = ''
+        for (const line of panes) {
+          const [paneId, ...pathParts] = line.split(' ')
+          const panePath = pathParts.join(' ')
+          if (sessionCwd && panePath.includes(basename(sessionCwd))) {
+            sourcePaneId = paneId
+            break
+          }
+        }
+        // Fallback: if only 1 pane or can't match, use the session's tmux directly
+        if (!sourcePaneId && panes.length === 1) {
+          sourcePaneId = panes[0].split(' ')[0]
+        }
+
+        if (sourcePaneId && groupId) {
+          // Find the target group's host tmux session
+          const targetGroupSessions = sessionRepo.listSessionsByGroup(groupId)
+            .filter(s => !s.hidden && s.id !== sessionId && tmux.isSessionAlive(s.tmuxName))
+          const targetHost = targetGroupSessions[0]
+
+          if (targetHost) {
+            // Move pane to target group's tmux session
+            // Join to the last pane in target (right side)
+            const targetPanes = execSync(
+              `${tmux.TMUX} list-panes -t "${targetHost.tmuxName}" -F '#{pane_id}'`,
+              { encoding: 'utf-8' }
+            ).trim().split('\n')
+            const targetLastPane = targetPanes[targetPanes.length - 1]
+            execSync(`${tmux.TMUX} join-pane -s ${sourcePaneId} -t ${targetLastPane} -v`, { stdio: 'ignore' })
+            // Update tmux_name in DB
+            const db = require('../db/database').getDB()
+            db.prepare("UPDATE sessions SET tmux_name = ? WHERE id = ?").run(targetHost.tmuxName, sessionId)
+            // Reapply layout on both sides
+            tmux.applyMainVerticalLayout(targetHost.tmuxName)
+            if (tmux.isSessionAlive(hostTmux) && tmux.getPaneCount(hostTmux) > 1) {
+              tmux.applyMainVerticalLayout(hostTmux)
+            }
+          } else {
+            // Target group has no alive sessions — break pane to independent session
+            const { v4: uuid } = require('uuid')
+            const newName = `kitty_${uuid().slice(0, 8)}`
+            execSync(`${tmux.TMUX} break-pane -d -s ${sourcePaneId}`, { stdio: 'ignore' })
+            // The broken pane becomes a new window in the current session, move it
+            // Actually break-pane -d keeps it in same session as new window
+            // For simplicity, just update the DB name
+            const db = require('../db/database').getDB()
+            db.prepare("UPDATE sessions SET tmux_name = ? WHERE id = ?").run(newName, sessionId)
+          }
+        } else if (sourcePaneId && !groupId) {
+          // Moving to ungrouped — break pane out to independent session
+          const { v4: uuid } = require('uuid')
+          const newName = `kitty_${uuid().slice(0, 8)}`
+          execSync(`${tmux.TMUX} break-pane -d -s ${sourcePaneId}`, { stdio: 'ignore' })
+          const db = require('../db/database').getDB()
+          db.prepare("UPDATE sessions SET tmux_name = ? WHERE id = ?").run(newName, sessionId)
+        }
+      } catch (err) {
+        log('pane-mode', `move pane between groups failed:`, err)
+      }
+      } // end if (tmux.isSessionAlive(hostTmux))
+    }
+
+    tmux.refreshAllStatusBars()
   })
 
   ipcMain.handle('session:set-hidden', (_event, sessionId: string, hidden: boolean) => {
+    const session = sessionRepo.listSessions().find(s => s.id === sessionId)
     sessionRepo.updateSessionHidden(sessionId, hidden)
+
+    // In pane mode, kill/restore the corresponding pane
+    if (getPaneMode() && session) {
+      if (hidden) {
+        // Find and kill the pane matching this session's cwd
+        const groupSessions = session.groupId
+          ? sessionRepo.listSessionsByGroup(session.groupId).filter(s => tmux.isSessionAlive(s.tmuxName))
+          : []
+        const hostTmux = groupSessions[0]?.tmuxName || session.tmuxName
+        if (tmux.isSessionAlive(hostTmux)) {
+          try {
+            const panes = execSync(
+              `${tmux.TMUX} list-panes -t "${hostTmux}" -F '#{pane_id} #{pane_current_path}'`,
+              { encoding: 'utf-8' }
+            ).trim().split('\n')
+            for (const line of panes) {
+              const [paneId, ...pathParts] = line.split(' ')
+              if (session.cwd && pathParts.join(' ').includes(basename(session.cwd))) {
+                execSync(`${tmux.TMUX} kill-pane -t ${paneId}`, { stdio: 'ignore' })
+                // Reapply layout if panes remain
+                if (tmux.getPaneCount(hostTmux) > 1) {
+                  tmux.applyMainVerticalLayout(hostTmux)
+                }
+                break
+              }
+            }
+          } catch { /* ignore */ }
+        }
+      }
+    }
+
     tmux.refreshAllStatusBars()
   })
 
@@ -532,8 +649,28 @@ export function registerSessionHandlers(): void {
       migrateToPane()
     } else {
       migrateToSession()
-      // Restore sessions that were merged (their tmux sessions were destroyed by join-pane)
-      // Re-run the session restore logic to recreate them
+      // Restore merged sessions: give them unique tmux names, then recreate
+      // Sessions that were joined share the same tmux_name — assign new ones
+      const db = require('../db/database').getDB()
+      const dupes = db.prepare(`
+        SELECT id, tmux_name FROM sessions
+        WHERE tmux_name IN (
+          SELECT tmux_name FROM sessions GROUP BY tmux_name HAVING COUNT(*) > 1
+        )
+      `).all() as Array<{ id: string; tmux_name: string }>
+      const seen = new Set<string>()
+      for (const row of dupes) {
+        if (seen.has(row.tmux_name)) {
+          // This is a duplicate — give it a new unique tmux name
+          const { v4: uuid } = require('uuid')
+          const newName = `kitty_${uuid().slice(0, 8)}`
+          db.prepare("UPDATE sessions SET tmux_name = ? WHERE id = ?").run(newName, row.id)
+          log('pane-mode', `reassigned tmux_name for ${row.id}: ${row.tmux_name} → ${newName}`)
+        } else {
+          seen.add(row.tmux_name)
+        }
+      }
+
       const liveNames = new Set(tmux.listTmuxSessions().map(s => s.name))
       for (const row of sessionRepo.listSessions()) {
         if (!liveNames.has(row.tmuxName) && row.cwd && existsSync(row.cwd) && !row.hidden) {
@@ -668,15 +805,7 @@ export function registerSessionHandlers(): void {
 
         if (targetPaneId) {
           tmux.swapMainPane(hostTmux, targetPaneId)
-          // Reapply main-vertical layout with 35% main pane
-          execSync(`${tmux.TMUX} select-layout -t "${hostTmux}" main-vertical`, { stdio: 'ignore' })
-          const width = parseInt(execSync(
-            `${tmux.TMUX} display-message -t "${hostTmux}" -p '#{window_width}'`,
-            { encoding: 'utf-8' }
-          ).trim(), 10)
-          if (width > 0) {
-            execSync(`${tmux.TMUX} resize-pane -t "${hostTmux}:0.0" -x ${Math.floor(width * 0.35)}`, { stdio: 'ignore' })
-          }
+          tmux.applyMainVerticalLayout(hostTmux)
         }
       } catch (err) {
         log('pane-mode', `swap main pane failed:`, err)
@@ -729,6 +858,9 @@ function migrateToPane(): void {
           }
         }
         tmux.joinSessionAsPane(other.tmuxName, mainSession.tmuxName, false)
+        // Update DB: joined session now shares the main session's tmux name
+        const db = require('../db/database').getDB()
+        db.prepare("UPDATE sessions SET tmux_name = ? WHERE tmux_name = ?").run(mainSession.tmuxName, other.tmuxName)
       } catch (err) {
         log('pane-mode', `join failed for ${other.tmuxName}:`, err)
       }
@@ -736,21 +868,7 @@ function migrateToPane(): void {
 
 
 
-    // Apply main-vertical layout: first pane on left, rest stacked on right
-    try {
-      execSync(`${tmux.TMUX} select-layout -t "${mainSession.tmuxName}" main-vertical`, { stdio: 'ignore' })
-      // Resize main pane to 35%
-      const width = parseInt(execSync(
-        `${tmux.TMUX} display-message -t "${mainSession.tmuxName}" -p '#{window_width}'`,
-        { encoding: 'utf-8' }
-      ).trim(), 10)
-      if (width > 0) {
-        const mainWidth = Math.floor(width * 0.35)
-        execSync(`${tmux.TMUX} resize-pane -t "${mainSession.tmuxName}:0.0" -x ${mainWidth}`, { stdio: 'ignore' })
-      }
-    } catch (err) {
-      log('pane-mode', `layout failed for ${mainSession.tmuxName}:`, err)
-    }
+    tmux.applyMainVerticalLayout(mainSession.tmuxName)
 
     if (!group.mainSessionId) {
       sessionRepo.setGroupMainSession(group.id, mainSession.id)
@@ -803,7 +921,7 @@ function syncAndList(): SessionInfo[] {
     for (const row of dbSessions) {
       // Restore any session whose tmux is gone but cwd still exists
       // (includes 'dead' from previous crash — only user-kill deletes from DB entirely)
-      if (!liveNames.has(row.tmuxName) && row.cwd && existsSync(row.cwd)) {
+      if (!liveNames.has(row.tmuxName) && row.cwd && existsSync(row.cwd) && !row.hidden) {
         try {
           // Use wrapper to restore: try continue → new → shell fallback
           const script = generateLaunchScript(row.tool, 'restore')
