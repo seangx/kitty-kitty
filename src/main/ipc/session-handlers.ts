@@ -675,9 +675,10 @@ export function registerSessionHandlers(): void {
     const groupSessions = sessionRepo.listSessionsByGroup(groupId)
     const mainSession = groupSessions.find(s => s.id === group.mainSessionId) || groupSessions[0]
 
-    // Use the group's main session cwd (project dir), not a throwaway session dir
-    const cwd = mainSession?.cwd || undefined
+    // Use a fresh session dir so claude starts a new conversation
     const freshId = uuid().slice(0, 8)
+    const freshCwd = join(homedir(), '.kitty-kitty', 'sessions', freshId)
+    mkdirSync(freshCwd, { recursive: true })
 
     const script = generateLaunchScript('claude', 'new')
 
@@ -689,14 +690,14 @@ export function registerSessionHandlers(): void {
       }
 
       const isFirstSplit = tmux.getPaneCount(hostTmuxName) === 1
-      const paneId = tmux.createPaneInSession(hostTmuxName, script, isFirstSplit, cwd)
+      const paneId = tmux.createPaneInSession(hostTmuxName, script, isFirstSplit, freshCwd)
 
       const session: tmux.TmuxSession = {
         id: freshId,
         tmuxName: hostTmuxName,
         title: `${group.name} agent`,
         tool: 'claude',
-        cwd: cwd,
+        cwd: freshCwd,
         status: 'running',
         createdAt: new Date().toISOString(),
       }
@@ -709,7 +710,7 @@ export function registerSessionHandlers(): void {
       }
 
       try {
-        sessionMcp.injectSessionMcp(freshId, cwd, hostTmuxName, session.title)
+        sessionMcp.injectSessionMcp(freshId, freshCwd, hostTmuxName, session.title)
       } catch (e) { log('session', 'mcp inject failed:', e) }
 
       tmux.focusSession(hostTmuxName)
@@ -717,7 +718,7 @@ export function registerSessionHandlers(): void {
       return toSessionInfo(session)
     } else {
       // Session mode or first session: create independent
-      const session = tmux.createTmuxSession('claude', undefined, cwd, script)
+      const session = tmux.createTmuxSession('claude', undefined, freshCwd, script)
       sessionRepo.saveSession(session)
       // Record pane_id for the new session
       try {
