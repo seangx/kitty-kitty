@@ -6,7 +6,6 @@ import { registerIpcHandlers } from './ipc/handlers'
 import { initDB, closeDB } from './db/database'
 import { initLogger, log } from './logger'
 import { hasTmux, focusAnyAttachedSession } from './tmux/session-manager'
-import * as collab from './mcp/collab-manager'
 import * as sessionMcp from './mcp/session-mcp-manager'
 import * as worktreeMonitor from './worktree/worktree-monitor'
 
@@ -32,7 +31,6 @@ app.whenReady().then(() => {
   })
 
   try { initDB(); log('app', 'db initialized') } catch (e) { log('app', 'db error:', e) }
-  try { collab.startAppMcpService(); log('app', 'mcp service started') } catch (e) { log('app', 'mcp service error:', e) }
   try { registerIpcHandlers(); log('app', 'ipc handlers registered') } catch (e) { log('app', 'ipc error:', e) }
   try { createTray(); log('app', 'tray created') } catch (e) { log('app', 'tray error:', e) }
   try { createPetWindow(); log('app', 'pet window created') } catch (e) { log('app', 'window error:', e) }
@@ -56,6 +54,5 @@ app.on('activate', () => {
 app.on('before-quit', () => {
   worktreeMonitor.stop()
   sessionMcp.cleanupAll()
-  collab.stopAppMcpService()
   closeDB()
 })

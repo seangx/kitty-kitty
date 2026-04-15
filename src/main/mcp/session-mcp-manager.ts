@@ -4,7 +4,6 @@ import { execSync } from 'child_process'
 import { SESSION_MCP_SERVER_SCRIPT } from './session-server-script'
 import { log } from '../logger'
 import { TMUX } from '../tmux/session-manager'
-import { ensureRuntimeArtifacts } from './collab-manager'
 
 const SCRIPT_FILENAME = 'kitty-session-server.js'
 
@@ -64,12 +63,7 @@ export function injectSessionMcp(
   sessionId: string,
   cwd: string,
   tmuxName: string,
-  sessionTitle: string,
-  groupId?: string,
-  groupName?: string,
-  tool?: string,
-  roles?: string,
-  expertise?: string
+  sessionTitle: string
 ): void {
   if (!cwd) return
   if (injectedSessions.has(sessionId)) return
@@ -78,7 +72,6 @@ export function injectSessionMcp(
     const scriptPath = ensureScript()
     const nodePath = resolveNodePath()
     const configPath = join(cwd, '.mcp.json')
-    const { scriptPath: talkScriptPath, busDir } = ensureRuntimeArtifacts()
 
     let config: any = {}
     try { config = JSON.parse(readFileSync(configPath, 'utf-8')) } catch { /* new file */ }
@@ -93,25 +86,6 @@ export function injectSessionMcp(
         KITTY_TMUX_BIN: TMUX,
         KITTY_PROJECT_ROOT: cwd,
         KITTY_IS_GIT_REPO: isGitRepo(cwd) ? '1' : '0',
-        KITTY_BUS_DIR: busDir,
-      }
-    }
-
-    // kitty-talk (communication)
-    config.mcpServers['kitty-talk'] = {
-      command: nodePath,
-      args: [talkScriptPath],
-      env: {
-        KITTY_AGENT_ID: sessionId,
-        KITTY_AGENT_NAME: sessionTitle,
-        KITTY_BUS_DIR: busDir,
-        KITTY_GROUP_ID: groupId || '',
-        KITTY_GROUP_NAME: groupName || '',
-        KITTY_TOOL: tool || '',
-        KITTY_CWD: cwd,
-        KITTY_TMUX_NAME: tmuxName,
-        KITTY_AGENT_ROLES: roles || '',
-        KITTY_AGENT_EXPERTISE: expertise || '',
       }
     }
 
@@ -124,41 +98,14 @@ export function injectSessionMcp(
 }
 
 /**
- * Update the group ID/name in kitty-talk config without restarting the agent.
+ * Update the group ID/name for a session (no-op, managed by kitty-hive).
  */
-export function updateGroupId(sessionId: string, cwd: string, groupId: string, groupName: string): void {
-  if (!cwd) return
-  try {
-    const configPath = join(cwd, '.mcp.json')
-    const config = JSON.parse(readFileSync(configPath, 'utf-8'))
-    if (config?.mcpServers?.['kitty-talk']?.env) {
-      config.mcpServers['kitty-talk'].env.KITTY_GROUP_ID = groupId || ''
-      config.mcpServers['kitty-talk'].env.KITTY_GROUP_NAME = groupName || ''
-      writeFileSync(configPath, JSON.stringify(config, null, 2))
-    }
-  } catch (err) {
-    log('session-mcp', `updateGroupId .mcp.json failed session=${sessionId}:`, err)
-  }
-
-  // Also update agents.json directly so the running MCP process picks it up on next heartbeat
-  try {
-    const { ensureRuntimeArtifacts } = require('./collab-manager')
-    const { busDir } = ensureRuntimeArtifacts()
-    const agentsFile = join(busDir, 'agents.json')
-    const agents = JSON.parse(readFileSync(agentsFile, 'utf-8'))
-    if (agents[sessionId]) {
-      agents[sessionId].groupId = groupId || ''
-      agents[sessionId].groupName = groupName || ''
-      writeFileSync(agentsFile, JSON.stringify(agents, null, 2))
-      log('session-mcp', `updated groupId=${groupId} in agents.json for session=${sessionId}`)
-    }
-  } catch (err) {
-    log('session-mcp', `updateGroupId agents.json failed session=${sessionId}:`, err)
-  }
+export function updateGroupId(_sessionId: string, _cwd: string, _groupId: string, _groupName: string): void {
+  // No-op: group info managed by kitty-hive
 }
 
 /**
- * Remove the kitty-session and kitty-talk MCP servers from a session's project.
+ * Remove the kitty-session MCP server from a session's project.
  */
 export function removeSessionMcp(sessionId: string, cwd: string): void {
   if (!cwd) return
@@ -167,7 +114,6 @@ export function removeSessionMcp(sessionId: string, cwd: string): void {
     const configPath = join(cwd, '.mcp.json')
     const config = JSON.parse(readFileSync(configPath, 'utf-8'))
     delete config?.mcpServers?.['kitty-session']
-    delete config?.mcpServers?.['kitty-talk']
     // Only delete the file if mcpServers is empty AND there's no other top-level config
     const mcpEmpty = !config.mcpServers || Object.keys(config.mcpServers).length === 0
     const otherKeys = Object.keys(config).filter(k => k !== 'mcpServers')

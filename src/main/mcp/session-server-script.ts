@@ -332,13 +332,6 @@ function handleCreateWorktree(args) {
         mcpConfig.mcpServers['kitty-session'].env.KITTY_PROJECT_ROOT = worktreePath;
       }
 
-      if (mcpConfig.mcpServers['kitty-talk']) {
-        mcpConfig.mcpServers['kitty-talk'] = JSON.parse(JSON.stringify(mcpConfig.mcpServers['kitty-talk']));
-        mcpConfig.mcpServers['kitty-talk'].env = mcpConfig.mcpServers['kitty-talk'].env || {};
-        mcpConfig.mcpServers['kitty-talk'].env.KITTY_AGENT_ID = wtAgentId;
-        mcpConfig.mcpServers['kitty-talk'].env.KITTY_AGENT_NAME = branch;
-        mcpConfig.mcpServers['kitty-talk'].env.KITTY_CWD = worktreePath;
-      }
 
       fs.writeFileSync(path.join(worktreePath, '.mcp.json'), JSON.stringify(mcpConfig, null, 2));
     } catch {}
@@ -418,19 +411,6 @@ function handleClosePane(args) {
     } catch (killErr) {
       // Pane may already be dead — continue with cleanup
     }
-
-    // Unregister any agent bound to this pane from agents.json
-    try {
-      const BUS_DIR = process.env.KITTY_BUS_DIR || path.join(os.tmpdir(), 'kitty-bus');
-      const agentsFile = path.join(BUS_DIR, 'agents.json');
-      const agents = JSON.parse(fs.readFileSync(agentsFile, 'utf-8'));
-      for (const [id, v] of Object.entries(agents)) {
-        if (v && v.tmuxPane === paneToKill) {
-          delete agents[id];
-        }
-      }
-      fs.writeFileSync(agentsFile, JSON.stringify(agents, null, 2));
-    } catch {}
 
     let worktreeCleaned = false;
     if (cleanup && PROJECT_ROOT) {
@@ -608,13 +588,6 @@ function handleForkSession(args) {
         mcpConfig.mcpServers['kitty-session'].env = mcpConfig.mcpServers['kitty-session'].env || {};
         mcpConfig.mcpServers['kitty-session'].env.KITTY_AGENT_ID = wtAgentId;
         mcpConfig.mcpServers['kitty-session'].env.KITTY_PROJECT_ROOT = worktreePath;
-      }
-      if (mcpConfig.mcpServers['kitty-talk']) {
-        mcpConfig.mcpServers['kitty-talk'] = JSON.parse(JSON.stringify(mcpConfig.mcpServers['kitty-talk']));
-        mcpConfig.mcpServers['kitty-talk'].env = mcpConfig.mcpServers['kitty-talk'].env || {};
-        mcpConfig.mcpServers['kitty-talk'].env.KITTY_AGENT_ID = wtAgentId;
-        mcpConfig.mcpServers['kitty-talk'].env.KITTY_AGENT_NAME = branch;
-        mcpConfig.mcpServers['kitty-talk'].env.KITTY_CWD = worktreePath;
       }
       fs.writeFileSync(path.join(worktreePath, '.mcp.json'), JSON.stringify(mcpConfig, null, 2));
     } catch {}

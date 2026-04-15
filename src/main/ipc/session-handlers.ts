@@ -7,7 +7,6 @@ import { execSync } from 'child_process'
 import { log } from '../logger'
 import * as tmux from '../tmux/session-manager'
 import { generateLaunchScript, isToolInstalled, getInstallHint, getPaneMode } from '../tmux/cli-wrapper'
-import * as collab from '../mcp/collab-manager'
 import * as sessionMcp from '../mcp/session-mcp-manager'
 import * as sessionRepo from '../db/session-repo'
 import * as worktreeManager from '../worktree/worktree-manager'
@@ -97,9 +96,6 @@ function ensureReady(tool: string): void {
 }
 
 export function registerSessionHandlers(): void {
-  // Keep MCP runtime scripts in sync with latest source at app boot.
-  collab.ensureRuntimeArtifacts()
-
   // Open a path in Finder
   ipcMain.handle('shell:open-path', (_event, p: string) => shell.openPath(p))
 
@@ -111,8 +107,7 @@ export function registerSessionHandlers(): void {
     const session = tmux.createTmuxSession(tool || 'claude', firstMessage, undefined, script)
     sessionRepo.saveSession(session)
     try {
-      sessionMcp.injectSessionMcp(session.id, session.cwd, session.tmuxName, session.title, '', '', session.tool, (session as any).roles || '', (session as any).expertise || '')
-      collab.watchInbox(session.id, session.tmuxName, session.tool)
+      sessionMcp.injectSessionMcp(session.id, session.cwd, session.tmuxName, session.title)
     } catch (e) { log('session', 'mcp inject failed (non-fatal):', e) }
     tmux.attachSession(session.tmuxName)
     return toSessionInfo(session)
@@ -156,8 +151,7 @@ export function registerSessionHandlers(): void {
     const session = tmux.createTmuxSession(tool || 'claude', undefined, dir, script)
     sessionRepo.saveSession(session)
     try {
-      sessionMcp.injectSessionMcp(session.id, dir, session.tmuxName, session.title, '', '', session.tool, (session as any).roles || '', (session as any).expertise || '')
-      collab.watchInbox(session.id, session.tmuxName, session.tool)
+      sessionMcp.injectSessionMcp(session.id, dir, session.tmuxName, session.title)
     } catch (e) { log('session', 'mcp inject failed (non-fatal):', e) }
     tmux.attachSession(session.tmuxName)
     return toSessionInfo(session)
@@ -235,8 +229,7 @@ export function registerSessionHandlers(): void {
     )
     const session = tmux.createTmuxSession(tool || 'claude', undefined, worktreePath, script)
     sessionRepo.saveSession(session)
-    sessionMcp.injectSessionMcp(session.id, worktreePath, session.tmuxName, session.title, '', '', session.tool, (session as any).roles || '', (session as any).expertise || '')
-    collab.watchInbox(session.id, session.tmuxName, session.tool)
+    sessionMcp.injectSessionMcp(session.id, worktreePath, session.tmuxName, session.title)
     tmux.attachSession(session.tmuxName)
     return toSessionInfo(session)
   })
@@ -330,8 +323,7 @@ export function registerSessionHandlers(): void {
     return { success: true }
   })
 
-  // Aggregate handler: set roles + expertise, re-inject .mcp.json, and directly
-  // update agents.json so the change is visible immediately without waiting for heartbeat.
+  // Aggregate handler: set roles + expertise, re-inject .mcp.json.
   ipcMain.handle('session:set-agent-metadata', (_event, id: string, roles: string, expertise: string) => {
     sessionRepo.updateSessionRoles(id, roles)
     sessionRepo.updateSessionExpertise(id, expertise)
@@ -341,37 +333,10 @@ export function registerSessionHandlers(): void {
 
     // Re-inject .mcp.json with new roles/expertise
     try {
-      const grp = session.groupId ? sessionRepo.getGroupById(session.groupId) : undefined
       sessionMcp.removeSessionMcp(id, session.cwd)
-      sessionMcp.injectSessionMcp(
-        id,
-        session.cwd,
-        session.tmuxName,
-        session.title,
-        session.groupId || '',
-        grp?.name || '',
-        session.tool,
-        roles,
-        expertise
-      )
+      sessionMcp.injectSessionMcp(id, session.cwd, session.tmuxName, session.title)
     } catch (err) {
       log('session', `metadata inject failed for ${id}:`, err)
-    }
-
-    // Directly update agents.json so peers() from other agents sees new values immediately
-    try {
-      const fs = require('fs')
-      const { ensureRuntimeArtifacts } = require('../mcp/collab-manager')
-      const { busDir } = ensureRuntimeArtifacts()
-      const agentsFile = join(busDir, 'agents.json')
-      const agents = JSON.parse(fs.readFileSync(agentsFile, 'utf-8'))
-      if (agents[id]) {
-        agents[id].roles = roles.split(',').map((s: string) => s.trim()).filter(Boolean)
-        agents[id].expertise = expertise
-        fs.writeFileSync(agentsFile, JSON.stringify(agents, null, 2))
-      }
-    } catch (err) {
-      log('session', `metadata agents.json update failed for ${id}:`, err)
     }
 
     return { success: true }
@@ -397,16 +362,12 @@ export function registerSessionHandlers(): void {
 
     // Re-inject MCP after tool switch
     sessionMcp.removeSessionMcp(id, session.cwd)
-    const grp = session.groupId ? sessionRepo.getGroupById(session.groupId) : undefined
-    sessionMcp.injectSessionMcp(session.id, session.cwd, session.tmuxName, session.title, session.groupId || '', grp?.name || '', nextTool, session.roles || '', session.expertise || '')
-    collab.watchInbox(session.id, session.tmuxName, nextTool)
+    sessionMcp.injectSessionMcp(session.id, session.cwd, session.tmuxName, session.title)
 
     return { success: true }
   })
 
   // Restart current session agent process in-place.
-  // For codex this uses --yolo restart path, and if group collaboration is enabled
-  // env injection is re-applied automatically.
   ipcMain.handle('session:restart-agent', (_event, id: string) => {
     const rows = sessionRepo.listSessions()
     const session = rows.find((s) => s.id === id)
@@ -415,22 +376,7 @@ export function registerSessionHandlers(): void {
       sessionRepo.updateSessionStatus(id, 'dead')
       throw new Error('Session is not running')
     }
-    // Run in background to avoid blocking UI
-    setTimeout(() => {
-      try {
-        collab.restartSessionAgent(
-          session.id,
-          session.title,
-          session.groupId || null,
-          session.cwd,
-          session.tmuxName,
-          session.tool,
-          true
-        )
-      } catch (err) {
-        log('session', `restart-agent failed for ${id}:`, err)
-      }
-    }, 0)
+    log('session', `restart-agent: not implemented, session=${id}`)
     return { success: true }
   })
 
@@ -643,15 +589,6 @@ export function registerSessionHandlers(): void {
     tmux.refreshAllStatusBars()
   })
 
-  // --- Collaboration (MCP) ---
-  ipcMain.handle('collab:status', (_event, sessionId: string) => {
-    const rows = sessionRepo.listSessions()
-    const session = rows.find(s => s.id === sessionId)
-    if (!session) throw new Error('Session not found')
-    const active = sessionMcp.hasSessionMcp(sessionId)
-    return { active }
-  })
-
   // --- Pane mode ---
   ipcMain.handle(IPC.PANE_MODE_GET, () => {
 
@@ -768,8 +705,7 @@ export function registerSessionHandlers(): void {
       }
 
       try {
-        sessionMcp.injectSessionMcp(freshId, freshCwd, hostTmuxName, session.title, groupId, group.name, 'claude', '', '')
-        collab.watchInbox(freshId, hostTmuxName, 'claude')
+        sessionMcp.injectSessionMcp(freshId, freshCwd, hostTmuxName, session.title)
       } catch (e) { log('session', 'mcp inject failed:', e) }
 
       tmux.focusSession(hostTmuxName)
@@ -786,8 +722,7 @@ export function registerSessionHandlers(): void {
       }
 
       try {
-        sessionMcp.injectSessionMcp(session.id, session.cwd, session.tmuxName, session.title, groupId, group.name, 'claude', '', '')
-        collab.watchInbox(session.id, session.tmuxName, 'claude')
+        sessionMcp.injectSessionMcp(session.id, session.cwd, session.tmuxName, session.title)
       } catch (e) { log('session', 'mcp inject failed:', e) }
 
       tmux.attachSession(session.tmuxName)
@@ -996,15 +931,12 @@ function syncAndList(): SessionInfo[] {
     tmux.refreshAllStatusBars()
   }
 
-  // Start/refresh inbox watcher for all live sessions with cwd (every sync, idempotent)
+  // Inject session MCP for all live sessions with cwd (every sync, idempotent)
   for (const row of sessionRepo.listSessions()) {
     if (liveNames.has(row.tmuxName) && row.cwd) {
-      const group = row.groupId ? sessionRepo.getGroupById(row.groupId) : undefined
-      sessionMcp.injectSessionMcp(row.id, row.cwd, row.tmuxName, row.title, row.groupId || '', group?.name || '', row.tool, row.roles || '', row.expertise || '')
-      collab.watchInbox(row.id, row.tmuxName, row.tool)
+      sessionMcp.injectSessionMcp(row.id, row.cwd, row.tmuxName, row.title)
     }
   }
-  collab.cleanupStaleAgents(new Set(sessionRepo.listSessions().filter(r => liveNames.has(r.tmuxName)).map(r => r.id)))
 
   // Normal sync: update status based on tmux state
   // tmux gone → keep as 'detached' (restorable on next launch), NOT 'dead'
