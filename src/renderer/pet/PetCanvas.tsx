@@ -227,10 +227,17 @@ export default function PetCanvas() {
   const menuItems = useMemo(() => [
     { label: '💬 新对话', onClick: () => setShowInput(true) },
     { label: '📂 在目录中开始', onClick: handleOpenInDir },
+    { label: '📁 新建分组', onClick: async () => {
+      const name = window.prompt('分组名称')
+      if (name?.trim()) {
+        await window.api.invoke('group:create', name.trim())
+        await loadSessions()
+      }
+    }},
     { separator: true as const },
     { label: '🎨 换装', onClick: () => setShowSkinPicker(true) },
     { label: '⚙️ 设置', onClick: () => setShowSettings(true) },
-  ], [handleOpenInDir, machine, say])
+  ], [handleOpenInDir, loadSessions])
 
 
   // When popup is open, disable click-through so popup is interactive

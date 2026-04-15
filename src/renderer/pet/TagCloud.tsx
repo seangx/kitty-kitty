@@ -696,11 +696,6 @@ export default function TagCloud({ sessions, onAttach, onKill, onRename, onCreat
               }},
               { label: '📂 打开目录', action: () => { const s = alive.find(x => x.id === ctxMenu.id); if (s?.cwd) window.api.invoke('shell:open-path', s.cwd); setCtxMenu(null) } },
               { label: '📦 技能', action: () => { onOpenSkills(ctxMenu.id); setCtxMenu(null) } },
-              { label: '🏷 设置角色/专长', action: () => {
-                const s = alive.find(x => x.id === ctxMenu.id)
-                if (s) setMetadataPopup(s)
-                setCtxMenu(null)
-              } },
               { label: hiddenLoading === ctxMenu.id ? '⏳ 处理中...' : '👻 隐藏', action: () => handleToggleHidden(ctxMenu.id) },
               ...(paneMode && ctxMenu && sessions.find(s => s.id === ctxMenu.id)?.groupId ? [{
                 label: '📌 设为主窗口',

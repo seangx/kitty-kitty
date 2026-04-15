@@ -76,6 +76,37 @@ function runMigrations(database: Database.Database): void {
       database.exec("ALTER TABLE sessions ADD COLUMN pane_id TEXT DEFAULT ''")
     } catch { /* column already exists */ }
 
+    // Remove UNIQUE constraint on tmux_name (pane mode allows shared tmux sessions)
+    try {
+      const hasUnique = database.prepare(
+        "SELECT sql FROM sqlite_master WHERE type='table' AND name='sessions'"
+      ).get() as { sql: string } | undefined
+      if (hasUnique?.sql?.includes('UNIQUE')) {
+        database.exec(`
+          CREATE TABLE IF NOT EXISTS sessions_new (
+            id         TEXT PRIMARY KEY,
+            tmux_name  TEXT NOT NULL,
+            title      TEXT NOT NULL,
+            tool       TEXT NOT NULL DEFAULT 'claude',
+            status     TEXT NOT NULL DEFAULT 'running',
+            created_at TEXT NOT NULL DEFAULT (datetime('now')),
+            updated_at TEXT NOT NULL DEFAULT (datetime('now')),
+            cwd        TEXT NOT NULL DEFAULT '',
+            group_id   TEXT REFERENCES groups(id) ON DELETE SET NULL,
+            main_pane  TEXT NOT NULL DEFAULT '0.0',
+            hidden     INTEGER NOT NULL DEFAULT 0,
+            roles      TEXT NOT NULL DEFAULT '',
+            expertise  TEXT NOT NULL DEFAULT '',
+            pane_id    TEXT DEFAULT ''
+          );
+          INSERT INTO sessions_new SELECT id, tmux_name, title, tool, status, created_at, updated_at, cwd, group_id, main_pane, hidden, roles, expertise, pane_id FROM sessions;
+          DROP TABLE sessions;
+          ALTER TABLE sessions_new RENAME TO sessions;
+          CREATE INDEX IF NOT EXISTS idx_sessions_tmux ON sessions(tmux_name);
+        `)
+      }
+    } catch { /* already migrated */ }
+
     // Add worktree_panes table
     try {
       database.exec(`
