@@ -271,6 +271,16 @@ export function registerSessionHandlers(): void {
     if (!session) throw new Error('Session not found')
 
     if (!tmux.isSessionAlive(session.tmuxName)) {
+      // In pane mode, this session may exist as a pane in its group's host session
+      if (getPaneMode() && session.groupId) {
+        const groupSessions = sessionRepo.listSessionsByGroup(session.groupId)
+          .filter(s => tmux.isSessionAlive(s.tmuxName))
+        const hostSession = groupSessions[0]
+        if (hostSession) {
+          tmux.focusSession(hostSession.tmuxName)
+          return true
+        }
+      }
       sessionRepo.updateSessionStatus(id, 'dead')
       return false
     }
