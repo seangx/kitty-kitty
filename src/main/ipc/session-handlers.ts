@@ -1,6 +1,6 @@
 import { ipcMain, dialog, BrowserWindow, shell } from 'electron'
 import { IPC } from '@shared/types/ipc'
-import { readdirSync, existsSync } from 'fs'
+import { readdirSync, existsSync, statSync } from 'fs'
 import { join, basename } from 'path'
 import { homedir } from 'os'
 import { execSync } from 'child_process'
@@ -938,8 +938,10 @@ function syncAndList(): SessionInfo[] {
       // (includes 'dead' from previous crash — only user-kill deletes from DB entirely)
       if (!liveNames.has(row.tmuxName) && row.cwd && existsSync(row.cwd) && !row.hidden) {
         try {
-          // Use wrapper to restore: try continue → new → shell fallback
-          const script = generateLaunchScript(row.tool, 'restore')
+          // Use resume with claude session ID if available, otherwise fallback to restore
+          const script = row.claudeSessionId
+            ? generateLaunchScript(row.tool, 'resume', row.claudeSessionId)
+            : generateLaunchScript(row.tool, 'restore')
 
           execSync(
             `${tmux.TMUX} new-session -d -s "${row.tmuxName}" -c "${row.cwd}" "${script}"`,
@@ -1038,6 +1040,9 @@ function syncAndList(): SessionInfo[] {
   // Keep pane_ids in sync with actual tmux state
   if (getPaneMode()) syncPaneIds()
 
+  // Sync claude session IDs for live sessions missing them
+  syncClaudeSessionIds()
+
   const result = sessionRepo.listSessions().map((row) => ({
     id: row.id,
     tmuxName: row.tmuxName,
@@ -1059,6 +1064,46 @@ function syncAndList(): SessionInfo[] {
   }))
   log('sync', result.map(r => `${r.title}:${r.status}`).join(', '))
   return result
+}
+
+/**
+ * Scan claude's session files to find session IDs for kitty sessions.
+ * Claude stores sessions at ~/.claude/projects/<encoded-path>/<uuid>.jsonl
+ * The path is encoded by replacing / with - and prepending -.
+ */
+function syncClaudeSessionIds(): void {
+  const sessions = sessionRepo.listSessions()
+  // Only sync for live sessions without a claude_session_id
+  const needsSync = sessions.filter(s => s.tool === 'claude' && !s.claudeSessionId && s.cwd)
+  if (needsSync.length === 0) return
+
+  // Already-assigned IDs across ALL sessions (to avoid double-assigning)
+  const usedIds = new Set(sessions.map(s => s.claudeSessionId).filter(Boolean))
+
+  for (const row of needsSync) {
+    try {
+      const encoded = row.cwd.replace(/\//g, '-')
+      const claudeDir = join(homedir(), '.claude', 'projects', encoded)
+      if (!existsSync(claudeDir)) continue
+
+      // List .jsonl files sorted by mtime desc
+      const files = readdirSync(claudeDir)
+        .filter(f => f.endsWith('.jsonl'))
+        .map(f => ({ name: f, mtime: statSync(join(claudeDir, f)).mtimeMs }))
+        .sort((a, b) => b.mtime - a.mtime)
+
+      // Pick the most recent one not already used
+      for (const f of files) {
+        const id = f.name.replace('.jsonl', '')
+        if (!usedIds.has(id)) {
+          sessionRepo.updateSessionClaudeId(row.id, id)
+          usedIds.add(id)
+          log('sync', `claude session ID: ${row.title} → ${id.slice(0, 8)}`)
+          break
+        }
+      }
+    } catch { /* ignore */ }
+  }
 }
 
 function isGitRepository(dir: string): boolean {

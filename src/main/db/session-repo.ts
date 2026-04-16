@@ -17,6 +17,7 @@ export interface SessionRow {
   roles: string
   expertise: string
   paneId: string
+  claudeSessionId: string
 }
 
 export interface GroupRow {
@@ -43,6 +44,7 @@ export function listSessions(): SessionRow[] {
     SELECT s.id, s.tmux_name as tmuxName, s.title, s.tool, s.cwd, s.status,
            s.main_pane as mainPane, s.hidden,
            s.roles, s.expertise, s.pane_id as paneId,
+           COALESCE(s.claude_session_id, '') as claudeSessionId,
            s.created_at as createdAt, s.updated_at as updatedAt,
            s.group_id as groupId, g.name as groupName, g.color as groupColor
     FROM sessions s
@@ -101,6 +103,11 @@ export function updateSessionPaneId(id: string, paneId: string): void {
   db.prepare("UPDATE sessions SET pane_id = ?, updated_at = datetime('now') WHERE id = ?").run(paneId, id)
 }
 
+export function updateSessionClaudeId(id: string, claudeSessionId: string): void {
+  const db = getDB()
+  db.prepare("UPDATE sessions SET claude_session_id = ?, updated_at = datetime('now') WHERE id = ?").run(claudeSessionId, id)
+}
+
 export function deleteSession(id: string): void {
   const db = getDB()
   db.prepare('DELETE FROM sessions WHERE id = ?').run(id)
@@ -111,6 +118,7 @@ export function getSessionByTmuxName(tmuxName: string): SessionRow | undefined {
   return db.prepare(`
     SELECT s.id, s.tmux_name as tmuxName, s.title, s.tool, s.cwd, s.status,
            s.main_pane as mainPane, s.pane_id as paneId,
+           COALESCE(s.claude_session_id, '') as claudeSessionId,
            s.created_at as createdAt, s.updated_at as updatedAt,
            s.group_id as groupId, g.name as groupName, g.color as groupColor
     FROM sessions s
@@ -159,6 +167,7 @@ export function listSessionsByGroup(groupId: string): (SessionRow & { hidden?: n
   return db.prepare(`
     SELECT s.id, s.tmux_name as tmuxName, s.title, s.tool, s.cwd, s.status,
            s.main_pane as mainPane, s.hidden, s.pane_id as paneId,
+           COALESCE(s.claude_session_id, '') as claudeSessionId,
            s.created_at as createdAt, s.updated_at as updatedAt,
            s.group_id as groupId, g.name as groupName, g.color as groupColor
     FROM sessions s

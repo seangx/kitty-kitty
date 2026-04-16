@@ -52,7 +52,7 @@ function subscribe(topic: string): void {
   abortController = new AbortController()
   const signal = abortController.signal
 
-  const url = `https://ntfy.sh/${encodeURIComponent(topic)}/json?since=all`
+  const url = `https://ntfy.sh/${encodeURIComponent(topic)}/json?since=now`
   const mod = url.startsWith('https') ? https : http
 
   const connect = (): void => {
