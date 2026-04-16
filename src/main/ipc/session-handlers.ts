@@ -7,11 +7,12 @@ import { execSync } from 'child_process'
 import { v4 as uuid } from 'uuid'
 import { log } from '../logger'
 import * as tmux from '../tmux/session-manager'
-import { generateLaunchScript, isToolInstalled, getInstallHint, getPaneMode } from '../tmux/cli-wrapper'
+import { generateLaunchScript, isToolInstalled, getInstallHint, getPaneMode, getNtfyTopic, setNtfyTopic } from '../tmux/cli-wrapper'
 import * as sessionMcp from '../mcp/session-mcp-manager'
 import * as sessionRepo from '../db/session-repo'
 import { getDB } from '../db/database'
 import * as worktreeManager from '../worktree/worktree-manager'
+import * as ntfy from '../ntfy'
 import type { SessionInfo } from '@shared/types/session'
 
 /**
@@ -668,6 +669,16 @@ export function registerSessionHandlers(): void {
     }
     tmux.refreshAllStatusBars()
     return { success: true }
+  })
+
+  // --- Ntfy ---
+  ipcMain.handle(IPC.NTFY_TOPIC_GET, () => {
+    return getNtfyTopic()
+  })
+
+  ipcMain.handle(IPC.NTFY_TOPIC_SET, (_event, topic: string) => {
+    setNtfyTopic(topic)
+    ntfy.updateTopic(topic)
   })
 
   ipcMain.handle(IPC.SESSION_CREATE_IN_GROUP, (_event, groupId: string) => {

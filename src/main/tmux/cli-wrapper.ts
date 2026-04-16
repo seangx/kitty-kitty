@@ -64,6 +64,7 @@ const CONFIG_PATH = join(homedir(), '.kitty-kitty', 'config.json')
 interface KittyConfig {
   toolArgs?: Record<string, string>
   paneMode?: boolean
+  ntfyTopic?: string
 }
 
 function loadConfig(): KittyConfig {
@@ -89,6 +90,17 @@ export function getUserToolArgs(tool: string): string {
 export function getPaneMode(): boolean {
   const config = loadConfig()
   return config.paneMode ?? false
+}
+
+export function getNtfyTopic(): string {
+  const config = loadConfig()
+  return config.ntfyTopic ?? ''
+}
+
+export function setNtfyTopic(topic: string): void {
+  const config = loadConfig()
+  config.ntfyTopic = topic
+  writeFileSync(CONFIG_PATH, JSON.stringify(config, null, 2))
 }
 
 const TOOLS: Record<string, ToolConfig> = {

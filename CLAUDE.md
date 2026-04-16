@@ -37,7 +37,7 @@
 1. 杀掉所有 kitty-kitty Electron 进程：`ps aux | grep 'kitty-kitty' | grep -v grep | awk '{print $2}' | xargs kill 2>/dev/null`
 2. `npm run build` 编译项目
 3. `npm run pack` 打包
-4. 找到打包产物中的 .app，复制到 /Applications/ 覆盖安装
+4. 找到打包产物中的 .app，先 `rm -rf` 旧 app 再复制到 /Applications/（`cp -R` 对 .app bundle 是合并而非替换，会保留旧文件）
 5. 启动安装后的应用：`open /Applications/Kitty\ Kitty.app`
 6. 报告结果
 

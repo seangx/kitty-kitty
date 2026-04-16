@@ -1,4 +1,4 @@
-import { useState, useEffect } from 'react'
+import { useState, useEffect, useRef } from 'react'
 import { useConfigStore } from '../store/config-store'
 import type { BubbleConfig } from '@shared/types/config'
 
@@ -22,9 +22,12 @@ export default function SettingsPanel({ onClose }: Props) {
   const { bubble, setBubble, resetBubble } = useConfigStore()
   const [paneMode, setPaneMode] = useState(false)
   const [paneModeLoading, setPaneModeLoading] = useState(false)
+  const [ntfyTopic, setNtfyTopic] = useState('')
+  const ntfyTimer = useRef<ReturnType<typeof setTimeout> | null>(null)
 
   useEffect(() => {
     window.api.invoke('pane-mode:get').then(setPaneMode).catch(() => {})
+    window.api.invoke('ntfy:topic:get').then((t: any) => setNtfyTopic(t || '')).catch(() => {})
   }, [])
 
   const togglePaneMode = async () => {
@@ -74,6 +77,35 @@ export default function SettingsPanel({ onClose }: Props) {
               transition: 'left 0.2s',
             }} />
           </button>
+        </div>
+      </div>
+
+      {/* Ntfy notification */}
+      <div style={{ marginBottom: 14 }}>
+        <div style={{ fontSize: 12, color: C.text, marginBottom: 4 }}>通知</div>
+        <input
+          type="text"
+          placeholder="ntfy topic"
+          value={ntfyTopic}
+          onChange={(e) => {
+            const v = e.target.value
+            setNtfyTopic(v)
+            if (ntfyTimer.current) clearTimeout(ntfyTimer.current)
+            ntfyTimer.current = setTimeout(() => {
+              window.api.invoke('ntfy:topic:set', v.trim())
+            }, 1000)
+          }}
+          style={{
+            width: '100%', boxSizing: 'border-box',
+            padding: '6px 10px', borderRadius: 8,
+            border: `1px solid ${C.outline}55`,
+            background: `${C.container}aa`,
+            color: C.text, fontSize: 12,
+            fontFamily: 'inherit', outline: 'none',
+          }}
+        />
+        <div style={{ fontSize: 10, color: C.textDim, marginTop: 3 }}>
+          ntfy.sh 推送主题，留空关闭
         </div>
       </div>
 

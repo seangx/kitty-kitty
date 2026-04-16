@@ -92,6 +92,37 @@ export default function PetCanvas() {
     return () => { unsub() }
   }, [say])
 
+  // Ntfy push notifications — keep last 3
+  const [ntfyMessages, setNtfyMessages] = useState<Array<{ id: number; text: string; url?: string; color: string; time: string }>>([])
+  const [ntfyDismissing, setNtfyDismissing] = useState(false)
+  const ntfyIdRef = useRef(0)
+  useEffect(() => {
+    const unsub = window.api.on(IPC.NTFY_MESSAGE, (msg: any) => {
+      const title = msg.title || msg.message || '通知'
+      const body = msg.title ? msg.message : ''
+      const text = body ? `${title}: ${body}` : title
+      const tags: string[] = msg.tags || []
+      const isError = tags.some((t: string) => /fail|error|x/i.test(t))
+      const isSuccess = tags.some((t: string) => /success|check|white_check_mark/i.test(t))
+      const color = isError ? '#e11d48' : isSuccess ? '#10b981' : '#645efb'
+      const now = new Date()
+      const time = `${now.getHours().toString().padStart(2, '0')}:${now.getMinutes().toString().padStart(2, '0')}`
+
+      machine.forceState(isError ? 'sad' : 'happy', 3000)
+      setNtfyDismissing(false)
+      ntfyIdRef.current++
+      setNtfyMessages(prev => [{ id: ntfyIdRef.current, text, url: msg.url, color, time }, ...prev].slice(0, 3))
+    })
+    return () => { unsub() }
+  }, [machine])
+
+  const dismissNtfy = useCallback(() => {
+    setNtfyDismissing(true)
+    // Last card starts first (bottom-up), stagger 80ms, fly-out 200ms
+    const count = ntfyMessages.length
+    setTimeout(() => { setNtfyMessages([]); setNtfyDismissing(false) }, count * 80 + 200)
+  }, [ntfyMessages.length])
+
   const anyPopup = showInput || showSettings || showSkinPicker || !!dirPick
 
   const clickAnimations: AnimationState[] = ['happy', 'dance', 'jump', 'roll', 'stretch', 'lick', 'sneak']
@@ -265,6 +296,67 @@ export default function PetCanvas() {
 
   return (
     <>
+    {/* Ntfy notifications — fixed top */}
+    {ntfyMessages.length > 0 && (
+      <div
+        onMouseEnter={() => window.api.invoke('set-ignore-mouse', false)}
+        onMouseLeave={() => { if (!anyPopup) window.api.invoke('set-ignore-mouse', true) }}
+        style={{
+          position: 'fixed', top: 6, right: 6, zIndex: 300,
+          display: 'flex', flexDirection: 'column', gap: 4, alignItems: 'flex-end',
+          pointerEvents: 'auto',
+          /* container doesn't animate — each card does */
+        }}>
+        {ntfyMessages.map((n, i) => {
+          // Dismiss: bottom-up order (last item = index count-1 flies first)
+          const total = ntfyMessages.length
+          const dismissDelay = (total - 1 - i) * 0.08
+          return (
+            <div key={n.id}
+              onClick={() => { if (n.url) window.api.invoke('open-external', n.url) }}
+              style={{
+                padding: '6px 10px 6px 12px', borderRadius: 10,
+                background: '#0d0d1fee', backdropFilter: 'blur(20px)', WebkitBackdropFilter: 'blur(20px)',
+                color: '#e5e3ff', fontSize: 12, lineHeight: 1.4,
+                fontFamily: "'Plus Jakarta Sans', -apple-system, sans-serif",
+                cursor: n.url ? 'pointer' : 'default',
+                boxShadow: `0 4px 16px rgba(0,0,0,0.5)`,
+                borderLeft: `3px solid ${n.color}`,
+                maxWidth: 260,
+                transition: 'transform 0.3s cubic-bezier(0.16,1,0.3,1), gap 0.3s ease',
+                animation: ntfyDismissing
+                  ? `ntfyFlyOut 0.2s cubic-bezier(0.55,0,1,0.45) ${dismissDelay}s forwards`
+                  : `ntfySlideIn 0.4s cubic-bezier(0.34,1.56,0.64,1) ${i * 0.06}s both`,
+              }}>
+              <div style={{ fontSize: 10, color: '#aaa8c3', marginBottom: 2 }}>{n.time}</div>
+              <div style={{ wordBreak: 'break-word', whiteSpace: 'pre-wrap' }}>{n.text}</div>
+            </div>
+          )
+        })}
+        <button onClick={dismissNtfy} style={{
+          background: '#23233f99', border: `1px solid #46465c44`, borderRadius: 8,
+          color: '#aaa8c3', fontSize: 10, cursor: 'pointer',
+          fontFamily: 'inherit', padding: '3px 10px',
+          transition: 'all 0.2s',
+          opacity: ntfyDismissing ? 0 : 1,
+        }}
+        onMouseEnter={(e) => (e.currentTarget.style.background = '#23233fff')}
+        onMouseLeave={(e) => (e.currentTarget.style.background = '#23233f99')}
+        >清除</button>
+        <style>{`
+          @keyframes ntfySlideIn {
+            0% { opacity: 0; transform: translateX(60px) scale(0.9); }
+            70% { opacity: 1; transform: translateX(-4px) scale(1.01); }
+            100% { opacity: 1; transform: translateX(0) scale(1); }
+          }
+          @keyframes ntfyFlyOut {
+            0% { opacity: 1; transform: translateX(0); }
+            100% { opacity: 0; transform: translateX(60px) scale(0.95); }
+          }
+        `}</style>
+      </div>
+    )}
+
     {/* Floating popups — outside pet area */}
     {showInput && <DraggablePopup><InputPopup sessions={sessions} onSubmit={handleCreateSession} onClose={() => setShowInput(false)} /></DraggablePopup>}
     {showSettings && <DraggablePopup><SettingsPanel onClose={() => setShowSettings(false)} /></DraggablePopup>}

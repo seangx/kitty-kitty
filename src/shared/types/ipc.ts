@@ -40,4 +40,9 @@ export const IPC = {
   PANE_MODE_GET: 'pane-mode:get',
   PANE_MODE_SET: 'pane-mode:set',
   GROUP_SET_MAIN_SESSION: 'group:set-main-session',
+
+  // Ntfy push notifications
+  NTFY_MESSAGE: 'ntfy:message',
+  NTFY_TOPIC_GET: 'ntfy:topic:get',
+  NTFY_TOPIC_SET: 'ntfy:topic:set',
 } as const
