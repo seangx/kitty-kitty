@@ -11,6 +11,7 @@ interface Props {
   onAttach: (id: string) => void
   onKill: (id: string) => void
   onRename: (id: string, title: string) => void
+  onRestart: (id: string) => void
   onCreateWorktreePane: (sessionId: string, branch: string) => void
   onRemoveWorktreePane: (paneId: string, keepWorktree: boolean) => void
   onOpenSkills: (sessionId: string) => void
@@ -95,7 +96,7 @@ function injectAnimations() {
   document.head.appendChild(style)
 }
 
-export default function TagCloud({ sessions, onAttach, onKill, onRename, onCreateWorktreePane, onRemoveWorktreePane, onOpenSkills }: Props) {
+export default function TagCloud({ sessions, onAttach, onKill, onRename, onRestart, onCreateWorktreePane, onRemoveWorktreePane, onOpenSkills }: Props) {
   const [hoveredId, setHoveredId] = useState<string | null>(null)
   const [ctxMenu, setCtxMenu] = useState<{ id: string; x: number; y: number } | null>(null)
   const [editingId, setEditingId] = useState<string | null>(null)
@@ -713,13 +714,9 @@ export default function TagCloud({ sessions, onAttach, onKill, onRename, onCreat
             >{(priorities[ctxMenu.id] || 0) > 0 ? '📌 取消置顶' : '📌 置顶显示'}</button>
             {[
               { label: '✏️ 重命名', action: () => { const s = alive.find(x => x.id === ctxMenu.id); if (s) startRename(s) } },
-              { label: '♻️ 重启会话', action: async () => {
-                try { await window.api.invoke('session:restart-agent', ctxMenu.id); setCtxMenu(null) }
-                catch (error) { showCollabError(error) }
-              }},
+              { label: '♻️ 重启会话', action: () => { onRestart(ctxMenu.id); setCtxMenu(null) } },
               { label: '📂 打开目录', action: () => { const s = alive.find(x => x.id === ctxMenu.id); if (s?.cwd) window.api.invoke('shell:open-path', s.cwd); setCtxMenu(null) } },
               { label: '📦 技能', action: () => { onOpenSkills(ctxMenu.id); setCtxMenu(null) } },
-              { label: hiddenLoading === ctxMenu.id ? '⏳ 处理中...' : '👻 隐藏', action: () => handleToggleHidden(ctxMenu.id) },
               ...(paneMode && ctxMenu && sessions.find(s => s.id === ctxMenu.id)?.groupId ? [{
                 label: '📌 设为主窗口',
                 action: async () => {

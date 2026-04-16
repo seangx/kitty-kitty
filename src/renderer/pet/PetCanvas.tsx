@@ -396,6 +396,18 @@ export default function PetCanvas() {
         onAttach={handleAttach}
         onKill={killSession}
         onRename={renameSession}
+        onRestart={async (id) => {
+          try {
+            machine.forceState('dance', 5000)
+            say('重启中喵~')
+            await window.api.invoke('session:restart-agent', id)
+            machine.forceState('happy', 2000)
+            say('重启完成喵~')
+          } catch (err: any) {
+            machine.forceState('sad', 1500)
+            say(err?.message || '重启失败喵...')
+          }
+        }}
         onCreateWorktreePane={async (sessionId, branch) => {
           try {
             machine.forceState('dance', 15000)

@@ -379,7 +379,18 @@ export function registerSessionHandlers(): void {
       sessionRepo.updateSessionStatus(id, 'dead')
       throw new Error('Session is not running')
     }
-    log('session', `restart-agent: not implemented, session=${id}`)
+
+    // In pane mode, use paneId (%N) to target the exact pane; otherwise use mainPane
+    const target = session.paneId
+      ? session.paneId
+      : resolvePaneTarget(session.tmuxName, session.mainPane || '0.0')
+    const mode = session.claudeSessionId ? 'resume' : 'continue'
+    const launch = generateLaunchScript(session.tool, mode, session.claudeSessionId || undefined)
+
+    // respawn-pane -k: kill current process and start new command in the same pane
+    execSync(`${tmux.TMUX} respawn-pane -k -t "${target}" "${launch}"`, { stdio: 'ignore' })
+
+    log('session', `restart-agent: ${session.title} (mode=${mode})`)
     return { success: true }
   })
 
