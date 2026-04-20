@@ -10,3 +10,4 @@ dist/
 .agents/
 .mcp.json
 openspec/
+src/renderer/pet/.DS_Store

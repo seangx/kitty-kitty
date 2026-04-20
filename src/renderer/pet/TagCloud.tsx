@@ -12,6 +12,7 @@ interface Props {
   onKill: (id: string) => void
   onRename: (id: string, title: string) => void
   onRestart: (id: string) => void
+  onEditEnv: (id: string) => void
   onCreateWorktreePane: (sessionId: string, branch: string) => void
   onRemoveWorktreePane: (paneId: string, keepWorktree: boolean) => void
   onOpenSkills: (sessionId: string) => void
@@ -92,12 +93,25 @@ function injectAnimations() {
       0%, 100% { opacity: 1; }
       50% { opacity: 0.6; }
     }
+    @keyframes quickFade {
+      from { opacity: 0; transform: translate(-50%, 2px); }
+      to { opacity: 1; transform: translate(-50%, -4px); }
+    }
   `
   document.head.appendChild(style)
 }
 
-export default function TagCloud({ sessions, onAttach, onKill, onRename, onRestart, onCreateWorktreePane, onRemoveWorktreePane, onOpenSkills }: Props) {
+export default function TagCloud({ sessions, onAttach, onKill, onRename, onRestart, onEditEnv, onCreateWorktreePane, onRemoveWorktreePane, onOpenSkills }: Props) {
   const [hoveredId, setHoveredId] = useState<string | null>(null)
+  const hoverTimer = useRef<ReturnType<typeof setTimeout> | null>(null)
+  const enterHover = useCallback((id: string) => {
+    if (hoverTimer.current) { clearTimeout(hoverTimer.current); hoverTimer.current = null }
+    setHoveredId(id)
+  }, [])
+  const leaveHover = useCallback(() => {
+    if (hoverTimer.current) clearTimeout(hoverTimer.current)
+    hoverTimer.current = setTimeout(() => { setHoveredId(null); hoverTimer.current = null }, 400)
+  }, [])
   const [ctxMenu, setCtxMenu] = useState<{ id: string; x: number; y: number } | null>(null)
   const [editingId, setEditingId] = useState<string | null>(null)
   const [editTitle, setEditTitle] = useState('')
@@ -147,7 +161,6 @@ export default function TagCloud({ sessions, onAttach, onKill, onRename, onResta
         if (a.status !== b.status) return a.status === 'running' ? -1 : 1
         return 0
       })
-      .slice(0, 8)
   }, [sessions, hiddenIds])
 
   const [bubbleColors, setBubbleColors] = useState<Record<string, string>>({})
@@ -319,12 +332,13 @@ export default function TagCloud({ sessions, onAttach, onKill, onRename, onResta
         key={session.id}
         draggable
         onDragStart={(e) => { e.dataTransfer.setData('text/plain', session.id); e.dataTransfer.effectAllowed = 'move' }}
-        onMouseEnter={() => setHoveredId(session.id)}
-        onMouseLeave={() => setHoveredId(null)}
+        onMouseEnter={() => enterHover(session.id)}
+        onMouseLeave={leaveHover}
         onClick={(e) => { e.stopPropagation(); if (!isEditing) onAttach(session.id) }}
         onContextMenu={(e) => { e.preventDefault(); e.stopPropagation(); setCtxMenu({ id: session.id, x: e.clientX, y: e.clientY }) }}
         style={{
           ...n,
+          position: 'relative',
           display: 'inline-flex', alignItems: 'center',
           gap: Math.round(5 * scale),
           padding: `${Math.round(vPad * scale)}px ${Math.round(hPad * scale)}px`,
@@ -343,7 +357,7 @@ export default function TagCloud({ sessions, onAttach, onKill, onRename, onResta
           border: `1px solid ${accent}${isHero ? '55' : '30'}`,
           cursor: 'pointer',
           transition: 'all 0.25s ease',
-          whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis',
+          whiteSpace: 'nowrap',
           maxWidth: Math.round((isHero ? 240 : 170) * scale),
           animation: `kitty-float ${floatDuration}s ease-in-out ${floatDelay}s infinite`,
         }}
@@ -389,6 +403,59 @@ export default function TagCloud({ sessions, onAttach, onKill, onRename, onResta
         )}
         {hasMetadata && (
           <span style={{ fontSize: Math.max(fontSize - 4, 7), flexShrink: 0, opacity: 0.7 }}>🏷</span>
+        )}
+        {isHovered && !isEditing && (
+          <div
+            onMouseEnter={() => enterHover(session.id)}
+            onMouseLeave={leaveHover}
+            style={{
+              position: 'absolute', left: '50%', bottom: '100%',
+              transform: 'translate(-50%, 0)',
+              paddingBottom: 6, // hit-area bridge to bubble
+              display: 'inline-flex', gap: 3,
+              zIndex: 20,
+              animation: 'quickFade 0.15s ease',
+              whiteSpace: 'nowrap',
+            }}>
+            <div style={{
+              display: 'inline-flex', gap: 3,
+              padding: '2px 3px', borderRadius: 10,
+              background: '#0d0d1fee', backdropFilter: 'blur(16px)', WebkitBackdropFilter: 'blur(16px)',
+              boxShadow: '0 4px 12px rgba(0,0,0,0.4)',
+              border: `1px solid ${accent}33`,
+            }}>
+              {!hasPriority && (
+                <button
+                  onClick={(e) => { e.stopPropagation(); handleSetPriority(session.id, 1) }}
+                  style={{
+                    display: 'inline-flex', alignItems: 'center', justifyContent: 'center',
+                    padding: '3px 8px', height: 20,
+                    background: 'transparent',
+                    border: 'none', borderRadius: 7, cursor: 'pointer',
+                    fontSize: 10, color: '#fff', lineHeight: 1,
+                    fontFamily: 'inherit',
+                    transition: 'background 0.15s',
+                  }}
+                  onMouseEnter={(e) => { (e.currentTarget as HTMLElement).style.background = 'rgba(255,255,255,0.18)' }}
+                  onMouseLeave={(e) => { (e.currentTarget as HTMLElement).style.background = 'transparent' }}
+                >置顶</button>
+              )}
+              <button
+                onClick={(e) => { e.stopPropagation(); onRestart(session.id) }}
+                style={{
+                  display: 'inline-flex', alignItems: 'center', justifyContent: 'center',
+                  padding: '3px 8px', height: 20,
+                  background: 'transparent',
+                  border: 'none', borderRadius: 7, cursor: 'pointer',
+                  fontSize: 10, color: '#fff', lineHeight: 1,
+                  fontFamily: 'inherit',
+                  transition: 'background 0.15s',
+                }}
+                onMouseEnter={(e) => { (e.currentTarget as HTMLElement).style.background = 'rgba(255,255,255,0.18)' }}
+                onMouseLeave={(e) => { (e.currentTarget as HTMLElement).style.background = 'transparent' }}
+              >重启</button>
+            </div>
+          </div>
         )}
       </div>
     )
@@ -706,17 +773,20 @@ export default function TagCloud({ sessions, onAttach, onKill, onRename, onResta
                 title="恢复默认">✕</button>
             </div>
             <div style={{ margin: '3px 8px', borderTop: '1px solid #46465c30' }} />
-            {/* Priority toggle */}
-            <button onClick={() => handleSetPriority(ctxMenu.id, (priorities[ctxMenu.id] || 0) > 0 ? 0 : 1)}
-              style={{ display: 'block', width: '100%', textAlign: 'left', padding: '6px 12px', fontSize: 12, color: '#e5e3ff', background: 'none', border: 'none', cursor: 'pointer', fontFamily: 'inherit' }}
-              onMouseEnter={(e) => { (e.target as HTMLElement).style.background = `${theme.dim}33` }}
-              onMouseLeave={(e) => { (e.target as HTMLElement).style.background = 'none' }}
-            >{(priorities[ctxMenu.id] || 0) > 0 ? '📌 取消置顶' : '📌 置顶显示'}</button>
+            {/* Priority — only show when not pinned; a group always has one pinned session */}
+            {!((priorities[ctxMenu.id] || 0) > 0) && (
+              <button onClick={() => handleSetPriority(ctxMenu.id, 1)}
+                style={{ display: 'block', width: '100%', textAlign: 'left', padding: '6px 12px', fontSize: 12, color: '#e5e3ff', background: 'none', border: 'none', cursor: 'pointer', fontFamily: 'inherit' }}
+                onMouseEnter={(e) => { (e.target as HTMLElement).style.background = `${theme.dim}33` }}
+                onMouseLeave={(e) => { (e.target as HTMLElement).style.background = 'none' }}
+              >📌 置顶</button>
+            )}
             {[
               { label: '✏️ 重命名', action: () => { const s = alive.find(x => x.id === ctxMenu.id); if (s) startRename(s) } },
               { label: '♻️ 重启会话', action: () => { onRestart(ctxMenu.id); setCtxMenu(null) } },
               { label: '📂 打开目录', action: () => { const s = alive.find(x => x.id === ctxMenu.id); if (s?.cwd) window.api.invoke('shell:open-path', s.cwd); setCtxMenu(null) } },
               { label: '📦 技能', action: () => { onOpenSkills(ctxMenu.id); setCtxMenu(null) } },
+              { label: '🌱 环境变量', action: () => { onEditEnv(ctxMenu.id); setCtxMenu(null) } },
               ...(paneMode && ctxMenu && sessions.find(s => s.id === ctxMenu.id)?.groupId ? [{
                 label: '📌 设为主窗口',
                 action: async () => {
@@ -729,6 +799,14 @@ export default function TagCloud({ sessions, onAttach, onKill, onRename, onResta
               }] : []),
               null,
               { label: '✕ 退出', action: () => { onKill(ctxMenu.id); setCtxMenu(null) }, color: '#ff6e84' },
+              { label: '🗑️ 退出并删除', action: async () => {
+                const s = alive.find(x => x.id === ctxMenu.id)
+                const ok = window.confirm(`确定删除「${s?.title || '会话'}」？\n会话目录和 claude 对话文件将被清除，不可恢复。`)
+                if (ok) {
+                  await window.api.invoke('session:kill-and-delete', ctxMenu.id)
+                }
+                setCtxMenu(null)
+              }, color: '#ff6e84' },
             ].map((item, i) => {
               if (!item) return <div key={i} style={{ margin: '3px 8px', borderTop: '1px solid #46465c30' }} />
               return (
@@ -798,6 +876,22 @@ export default function TagCloud({ sessions, onAttach, onKill, onRename, onResta
             onMouseEnter={(e) => { (e.target as HTMLElement).style.background = `${theme.dim}33` }}
             onMouseLeave={(e) => { (e.target as HTMLElement).style.background = 'none' }}
           >+ 在此组创建会话</button>
+          <button onClick={async () => {
+            try {
+              await window.api.invoke('group:restart-sessions', groupCtxMenu.id)
+            } catch (e: any) {
+              console.error('restart group sessions failed:', e)
+            }
+            setGroupCtxMenu(null)
+          }}
+            style={{
+              display: 'block', width: '100%', padding: '6px 12px', textAlign: 'left',
+              background: 'none', border: 'none', color: '#e5e3ff', cursor: 'pointer',
+              fontSize: 12, fontFamily: 'inherit', borderRadius: 6,
+            }}
+            onMouseEnter={(e) => { (e.target as HTMLElement).style.background = `${theme.dim}33` }}
+            onMouseLeave={(e) => { (e.target as HTMLElement).style.background = 'none' }}
+          >♻️ 重启组内会话</button>
           {/* Rename group inline */}
           <div style={{ display: 'flex', gap: 4, padding: '4px 10px' }}>
             <input

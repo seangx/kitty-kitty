@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import PetSprite from './PetSprite'
+import PixelSprite from './PixelSprite'
 import TagCloud from './TagCloud'
 import InputPopup from './InputPopup'
 import ContextMenu from './ContextMenu'
@@ -30,6 +31,7 @@ export default function PetCanvas() {
   const [contextMenu, setContextMenu] = useState<{ x: number; y: number } | null>(null)
   const [speech, setSpeech] = useState<string | null>(null)
   const [showSkinPicker, setShowSkinPicker] = useState(false)
+  const [envEditor, setEnvEditor] = useState<string | null>(null)
   const isDragging = useRef(false)
   const clickTimer = useRef<ReturnType<typeof setTimeout> | null>(null)
   const dragOffset = useRef({ x: 0, y: 0 })
@@ -53,6 +55,7 @@ export default function PetCanvas() {
     setShowSkinPicker(false)
     setDirPick(null)
     setContextMenu(null)
+    // Don't close envEditor on blur — user must dismiss it explicitly
   }, [])
 
   useEffect(() => {
@@ -64,7 +67,7 @@ export default function PetCanvas() {
   }, [scheduler, machine, loadSessions, closeAll])
 
   useEffect(() => {
-    const unsubAdvice = window.api.on('worktree:advice', (_event: any, advice: any) => {
+    const unsubAdvice = window.api.on('worktree:advice', (advice: any) => {
       let message = ''
       switch (advice.type) {
         case 'suggest-cleanup':
@@ -83,7 +86,7 @@ export default function PetCanvas() {
 
   // Real-time collab message display
   useEffect(() => {
-    const unsub = window.api.on(IPC.COLLAB_MESSAGE, (_event: any, msg: any) => {
+    const unsub = window.api.on(IPC.COLLAB_MESSAGE, (msg: any) => {
       const preview = msg.message.length > 60
         ? msg.message.slice(0, 57) + '...'
         : msg.message
@@ -123,7 +126,7 @@ export default function PetCanvas() {
     setTimeout(() => { setNtfyMessages([]); setNtfyDismissing(false) }, count * 80 + 200)
   }, [ntfyMessages.length])
 
-  const anyPopup = showInput || showSettings || showSkinPicker || !!dirPick
+  const anyPopup = showInput || showSettings || showSkinPicker || !!dirPick || !!envEditor
 
   const clickAnimations: AnimationState[] = ['happy', 'dance', 'jump', 'roll', 'stretch', 'lick', 'sneak']
   const clickIndex = useRef(0)
@@ -266,9 +269,22 @@ export default function PetCanvas() {
       }
     }},
     { separator: true as const },
+    { label: '♻️ 重启全部', onClick: async () => {
+      try {
+        machine.forceState('dance', 8000)
+        say('全部重启中喵~')
+        const result: any = await window.api.invoke('session:restart-all')
+        machine.forceState('happy', 2000)
+        say(`重启了 ${result?.ok ?? 0} 个会话喵~`)
+      } catch (err: any) {
+        machine.forceState('sad', 1500)
+        say(err?.message || '重启失败喵...')
+      }
+    }},
+    { separator: true as const },
     { label: '🎨 换装', onClick: () => setShowSkinPicker(true) },
     { label: '⚙️ 设置', onClick: () => setShowSettings(true) },
-  ], [handleOpenInDir, loadSessions])
+  ], [handleOpenInDir, loadSessions, machine, say])
 
 
   // When popup is open, disable click-through so popup is interactive
@@ -384,6 +400,16 @@ export default function PetCanvas() {
         />
       </DraggablePopup>
     )}
+    {envEditor && (
+      <DraggablePopup>
+        <EnvEditor
+          sessionId={envEditor}
+          sessionTitle={sessions.find(s => s.id === envEditor)?.title || ''}
+          onClose={() => setEnvEditor(null)}
+          onSaved={() => { machine.forceState('happy', 1500); say('环境变量已保存喵~') }}
+        />
+      </DraggablePopup>
+    )}
 
     {/* Pet area — cat, tagcloud, context menu */}
     <div
@@ -391,6 +417,7 @@ export default function PetCanvas() {
       onMouseDown={handleMouseDown} onClick={handleClick} onContextMenu={handleContextMenu}
       onMouseMove={handleMouseMove} onMouseLeave={handleMouseLeave}
     >
+      <div style={{ flex: '1 1 auto', minHeight: 0, width: '100%', overflow: 'auto', display: 'flex', flexDirection: 'column', justifyContent: 'flex-end' }}>
       <TagCloud
         sessions={sessions}
         onAttach={handleAttach}
@@ -408,6 +435,7 @@ export default function PetCanvas() {
             say(err?.message || '重启失败喵...')
           }
         }}
+        onEditEnv={(id) => setEnvEditor(id)}
         onCreateWorktreePane={async (sessionId, branch) => {
           try {
             machine.forceState('dance', 15000)
@@ -426,9 +454,10 @@ export default function PetCanvas() {
         }}
         onOpenSkills={(id) => window.api.invoke('popup-open', 'skills', id)}
       />
-      <div style={{ position: 'relative' }}>
+      </div>
+      <div style={{ position: 'relative', flexShrink: 0, width: 156, height: 156 }}>
         {speech && <SpeechBubble text={speech} onDone={() => setSpeech(null)} />}
-        <PetSprite state={animation} skin={bubble.skin} />
+        <PetSprite state={animation} skin={bubble.skin} size={156} />
       </div>
       {contextMenu && (
         <ContextMenu x={contextMenu.x} y={contextMenu.y} onClose={() => setContextMenu(null)} items={menuItems} />
@@ -472,10 +501,99 @@ function SkinPicker({ current, onSelect, onClose }: { current: SkinId; onSelect:
               fontFamily: 'inherit', transition: 'all 0.15s',
             }}
           >
-            <pre style={{ fontSize: 10, lineHeight: 1.2, whiteSpace: 'pre', margin: 0, minHeight: 28 }}>{skin.preview}</pre>
+            <div style={{ display: 'flex', justifyContent: 'center', minHeight: 48 }}>
+              <PixelSprite state="idle" skin={id} size={48} />
+            </div>
             <div style={{ fontSize: 11, marginTop: 6, fontWeight: current === id ? 600 : 400 }}>{skin.name}</div>
           </button>
         ))}
+      </div>
+    </div>
+  )
+}
+
+// ─── Env Editor ──────────────────
+
+function EnvEditor({ sessionId, sessionTitle, onClose, onSaved }: {
+  sessionId: string; sessionTitle: string; onClose: () => void; onSaved: () => void
+}) {
+  const [text, setText] = useState('')
+  const [loading, setLoading] = useState(true)
+  const [saving, setSaving] = useState(false)
+
+  useEffect(() => {
+    window.api.invoke('session:get-env', sessionId).then((env: any) => {
+      const lines = env && typeof env === 'object'
+        ? Object.entries(env).map(([k, v]) => `${k}=${v}`).join('\n')
+        : ''
+      setText(lines)
+      setLoading(false)
+    }).catch(() => setLoading(false))
+  }, [sessionId])
+
+  const save = async () => {
+    setSaving(true)
+    try {
+      const env: Record<string, string> = {}
+      for (const line of text.split('\n')) {
+        const trimmed = line.trim()
+        if (!trimmed || trimmed.startsWith('#')) continue
+        const eq = trimmed.indexOf('=')
+        if (eq < 1) continue
+        const k = trimmed.slice(0, eq).trim()
+        const v = trimmed.slice(eq + 1).trim()
+        if (k) env[k] = v
+      }
+      await window.api.invoke('session:set-env', sessionId, env)
+      onSaved()
+      onClose()
+    } catch (e) {
+      console.error('save env failed:', e)
+    }
+    setSaving(false)
+  }
+
+  return (
+    <div style={{
+      background: `${skinC.variant}f5`, backdropFilter: 'blur(32px)', WebkitBackdropFilter: 'blur(32px)',
+      borderRadius: 16, padding: 14, width: 340,
+      boxShadow: `0 12px 48px rgba(0,0,0,0.6), inset 0 1px 0 ${skinC.outline}20`,
+      fontFamily: "'Plus Jakarta Sans', -apple-system, sans-serif", color: skinC.text,
+    }}>
+      <div data-drag-handle style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 10, cursor: 'grab' }}>
+        <span style={{ fontSize: 13, fontWeight: 600 }}>🌱 环境变量 · {sessionTitle}</span>
+        <button onClick={onClose} style={{ background: 'none', border: 'none', color: skinC.textDim, cursor: 'pointer', fontSize: 16 }}>✕</button>
+      </div>
+      <textarea
+        value={loading ? '加载中...' : text}
+        onChange={(e) => setText(e.target.value)}
+        placeholder="KEY=value&#10;ANOTHER=value"
+        disabled={loading}
+        style={{
+          width: '100%', boxSizing: 'border-box', minHeight: 140,
+          padding: '8px 10px', borderRadius: 8,
+          border: `1px solid ${skinC.outline}55`,
+          background: `${skinC.container}aa`,
+          color: skinC.text, fontSize: 12,
+          fontFamily: 'ui-monospace, SFMono-Regular, Menlo, monospace',
+          outline: 'none', resize: 'vertical',
+        }}
+      />
+      <div style={{ fontSize: 10, color: skinC.textDim, marginTop: 4 }}>
+        每行一个 KEY=VALUE，重启会话后生效
+      </div>
+      <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 6, marginTop: 10 }}>
+        <button onClick={onClose} style={{
+          padding: '5px 12px', borderRadius: 8, background: `${skinC.container}aa`,
+          border: `1px solid ${skinC.outline}33`, color: skinC.textDim, fontSize: 11,
+          cursor: 'pointer', fontFamily: 'inherit',
+        }}>取消</button>
+        <button onClick={save} disabled={saving || loading} style={{
+          padding: '5px 12px', borderRadius: 8,
+          background: skinC.primaryDim, border: 'none',
+          color: '#fff', fontSize: 11, cursor: 'pointer', fontFamily: 'inherit',
+          opacity: saving || loading ? 0.5 : 1,
+        }}>{saving ? '保存中...' : '保存'}</button>
       </div>
     </div>
   )

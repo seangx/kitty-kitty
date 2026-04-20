@@ -3,14 +3,14 @@ export interface BubbleConfig {
   layout: 'cloud' | 'arc' | 'stack'  // cloud=organic scatter, arc=弧形, stack=堆叠
   colorTheme: 'indigo' | 'emerald' | 'rose' | 'amber' | 'custom'
   customColor?: string    // hex color when colorTheme='custom'
-  skin: 'classic' | 'neko' | 'ghost' | 'robot' | 'bunny'
+  skin: 'calico' | 'sheep' | 'chicken'
 }
 
 export const DEFAULT_BUBBLE_CONFIG: BubbleConfig = {
   sizeScale: 1.0,
   layout: 'cloud',
   colorTheme: 'indigo',
-  skin: 'classic',
+  skin: 'calico',
 }
 
 export const COLOR_THEMES: Record<string, { primary: string; dim: string; glass: string }> = {

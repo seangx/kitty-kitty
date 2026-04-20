@@ -7,7 +7,7 @@ import { execSync } from 'child_process'
 import { v4 as uuid } from 'uuid'
 import { log } from '../logger'
 import * as tmux from '../tmux/session-manager'
-import { generateLaunchScript, isToolInstalled, getInstallHint, getPaneMode, getNtfyTopic, setNtfyTopic } from '../tmux/cli-wrapper'
+import { generateLaunchScript, isToolInstalled, getInstallHint, getPaneMode, getNtfyTopic, setNtfyTopic, needsDevChannelAutoAccept } from '../tmux/cli-wrapper'
 import * as sessionMcp from '../mcp/session-mcp-manager'
 import * as sessionRepo from '../db/session-repo'
 import { getDB } from '../db/database'
@@ -310,6 +310,36 @@ export function registerSessionHandlers(): void {
     return { success: true }
   })
 
+  // Kill + delete session data files (session dir under ~/.kitty-kitty/sessions/ and claude session file)
+  ipcMain.handle('session:kill-and-delete', (_event, id: string) => {
+    const fs = require('fs') as typeof import('fs')
+    const rows = sessionRepo.listSessions()
+    const session = rows.find((s) => s.id === id)
+    if (!session) return { success: true }
+
+    sessionMcp.removeSessionMcp(session.id, session.cwd)
+    tmux.killSession(session.tmuxName)
+
+    // Delete session directory if under ~/.kitty-kitty/sessions/
+    const kittySessionsDir = join(homedir(), '.kitty-kitty', 'sessions')
+    if (session.cwd && session.cwd.startsWith(kittySessionsDir)) {
+      try { fs.rmSync(session.cwd, { recursive: true, force: true }) } catch { /* ignore */ }
+    }
+
+    // Delete claude session file if we know its ID
+    if (session.claudeSessionId && session.cwd) {
+      const encoded = session.cwd.replace(/[/.]/g, '-')
+      const claudeFile = join(homedir(), '.claude', 'projects', encoded, `${session.claudeSessionId}.jsonl`)
+      try {
+        if (fs.existsSync(claudeFile)) fs.unlinkSync(claudeFile)
+      } catch { /* ignore */ }
+    }
+
+    sessionRepo.deleteSession(id)
+    log('session', `kill-and-delete: ${session.title}`)
+    return { success: true }
+  })
+
   // Rename a session
   ipcMain.handle('session:rename', (_event, id: string, title: string) => {
     sessionRepo.updateSessionTitle(id, title)
@@ -379,18 +409,62 @@ export function registerSessionHandlers(): void {
       sessionRepo.updateSessionStatus(id, 'dead')
       throw new Error('Session is not running')
     }
+    restartSessionPane(session)
+    return { success: true }
+  })
 
-    // In pane mode, use paneId (%N) to target the exact pane; otherwise use mainPane
-    const target = session.paneId
-      ? session.paneId
-      : resolvePaneTarget(session.tmuxName, session.mainPane || '0.0')
-    const mode = session.claudeSessionId ? 'resume' : 'continue'
-    const launch = generateLaunchScript(session.tool, mode, session.claudeSessionId || undefined)
+  // Restart all alive sessions in one go
+  ipcMain.handle('session:restart-all', () => {
+    const rows = sessionRepo.listSessions()
+    let ok = 0, fail = 0
+    for (const session of rows) {
+      if (session.hidden) continue
+      if (!tmux.isSessionAlive(session.tmuxName)) continue
+      try {
+        restartSessionPane(session)
+        ok++
+      } catch (err) {
+        log('session', `restart-all: failed for ${session.title}:`, err)
+        fail++
+      }
+    }
+    log('session', `restart-all: ok=${ok} fail=${fail}`)
+    return { ok, fail }
+  })
 
-    // respawn-pane -k: kill current process and start new command in the same pane
-    execSync(`${tmux.TMUX} respawn-pane -k -t "${target}" "${launch}"`, { stdio: 'ignore' })
+  // Restart all sessions in a given group
+  ipcMain.handle('group:restart-sessions', (_event, groupId: string) => {
+    const rows = sessionRepo.listSessions().filter(s => s.groupId === groupId)
+    let ok = 0, fail = 0
+    for (const session of rows) {
+      if (session.hidden) continue
+      if (!tmux.isSessionAlive(session.tmuxName)) continue
+      try {
+        restartSessionPane(session)
+        ok++
+      } catch (err) {
+        log('session', `group-restart: failed for ${session.title}:`, err)
+        fail++
+      }
+    }
+    log('session', `group-restart: group=${groupId} ok=${ok} fail=${fail}`)
+    return { ok, fail }
+  })
 
-    log('session', `restart-agent: ${session.title} (mode=${mode})`)
+  // Get session env vars (returns object)
+  ipcMain.handle('session:get-env', (_event, id: string) => {
+    const row = sessionRepo.listSessions().find(s => s.id === id)
+    if (!row) return {}
+    try {
+      return row.env ? JSON.parse(row.env) : {}
+    } catch {
+      return {}
+    }
+  })
+
+  // Set session env vars
+  ipcMain.handle('session:set-env', (_event, id: string, env: Record<string, string>) => {
+    sessionRepo.updateSessionEnv(id, JSON.stringify(env || {}))
     return { success: true }
   })
 
@@ -1093,7 +1167,8 @@ function syncClaudeSessionIds(): void {
 
   for (const row of needsSync) {
     try {
-      const encoded = row.cwd.replace(/\//g, '-')
+      // claude encodes both `/` and `.` as `-` in the project dir name
+      const encoded = row.cwd.replace(/[/.]/g, '-')
       const claudeDir = join(homedir(), '.claude', 'projects', encoded)
       if (!existsSync(claudeDir)) continue
 
@@ -1140,6 +1215,54 @@ function toSessionInfo(s: tmux.TmuxSession): SessionInfo {
     isGitRepo: s.cwd ? isGitRepository(s.cwd) : false,
     worktreePanes: worktreeManager.listPanes(s.id),
   }
+}
+
+function restartSessionPane(session: sessionRepo.SessionRow): void {
+  // In pane mode, use paneId (%N) to target the exact pane; otherwise use mainPane
+  const target = session.paneId
+    ? session.paneId
+    : resolvePaneTarget(session.tmuxName, session.mainPane || '0.0')
+  const mode = session.claudeSessionId ? 'resume' : 'continue'
+  const launch = generateLaunchScript(session.tool, mode, session.claudeSessionId || undefined)
+
+  // Parse per-session env and pass via respawn-pane -e KEY=VALUE
+  let envFlags = ''
+  if (session.env) {
+    try {
+      const parsed = JSON.parse(session.env) as Record<string, string>
+      for (const [k, v] of Object.entries(parsed)) {
+        envFlags += ` -e "${k}=${String(v).replace(/"/g, '\\"')}"`
+      }
+    } catch { /* ignore bad env json */ }
+  }
+
+  execSync(`${tmux.TMUX} respawn-pane -k${envFlags} -t "${target}" "${launch}"`, { stdio: 'ignore' })
+  log('session', `restart: ${session.title} (mode=${mode})`)
+
+  // For claude --dangerously-load-development-channels: auto-accept the prompt
+  if (needsDevChannelAutoAccept(session.tool)) {
+    pollAndAcceptDevChannelPrompt(target)
+  }
+}
+
+/**
+ * Non-blocking poller: watch the target pane and send Enter when the
+ * dev-channels confirmation prompt appears. Max 5s (25 × 200ms).
+ */
+function pollAndAcceptDevChannelPrompt(paneTarget: string): void {
+  const deadline = Date.now() + 5000
+  const interval = setInterval(() => {
+    if (Date.now() > deadline) { clearInterval(interval); return }
+    try {
+      const content = execSync(`${tmux.TMUX} capture-pane -p -t "${paneTarget}"`, {
+        encoding: 'utf-8', stdio: ['ignore', 'pipe', 'ignore']
+      })
+      if (/development channels?|dangerously-load|trust these|continue\?/i.test(content)) {
+        execSync(`${tmux.TMUX} send-keys -t "${paneTarget}" Enter`, { stdio: 'ignore' })
+        clearInterval(interval)
+      }
+    } catch { /* pane gone, stop */ clearInterval(interval) }
+  }, 200)
 }
 
 function restartSessionTool(tmuxName: string, mainPane: string, prevTool: string, nextTool: string): void {

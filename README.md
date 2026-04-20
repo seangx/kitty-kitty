@@ -2,16 +2,19 @@
 
 桌面宠物 + AI 会话管理器。一只住在屏幕上的猫咪，帮你管理多个 AI agent 会话。
 
-基于 Electron + React + tmux 构建，支持 Claude AI 工具的多会话并行管理、分组协作和 git worktree 工作流。
+基于 Electron + React + tmux 构建，支持 Claude 多会话并行管理、分组协作和 git worktree 工作流。
+
+多 agent 协作通讯请使用 [**kitty-hive**](https://github.com/seangx/kitty-hive) — 独立的多 agent 协作服务器，支持 DM、任务分配、工作流审批和联邦节点。
 
 ## 功能
 
-- **桌面宠物** — ASCII 猫咪常驻屏幕，多种动画（roll/lick/jump/sneak/dance），5 套皮肤可换装
+- **桌面宠物** — ASCII 猫咪常驻屏幕，多种动画（roll/lick/jump/sneak/dance），多套皮肤可换装
 - **会话管理** — 创建、切换、分组管理多个 AI agent 会话
 - **Pane 模式** — 同组会话合并为分屏窗口，主 pane 占左 35%，其余右侧均分，Alt+数字切组
 - **双层底栏** — 上层组 tab，下层组内会话（session 模式）；pane 模式下简化为单行组栏
-- **MCP 通讯** — 所有会话自动注入 kitty-talk MCP，跨组消息、语义发现、角色标签
-- **MCP 编排** — kitty-session MCP 提供 pane 拆分、worktree 创建、会话 fork
+- **一键重启** — 右键会话气泡或组头，重启单个 / 整组 / 全部会话，基于 `claude --resume <id>` 精确恢复
+- **环境变量** — 每个会话独立环境变量，重启时通过 `tmux respawn-pane -e` 注入
+- **推送通知** — 订阅 ntfy.sh topic，部署状态等消息直接推送到猫猫气泡
 - **技能管理** — 搜索、安装、按分类批量部署 superpowers 技能到会话
 - **Worktree** — Alt+F 一键 fork 会话到 git worktree，带完整对话历史
 - **自动发现** — 自动检测 `.worktrees/` 下的 worktree 并注册管理
@@ -57,11 +60,13 @@ npm run dist
 
 - **单击** 猫咪 — 互动
 - **双击** 猫咪 — 打开输入框，创建新会话
-- **右键** 猫咪 — 菜单（新对话、在目录中开始、导入已有会话、换装、设置）
+- **右键** 猫咪 — 菜单（新对话、在目录中开始、新建分组、重启全部、换装、设置）
 - **拖拽** 猫咪 — 移动位置
 - **点击** 会话气泡 — attach 到该会话的 tmux 窗口
-- **右键** 会话气泡 — 重命名、重启、打开目录、分组、技能、设置角色/专长、设为主窗口（pane 模式）、退出
-- **右键** 组头 — 组颜色设置、在此组创建会话
+- **悬停** 会话气泡 — 显示「置顶」「重启」快捷按钮
+- **右键** 会话气泡 — 重命名、重启会话、打开目录、技能、环境变量、设为主窗口（pane 模式）、退出、退出并删除
+- **右键** 组头 — 在此组创建会话、重启组内会话、重命名、设置颜色
+- **拖拽** 会话气泡 — 到分组头入组；到隐藏栏隐藏；从隐藏栏拖出取消隐藏
 
 ### 快捷键（tmux session 内）
 
@@ -88,27 +93,37 @@ npm run dist
 - **pane 标签** — 每个 pane 顶部显示目录名，活跃 pane 紫色高亮
 - **模式切换** — 设置面板 toggle 开关，自动迁移 tmux 布局（合并/拆分）
 
-### MCP 通讯系统（kitty-talk）
+### ntfy.sh 推送通知
 
-所有会话自动注入 kitty-talk MCP 服务，提供 agent 间通讯和语义发现能力：
+订阅 ntfy.sh topic 接收 CI/部署通知等消息：
 
-- `talk(to, message)` — 向 agent 发送消息，支持 `role:ux` 按角色路由
-- `peers(role?, keyword?, all?)` — 按角色 / 关键字 / 专长搜索 agent
-- `listen()` — 查看未读消息（基于持久化 offset，重启不丢消息）
+- 在设置面板输入 topic 名（不带 `ntfy.sh/` 前缀）
+- 主进程 SSE 订阅（`since=now` 不拉历史）
+- 消息以卡片形式显示在屏幕右上角，最多保留 3 条
+- 支持 `title`、`message`、`tags`（`success` / `fail` 等影响色标）、`click` URL（点击卡片跳转）
 
-**角色与专长**：右键会话气泡 → "设置角色/专长"，为 agent 标注角色标签（如 `ux, frontend`）和专长描述。其他 agent 可通过 `peers(role: "ux")` 或 `peers(keyword: "设计")` 发现并协作。
+示例：
+```bash
+curl -H "Title: Deploy" -H "Tags: white_check_mark" \
+     -d "Production deployed" ntfy.sh/your-topic
+```
 
-在输入框中也可用 `/@` 快捷语法：`/@agent_name 消息内容`
+### 会话重启
 
-### MCP 会话编排（kitty-session）
+右键会话气泡或悬停气泡点「重启」。重启走 `tmux respawn-pane -k`，直接在同一个 pane 内启动新进程，无需轮询等待：
 
-agent 可通过 kitty-session MCP 拆分子 pane 和管理 worktree：
+- 有 claude session ID → `claude --resume <id>` 精确恢复
+- 没有 → fallback 到 `claude -c` continue 模式
+- 组级：右键组头 → 「重启组内会话」
+- 全局：右键猫咪 → 「重启全部」
 
-- `create_pane(tool, cwd, message)` — 开新 pane 并启动 agent
-- `fork_session(branch)` — 创建 git worktree + fork 当前 claude 会话
-- `create_worktree(branch)` — 创建 git worktree（不 fork 会话）
-- `list_panes()` — 查看当前 session 的所有 pane
-- `close_pane(pane_id, cleanup?)` — 关闭 pane，可选清理 worktree + 数据
+### 环境变量
+
+每个会话独立配置环境变量，右键气泡 → 「环境变量」：
+
+- 编辑器接受 `KEY=VALUE` 格式，每行一条
+- 存储在 DB 的 session 行里
+- 重启会话时通过 `tmux respawn-pane -e KEY=VALUE` 注入生效
 
 ### 技能管理
 
@@ -136,10 +151,6 @@ agent 可通过 kitty-session MCP 拆分子 pane 和管理 worktree：
 2. 输入分支名，点击 GO 创建 worktree pane
 3. 每个 worktree pane 独立运行 agent，共享同一 tmux session
 
-**方式三：MCP 工具**
-
-agent 可直接调用 `fork_session(branch)` 或 `create_worktree(branch)` + `create_pane(cwd)`。
-
 ## 项目结构
 
 ```
@@ -147,17 +158,21 @@ src/
   main/        # Electron 主进程
     db/        #   SQLite 数据库
     ipc/       #   IPC 处理器
-    mcp/       #   MCP 通讯 (kitty-talk) + 会话编排 (kitty-session)
     tmux/      #   tmux 会话管理 + CLI wrapper + fork/close 脚本
     skills/    #   skillsmgr CLI 集成
     worktree/  #   git worktree 管理 + 冲突监控
     windows/   #   窗口管理 + 位置持久化
+    ntfy.ts    #   ntfy.sh SSE 订阅
   renderer/    # React 渲染进程
-    pet/       #   宠物 UI 组件（TagCloud、SkillsPanel、AgentMetadataPopup）
+    pet/       #   宠物 UI 组件（TagCloud、SkillsPanel、SettingsPanel）
     store/     #   Zustand 状态管理
   shared/      # 共享类型定义
   preload/     # Electron preload
 ```
+
+## 相关项目
+
+- [**kitty-hive**](https://github.com/seangx/kitty-hive) — 多 agent 协作服务器（DM / 任务 / 工作流 / 联邦）
 
 ## License
 

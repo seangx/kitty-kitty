@@ -1,6 +1,5 @@
 import { useState, useEffect, useRef } from 'react'
 import { useConfigStore } from '../store/config-store'
-import type { BubbleConfig } from '@shared/types/config'
 
 interface Props {
   onClose: () => void
@@ -11,12 +10,6 @@ const C = {
   text: '#e5e3ff', textDim: '#aaa8c3',
   primaryDim: '#645efb', outline: '#46465c',
 }
-
-const layouts: Array<{ id: BubbleConfig['layout']; emoji: string; label: string }> = [
-  { id: 'cloud', emoji: '☁️', label: '云朵' },
-  { id: 'arc', emoji: '🌈', label: '弧形' },
-  { id: 'stack', emoji: '📚', label: '堆叠' },
-]
 
 export default function SettingsPanel({ onClose }: Props) {
   const { bubble, setBubble, resetBubble } = useConfigStore()
@@ -127,25 +120,6 @@ export default function SettingsPanel({ onClose }: Props) {
         </div>
       </div>
 
-      {/* Layout */}
-      <div style={{ marginBottom: 14 }}>
-        <div style={{ fontSize: 11, color: C.textDim, marginBottom: 6 }}>排布</div>
-        <div style={{ display: 'flex', gap: 6 }}>
-          {layouts.map((l) => (
-            <button key={l.id} onClick={() => setBubble({ layout: l.id })}
-              style={{
-                flex: 1, padding: '8px 4px', borderRadius: 10,
-                border: bubble.layout === l.id ? `1px solid ${C.primaryDim}88` : `1px solid ${C.outline}33`,
-                background: bubble.layout === l.id ? `${C.primaryDim}22` : `${C.container}88`,
-                color: bubble.layout === l.id ? C.text : C.textDim,
-                cursor: 'pointer', fontSize: 11, textAlign: 'center', fontFamily: 'inherit',
-              }}>
-              <div style={{ fontSize: 18 }}>{l.emoji}</div>
-              <div style={{ marginTop: 2 }}>{l.label}</div>
-            </button>
-          ))}
-        </div>
-      </div>
 
       {/* Hint */}
       <div style={{ fontSize: 10, color: C.textDim, opacity: 0.7, textAlign: 'center', marginBottom: 8 }}>

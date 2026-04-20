@@ -447,7 +447,7 @@ export function applyKittyStatusBar(tmuxName: string): void {
     if (isPaneMode) {
       opts.push(
         `set-option -t ${sq} status 1`,
-        `set-option -t ${sq} status-format[0] "#[bg=#1e1e36]#(${groupBarScript})#[fill=#1e1e36,align=right]#[fg=#aaa8c3] %H:%M "`,
+        `set-option -t ${sq} status-format[0] "#[bg=#1e1e36]#(${groupBarScript} #{session_name})#[fill=#1e1e36,align=right]#[fg=#aaa8c3] %H:%M "`,
         // Highlight active pane with border + top status label
         `set-option -t ${sq} pane-active-border-style "fg=#645efb"`,
         `set-option -t ${sq} pane-border-style "fg=#2a2a45"`,
@@ -459,8 +459,8 @@ export function applyKittyStatusBar(tmuxName: string): void {
       const sessionBarScript = ensureSessionBarScript()
       opts.push(
         `set-option -t ${sq} status 2`,
-        `set-option -t ${sq} status-format[0] "#[bg=#1e1e36]#(${groupBarScript})#[fill=#1e1e36]"`,
-        `set-option -t ${sq} status-format[1] "#[bg=#2a2a45]#(${sessionBarScript})#[fill=#2a2a45,align=right]#[fg=#aaa8c3] %H:%M "`,
+        `set-option -t ${sq} status-format[0] "#[bg=#1e1e36]#(${groupBarScript} #{session_name})#[fill=#1e1e36]"`,
+        `set-option -t ${sq} status-format[1] "#[bg=#2a2a45]#(${sessionBarScript} #{session_name})#[fill=#2a2a45,align=right]#[fg=#aaa8c3] %H:%M "`,
       )
     }
 
@@ -571,12 +571,12 @@ export function refreshAllStatusBars(): void {
     try {
       if (isPaneMode) {
         execSync(`${TMUX} set-option -t ${shellQuote(s.name)} status 1`, { stdio: 'ignore' })
-        execSync(`${TMUX} set-option -t ${shellQuote(s.name)} status-format[0] "#[bg=#1e1e36]#(${groupBarScript})#[fill=#1e1e36,align=right]#[fg=#aaa8c3] %H:%M "`, { stdio: 'ignore' })
+        execSync(`${TMUX} set-option -t ${shellQuote(s.name)} status-format[0] "#[bg=#1e1e36]#(${groupBarScript} #{session_name})#[fill=#1e1e36,align=right]#[fg=#aaa8c3] %H:%M "`, { stdio: 'ignore' })
       } else {
         const sessionBarScript = ensureSessionBarScript()
         execSync(`${TMUX} set-option -t ${shellQuote(s.name)} status 2`, { stdio: 'ignore' })
-        execSync(`${TMUX} set-option -t ${shellQuote(s.name)} status-format[0] "#[bg=#1e1e36]#(${groupBarScript})#[fill=#1e1e36]"`, { stdio: 'ignore' })
-        execSync(`${TMUX} set-option -t ${shellQuote(s.name)} status-format[1] "#[bg=#2a2a45]#(${sessionBarScript})#[fill=#2a2a45,align=right]#[fg=#aaa8c3] %H:%M "`, { stdio: 'ignore' })
+        execSync(`${TMUX} set-option -t ${shellQuote(s.name)} status-format[0] "#[bg=#1e1e36]#(${groupBarScript} #{session_name})#[fill=#1e1e36]"`, { stdio: 'ignore' })
+        execSync(`${TMUX} set-option -t ${shellQuote(s.name)} status-format[1] "#[bg=#2a2a45]#(${sessionBarScript} #{session_name})#[fill=#2a2a45,align=right]#[fg=#aaa8c3] %H:%M "`, { stdio: 'ignore' })
       }
     } catch { /* ignore */ }
   }
@@ -598,17 +598,22 @@ function ensureGroupBarScript(): string {
   const dbPath = join(homedir(), 'Library', 'Application Support', 'kitty-kitty', 'kitty-kitty.db')
   const scriptPath = join(tmpdir(), 'kitty_group_bar.sh')
   writeFileSync(scriptPath, `#!/bin/bash
+# Argument \$1: the tmux session name being rendered (passed via #{session_name})
 TMUX_BIN="${TMUX}"
 DB="${dbPath}"
 GBG="#1e1e36"
-
-ACTIVE_GROUP=\$(\$TMUX_BIN show-environment -g KITTY_ACTIVE_GROUP 2>/dev/null | sed 's/^[^=]*=//')
-[ -z "\$ACTIVE_GROUP" ] && ACTIVE_GROUP="__ungrouped__"
+RENDER_SESSION="\$1"
 
 if ! [ -f "\$DB" ] || ! command -v sqlite3 >/dev/null 2>&1; then
   printf '#[fg=#aaa8c3,bg=%s]  (no db)  ' "\$GBG"
   exit 0
 fi
+
+# Derive active group from the session being rendered — this is the truth for this status bar
+if [ -n "\$RENDER_SESSION" ]; then
+  ACTIVE_GROUP=\$(sqlite3 "\$DB" "SELECT COALESCE(group_id, '__ungrouped__') FROM sessions WHERE tmux_name='\$RENDER_SESSION' LIMIT 1;" 2>/dev/null)
+fi
+[ -z "\$ACTIVE_GROUP" ] && ACTIVE_GROUP="__ungrouped__"
 
 # Collect alive tmux sessions
 ALIVE=""
@@ -670,11 +675,16 @@ function ensureSessionBarScript(): string {
   const dbPath = join(homedir(), 'Library', 'Application Support', 'kitty-kitty', 'kitty-kitty.db')
   const scriptPath = join(tmpdir(), 'kitty_session_bar.sh')
   writeFileSync(scriptPath, `#!/bin/bash
+# Argument \$1: the tmux session name being rendered (passed via #{session_name})
 TMUX_BIN="${TMUX}"
-CURRENT=\$(\$TMUX_BIN display-message -p '#S')
 DB="${dbPath}"
+RENDER_SESSION="\$1"
+CURRENT="\${RENDER_SESSION:-\$(\$TMUX_BIN display-message -p '#S')}"
 
-ACTIVE_GROUP=\$(\$TMUX_BIN show-environment -g KITTY_ACTIVE_GROUP 2>/dev/null | sed 's/^[^=]*=//')
+# Derive active group from the session being rendered
+if [ -n "\$RENDER_SESSION" ] && [ -f "\$DB" ] && command -v sqlite3 >/dev/null 2>&1; then
+  ACTIVE_GROUP=\$(sqlite3 "\$DB" "SELECT COALESCE(group_id, '__ungrouped__') FROM sessions WHERE tmux_name='\$RENDER_SESSION' LIMIT 1;" 2>/dev/null)
+fi
 [ -z "\$ACTIVE_GROUP" ] && ACTIVE_GROUP="__ungrouped__"
 
 # Collect alive tmux sessions for cross-check
@@ -805,9 +815,6 @@ fi
 TARGET_GID="\${GROUP_IDS[\$IDX]}"
 [ -z "\$TARGET_GID" ] && exit 0
 
-# Set active group
-\$TMUX_BIN set-environment -g KITTY_ACTIVE_GROUP "\$TARGET_GID" 2>/dev/null
-
 # Find most recently updated ALIVE session in that group and switch to it
 if [ "\$TARGET_GID" = "__ungrouped__" ]; then
   QUERY_BEST="SELECT tmux_name FROM sessions WHERE (group_id IS NULL OR group_id='') AND COALESCE(hidden,0)=0 ORDER BY updated_at DESC;"
@@ -823,7 +830,10 @@ done < <(sqlite3 "\$DB" "\$QUERY_BEST" 2>/dev/null)
 if [ -n "\$BEST" ]; then
   CLIENT=\$(\$TMUX_BIN list-clients -F '#{client_name}' 2>/dev/null | head -1)
   if [ -n "\$CLIENT" ]; then
-    \$TMUX_BIN switch-client -c "\$CLIENT" -t "\$BEST" 2>/dev/null
+    if \$TMUX_BIN switch-client -c "\$CLIENT" -t "\$BEST" 2>/dev/null; then
+      # Only update env after successful switch
+      \$TMUX_BIN set-environment -g KITTY_ACTIVE_GROUP "\$TARGET_GID" 2>/dev/null
+    fi
   fi
 fi
 

@@ -16,7 +16,7 @@ export type AnimationState =
   | 'jump'
   | 'sneak'
 
-export type SkinId = 'classic' | 'neko' | 'ghost' | 'robot' | 'bunny'
+export type SkinId = 'calico' | 'sheep' | 'chicken'
 
 export interface PetState {
   mood: Mood

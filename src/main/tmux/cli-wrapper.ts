@@ -198,6 +198,16 @@ function baseCmd(config: ToolConfig): string {
   return parts.join(' ')
 }
 
+/**
+ * Check whether the current claude toolArgs includes the dev-channels flag.
+ * Used by the main process to decide whether to start an auto-accept poller.
+ */
+export function needsDevChannelAutoAccept(tool: string): boolean {
+  if (tool !== 'claude') return false
+  const userArgs = getUserToolArgs(tool)
+  return userArgs.includes('--dangerously-load-development-channels')
+}
+
 function buildContinueScript(config: ToolConfig): string {
   if (!config.continueFlag) return buildNewScript(config)
   const cmd = baseCmd(config)
