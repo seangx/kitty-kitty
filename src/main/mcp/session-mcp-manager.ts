@@ -1,6 +1,5 @@
 import { writeFileSync, readFileSync, existsSync, unlinkSync } from 'fs'
 import { join } from 'path'
-import { execSync } from 'child_process'
 import { SESSION_MCP_SERVER_SCRIPT } from './session-server-script'
 import { log } from '../logger'
 import { TMUX } from '../tmux/session-manager'
@@ -29,18 +28,6 @@ function ensureScript(): string {
 }
 
 /**
- * Check if a directory is a git repository.
- */
-function isGitRepo(dir: string): boolean {
-  try {
-    execSync(`git -C '${dir.replace(/'/g, "'\\''")}' rev-parse --git-dir`, { stdio: 'ignore' })
-    return true
-  } catch {
-    return false
-  }
-}
-
-/**
  * Resolve the Node.js executable path.
  */
 function resolveNodePath(): string {
@@ -57,7 +44,7 @@ function resolveNodePath(): string {
 
 /**
  * Inject the kitty-session MCP server into a session's project.
- * All sessions with cwd get basic pane tools. Git repos also get worktree tools.
+ * All sessions with cwd get pane management tools.
  */
 export function injectSessionMcp(
   sessionId: string,
@@ -85,7 +72,6 @@ export function injectSessionMcp(
         KITTY_TMUX_NAME: tmuxName,
         KITTY_TMUX_BIN: TMUX,
         KITTY_PROJECT_ROOT: cwd,
-        KITTY_IS_GIT_REPO: isGitRepo(cwd) ? '1' : '0',
       }
     }
 

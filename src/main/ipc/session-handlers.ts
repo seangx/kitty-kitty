@@ -7,11 +7,10 @@ import { execSync } from 'child_process'
 import { v4 as uuid } from 'uuid'
 import { log } from '../logger'
 import * as tmux from '../tmux/session-manager'
-import { generateLaunchScript, isToolInstalled, getInstallHint, getPaneMode, getNtfyTopic, setNtfyTopic, needsDevChannelAutoAccept } from '../tmux/cli-wrapper'
+import { generateLaunchScript, isToolInstalled, getInstallHint, getNtfyTopic, setNtfyTopic, needsDevChannelAutoAccept } from '../tmux/cli-wrapper'
 import * as sessionMcp from '../mcp/session-mcp-manager'
 import * as sessionRepo from '../db/session-repo'
 import { getDB } from '../db/database'
-import * as worktreeManager from '../worktree/worktree-manager'
 import * as ntfy from '../ntfy'
 import type { SessionInfo } from '@shared/types/session'
 
@@ -160,83 +159,6 @@ export function registerSessionHandlers(): void {
     return toSessionInfo(session)
   })
 
-  // Create worktree and start session in it
-  ipcMain.handle('session:create-worktree', (_event, tool: string, dir: string, branch: string, resumeId?: string) => {
-    // Validate branch name
-    const safeBranch = branch.replace(/[^a-zA-Z0-9/_.-]/g, '-')
-    if (!safeBranch) throw new Error('无效的分支名')
-
-    // Create worktree inside repo: .worktrees/branch-name
-    const worktreePath = join(dir, '.worktrees', safeBranch.replace(/\//g, '-'))
-
-    try {
-      // Check if branch already exists
-      try {
-        execSync(`git -C "${dir}" rev-parse --verify "${safeBranch}"`, { stdio: 'ignore' })
-        // Branch exists — create worktree from existing branch
-        execSync(`git -C "${dir}" worktree add "${worktreePath}" "${safeBranch}"`, {
-          stdio: 'ignore'
-        })
-      } catch {
-        // Branch doesn't exist — create new branch
-        execSync(`git -C "${dir}" worktree add -b "${safeBranch}" "${worktreePath}"`, {
-          stdio: 'ignore'
-        })
-      }
-    } catch (err: any) {
-      throw new Error(`worktree 创建失败: ${err.message}`)
-    }
-
-    // Ensure .worktrees is in .gitignore
-    const fs = require('fs')
-    const gitignorePath = join(dir, '.gitignore')
-    try {
-      const content = existsSync(gitignorePath) ? fs.readFileSync(gitignorePath, 'utf-8') : ''
-      if (!content.split('\n').some((l: string) => l.trim() === '.worktrees')) {
-        fs.appendFileSync(gitignorePath, `${content.endsWith('\n') ? '' : '\n'}.worktrees\n`)
-      }
-    } catch { /* ignore */ }
-
-    // Symlink Claude project dir so worktree shares sessions with main repo
-    // Claude encodes path: /Users/foo/bar → -Users-foo-bar
-    const claudeProjectsDir = join(homedir(), '.claude', 'projects')
-    const mainEncoded = dir.replace(/\//g, '-')
-    const wtEncoded = worktreePath.replace(/\//g, '-')
-    const mainClaudeDir = join(claudeProjectsDir, mainEncoded)
-    const wtClaudeDir = join(claudeProjectsDir, wtEncoded)
-    try {
-      // Ensure main project dir exists
-      if (!existsSync(mainClaudeDir)) {
-        fs.mkdirSync(mainClaudeDir, { recursive: true })
-      }
-      // Create symlink: worktree claude dir → main claude dir
-      if (!existsSync(wtClaudeDir)) {
-        fs.symlinkSync(mainClaudeDir, wtClaudeDir)
-      }
-    } catch { /* ignore — sessions just won't be shared */ }
-
-    // Symlink openspec dir so worktree shares specs/changes with main repo
-    const mainOpenspec = join(dir, 'openspec')
-    const wtOpenspec = join(worktreePath, 'openspec')
-    try {
-      if (existsSync(mainOpenspec) && !existsSync(wtOpenspec)) {
-        fs.symlinkSync(mainOpenspec, wtOpenspec)
-      }
-    } catch { /* ignore */ }
-
-    // Start session in the worktree directory
-    const script = generateLaunchScript(
-      tool || 'claude',
-      resumeId ? 'resume' : 'continue',
-      resumeId || undefined
-    )
-    const session = tmux.createTmuxSession(tool || 'claude', undefined, worktreePath, script)
-    sessionRepo.saveSession(session)
-    sessionMcp.injectSessionMcp(session.id, worktreePath, session.tmuxName, session.title)
-    tmux.attachSession(session.tmuxName)
-    return toSessionInfo(session)
-  })
-
   // Import existing tmux sessions (non-kitty ones)
   ipcMain.handle(IPC.SESSION_IMPORT, () => {
     const allSessions = tmux.listAllTmuxSessions()
@@ -267,8 +189,8 @@ export function registerSessionHandlers(): void {
     if (!session) throw new Error('Session not found')
 
     if (!tmux.isSessionAlive(session.tmuxName)) {
-      // In pane mode, this session may exist as a pane in its group's host session
-      if (getPaneMode() && session.groupId) {
+      // This session may exist as a pane in its group's host session
+      if (session.groupId) {
         const groupSessions = sessionRepo.listSessionsByGroup(session.groupId)
           .filter(s => tmux.isSessionAlive(s.tmuxName))
         const hostSession = groupSessions[0]
@@ -531,8 +453,8 @@ export function registerSessionHandlers(): void {
     const nextGroup = groupId ? sessionRepo.getGroupById(groupId) : undefined
     sessionMcp.updateGroupId(sessionId, session.cwd, groupId || '', nextGroup?.name || '')
 
-    // In pane mode, move the pane between group tmux sessions
-    if (getPaneMode()) {
+    // Move the pane between group tmux sessions
+    {
       // Find the actual tmux session hosting this session's pane
       let hostTmux = session.tmuxName
       if (!tmux.isSessionAlive(hostTmux) && oldGroupId) {
@@ -616,8 +538,8 @@ export function registerSessionHandlers(): void {
     const session = sessionRepo.listSessions().find(s => s.id === sessionId)
     sessionRepo.updateSessionHidden(sessionId, hidden)
 
-    // In pane mode, kill/restore the corresponding pane
-    if (getPaneMode() && session) {
+    // Kill/restore the corresponding pane
+    if (session) {
       if (hidden) {
         const groupSessions = session.groupId
           ? sessionRepo.listSessionsByGroup(session.groupId).filter(s => tmux.isSessionAlive(s.tmuxName))
@@ -686,76 +608,6 @@ export function registerSessionHandlers(): void {
     tmux.refreshAllStatusBars()
   })
 
-  // --- Pane mode ---
-  ipcMain.handle(IPC.PANE_MODE_GET, () => {
-
-    return getPaneMode()
-  })
-
-  ipcMain.handle(IPC.PANE_MODE_SET, (_event, enabled: boolean) => {
-    const { readFileSync, writeFileSync, mkdirSync } = require('fs')
-    const configPath = join(homedir(), '.kitty-kitty', 'config.json')
-
-    let config: any = {}
-    try { config = JSON.parse(readFileSync(configPath, 'utf-8')) } catch { /* ignore */ }
-    config.paneMode = enabled
-    mkdirSync(join(homedir(), '.kitty-kitty'), { recursive: true })
-    writeFileSync(configPath, JSON.stringify(config, null, 2))
-
-    if (enabled) {
-      migrateToPane()
-    } else {
-      migrateToSession()
-      // Restore merged sessions: give them unique tmux names, then recreate
-      // Sessions that were joined share the same tmux_name — assign new ones
-      const db = getDB()
-      const dupes = db.prepare(`
-        SELECT id, tmux_name FROM sessions
-        WHERE tmux_name IN (
-          SELECT tmux_name FROM sessions GROUP BY tmux_name HAVING COUNT(*) > 1
-        )
-      `).all() as Array<{ id: string; tmux_name: string }>
-      const seen = new Set<string>()
-      for (const row of dupes) {
-        if (seen.has(row.tmux_name)) {
-          // This is a duplicate — give it a new unique tmux name
-      
-          const newName = `kitty_${uuid().slice(0, 8)}`
-          db.prepare("UPDATE sessions SET tmux_name = ? WHERE id = ?").run(newName, row.id)
-          log('pane-mode', `reassigned tmux_name for ${row.id}: ${row.tmux_name} → ${newName}`)
-        } else {
-          seen.add(row.tmux_name)
-        }
-      }
-
-      const liveNames = new Set(tmux.listTmuxSessions().map(s => s.name))
-      for (const row of sessionRepo.listSessions()) {
-        if (!liveNames.has(row.tmuxName) && row.cwd && existsSync(row.cwd) && !row.hidden) {
-          try {
-            const script = generateLaunchScript(row.tool, 'restore')
-            execSync(
-              `${tmux.TMUX} new-session -d -s "${row.tmuxName}" -c "${row.cwd}" "${script}"`,
-              { stdio: 'ignore', env: { ...process.env, TERM: 'xterm-256color' } }
-            )
-            tmux.applyKittyStatusBar(row.tmuxName)
-            sessionRepo.updateSessionStatus(row.id, 'detached')
-            log('pane-mode', `restored session: ${row.title} (${row.tmuxName})`)
-          } catch (err) {
-            log('pane-mode', `restore failed for ${row.tmuxName}:`, err)
-          }
-        }
-      }
-    }
-
-    // Re-apply status bar to ALL live sessions (mode changed, need fresh config)
-    const allLive = tmux.listTmuxSessions()
-    for (const s of allLive) {
-      tmux.applyKittyStatusBar(s.name)
-    }
-    tmux.refreshAllStatusBars()
-    return { success: true }
-  })
-
   // --- Ntfy ---
   ipcMain.handle(IPC.NTFY_TOPIC_GET, () => {
     return getNtfyTopic()
@@ -783,8 +635,8 @@ export function registerSessionHandlers(): void {
 
     const script = generateLaunchScript('claude', 'new')
 
-    if (getPaneMode() && groupSessions.length > 0 && mainSession) {
-      // Pane mode: split into the group's tmux session
+    if (groupSessions.length > 0 && mainSession) {
+      // Split into the group's tmux session
       const hostTmuxName = mainSession.tmuxName
       if (!tmux.isSessionAlive(hostTmuxName)) {
         throw new Error('Group host session is not running')
@@ -818,7 +670,7 @@ export function registerSessionHandlers(): void {
       tmux.refreshAllStatusBars()
       return toSessionInfo(session)
     } else {
-      // Session mode or first session: create independent
+      // First session in the group: create independent tmux session
       const session = tmux.createTmuxSession('claude', undefined, freshCwd, script)
       sessionRepo.saveSession(session)
       // Record pane_id for the new session
@@ -847,17 +699,15 @@ export function registerSessionHandlers(): void {
   ipcMain.handle(IPC.GROUP_SET_MAIN_SESSION, (_event, groupId: string, sessionId: string) => {
     sessionRepo.setGroupMainSession(groupId, sessionId)
 
-    if (getPaneMode()) {
-      syncPaneIds()
-      const session = sessionRepo.listSessions().find(s => s.id === sessionId)
-      if (!session?.paneId || !tmux.isSessionAlive(session.tmuxName)) return { success: true }
+    syncPaneIds()
+    const session = sessionRepo.listSessions().find(s => s.id === sessionId)
+    if (!session?.paneId || !tmux.isSessionAlive(session.tmuxName)) return { success: true }
 
-      try {
-        tmux.swapMainPane(session.tmuxName, session.paneId)
-        tmux.applyMainVerticalLayout(session.tmuxName)
-      } catch (err) {
-        log('pane-mode', `swap main pane failed:`, err)
-      }
+    try {
+      tmux.swapMainPane(session.tmuxName, session.paneId)
+      tmux.applyMainVerticalLayout(session.tmuxName)
+    } catch (err) {
+      log('pane-mode', `swap main pane failed:`, err)
     }
     return { success: true }
   })
@@ -877,7 +727,7 @@ function migrateToPane(): void {
     const mainSession = uniqueSessions.find(s => s.id === group.mainSessionId) || uniqueSessions[0]
     const others = uniqueSessions.filter(s => s.tmuxName !== mainSession.tmuxName)
 
-    // Kill extra panes on main session first (worktree forks etc.)
+    // Kill extra panes on main session first
     const mainPanes = tmux.getPaneCount(mainSession.tmuxName)
     if (mainPanes > 1) {
       try {
@@ -976,33 +826,6 @@ function syncPaneIds(): void {
   }
 }
 
-function migrateToSession(): void {
-  // Kill extra panes in all kitty sessions — restore logic in syncAndList
-  // will recreate the dead sessions as independent tmux sessions.
-  const allSessions = tmux.listTmuxSessions()
-  for (const s of allSessions) {
-    const paneCount = tmux.getPaneCount(s.name)
-    if (paneCount <= 1) continue
-
-    try {
-      const panes = execSync(
-        `${tmux.TMUX} list-panes -t "${s.name}" -F '#{pane_id}'`,
-        { encoding: 'utf-8' }
-      ).trim().split('\n')
-
-      // Kill all panes except the first (main pane stays)
-      for (let i = panes.length - 1; i >= 1; i--) {
-        try {
-          execSync(`${tmux.TMUX} kill-pane -t ${panes[i]}`, { stdio: 'ignore' })
-        } catch { /* ignore */ }
-      }
-      log('pane-mode', `killed ${panes.length - 1} extra panes in ${s.name}`)
-    } catch (err) {
-      log('pane-mode', `migration failed for ${s.name}:`, err)
-    }
-  }
-}
-
 /**
  * Sync tmux session states with our DB and return updated list.
  * On first sync, auto-restore sessions that were previously alive.
@@ -1043,30 +866,9 @@ function syncAndList(): SessionInfo[] {
       }
     }
 
-    // Auto-migrate layout based on pane mode
-    // Session mode: kill extra panes BEFORE restoring worktree panes
-    // Pane mode: merge sessions AFTER restore (worktree panes not needed in pane mode)
-    if (!getPaneMode()) {
-      migrateToSession()
-    }
-
-    // Restore worktree panes for all live sessions (session mode only)
-    if (!getPaneMode()) {
-      for (const row of sessionRepo.listSessions()) {
-        if (liveNames.has(row.tmuxName)) {
-          try {
-            worktreeManager.restorePanes(row.id, row.tmuxName)
-          } catch (err) {
-            console.error(`[restore] Failed to restore worktree panes for ${row.tmuxName}:`, err)
-          }
-        }
-      }
-    }
-
-    if (getPaneMode()) {
-      migrateToPane()
-      syncPaneIds()
-    }
+    // Merge sessions of the same group into panes
+    migrateToPane()
+    syncPaneIds()
 
     // Apply status bar to all live sessions
     for (const name of liveNames) {
@@ -1105,25 +907,8 @@ function syncAndList(): SessionInfo[] {
     // dead or detached without tmux: keep as-is
   }
 
-  // Auto-discover worktrees created by agents (e.g. via git worktree add)
-  for (const row of sessionRepo.listSessions()) {
-    if (!row.cwd) continue
-    // Only check repos that have a .worktrees/ directory
-    if (!existsSync(join(row.cwd, '.worktrees'))) continue
-    try {
-      const discovered = worktreeManager.discoverWorktrees(row.cwd)
-      for (const wt of discovered) {
-        // Only auto-track worktrees under .worktrees/
-        if (wt.isTracked) continue
-        if (!wt.path.startsWith(join(row.cwd, '.worktrees'))) continue
-        // Register with empty paneId (no kitty-managed tmux pane)
-        worktreeManager.autoRegisterWorktree(row.id, wt)
-      }
-    } catch { /* ignore discovery errors */ }
-  }
-
   // Keep pane_ids in sync with actual tmux state
-  if (getPaneMode()) syncPaneIds()
+  syncPaneIds()
 
   // Sync claude session IDs for live sessions missing them
   syncClaudeSessionIds()
@@ -1145,7 +930,6 @@ function syncAndList(): SessionInfo[] {
     roles: row.roles || '',
     expertise: row.expertise || '',
     isGitRepo: row.cwd ? isGitRepository(row.cwd) : false,
-    worktreePanes: worktreeManager.listPanes(row.id),
   }))
   log('sync', result.map(r => `${r.title}:${r.status}`).join(', '))
   return result
@@ -1213,7 +997,6 @@ function toSessionInfo(s: tmux.TmuxSession): SessionInfo {
     status: s.status,
     createdAt: s.createdAt,
     isGitRepo: s.cwd ? isGitRepository(s.cwd) : false,
-    worktreePanes: worktreeManager.listPanes(s.id),
   }
 }
 

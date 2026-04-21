@@ -1,5 +1,3 @@
-import type { WorktreePaneInfo } from './worktree'
-
 export interface SessionInfo {
   id: string
   tmuxName: string
@@ -17,7 +15,6 @@ export interface SessionInfo {
   expertise?: string
   paneId?: string
   isGitRepo?: boolean
-  worktreePanes?: WorktreePaneInfo[]
 }
 
 export interface GroupInfo {

@@ -113,25 +113,6 @@ function runMigrations(database: Database.Database): void {
       }
     } catch { /* already migrated */ }
 
-    // Add worktree_panes table
-    try {
-      database.exec(`
-        CREATE TABLE IF NOT EXISTS worktree_panes (
-          id           TEXT PRIMARY KEY,
-          session_id   TEXT NOT NULL REFERENCES sessions(id) ON DELETE CASCADE,
-          pane_id      TEXT NOT NULL,
-          branch       TEXT NOT NULL,
-          path         TEXT NOT NULL,
-          base_branch  TEXT DEFAULT 'main',
-          tool         TEXT DEFAULT 'claude',
-          merge_state  TEXT DEFAULT 'unknown',
-          status       TEXT DEFAULT 'active',
-          created_at   TEXT NOT NULL DEFAULT (datetime('now')),
-          updated_at   TEXT NOT NULL DEFAULT (datetime('now')),
-          UNIQUE(session_id, pane_id)
-        )
-      `)
-    } catch { /* already exists */ }
   }
 
   // Migration files in order

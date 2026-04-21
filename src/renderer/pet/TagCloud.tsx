@@ -13,8 +13,6 @@ interface Props {
   onRename: (id: string, title: string) => void
   onRestart: (id: string) => void
   onEditEnv: (id: string) => void
-  onCreateWorktreePane: (sessionId: string, branch: string) => void
-  onRemoveWorktreePane: (paneId: string, keepWorktree: boolean) => void
   onOpenSkills: (sessionId: string) => void
 }
 
@@ -45,18 +43,6 @@ function setGroupPriorityLS(groupId: string, priority: number) {
 }
 
 const BUBBLE_PRESETS = ['#645efb', '#10b981', '#e11d48', '#d97706', '#06b6d4', '#8b5cf6']
-
-// Branch type → color for worktree sessions
-function branchColor(cwd: string): { label: string; color: string } | null {
-  // Detect worktree path: .../.worktrees/<branch-name>/
-  const wtMatch = cwd.match(/\.worktrees\/([^/]+)\/?$/)
-  if (!wtMatch) return null
-  const branch = wtMatch[1]
-  if (/^release/i.test(branch)) return { label: branch, color: '#e11d48' }   // red
-  if (/^main$|^master$/i.test(branch)) return { label: branch, color: '#d97706' } // yellow/amber
-  if (/^feature/i.test(branch)) return { label: branch, color: '#10b981' }   // green
-  return { label: branch, color: '#8b5cf6' } // purple for other branches
-}
 
 // Tier config: [baseFontSize, verticalPad, horizontalPad, opacity]
 const TIERS: Array<[number, number, number, number]> = [
@@ -101,7 +87,7 @@ function injectAnimations() {
   document.head.appendChild(style)
 }
 
-export default function TagCloud({ sessions, onAttach, onKill, onRename, onRestart, onEditEnv, onCreateWorktreePane, onRemoveWorktreePane, onOpenSkills }: Props) {
+export default function TagCloud({ sessions, onAttach, onKill, onRename, onRestart, onEditEnv, onOpenSkills }: Props) {
   const [hoveredId, setHoveredId] = useState<string | null>(null)
   const hoverTimer = useRef<ReturnType<typeof setTimeout> | null>(null)
   const enterHover = useCallback((id: string) => {
@@ -118,19 +104,12 @@ export default function TagCloud({ sessions, onAttach, onKill, onRename, onResta
   const [metadataPopup, setMetadataPopup] = useState<SessionInfo | null>(null)
   const setAgentMetadata = useSessionStore((s) => s.setAgentMetadata)
   const loadSessions = useSessionStore((s) => s.loadSessions)
-  const [expandedSessionId, setExpandedSessionId] = useState<string | null>(null)
   const [expandedGroupId, setExpandedGroupId] = useState<string | null>(null)
   const [showAllUngrouped, setShowAllUngrouped] = useState(false)
   const [showHidden, setShowHidden] = useState(false)
-  const [wtBranchInput, setWtBranchInput] = useState('')
-  const [wtInputSessionId, setWtInputSessionId] = useState<string | null>(null)
   const { bubble } = useConfigStore()
-  const [paneMode, setPaneMode] = useState(false)
 
   useEffect(() => { injectAnimations() }, [])
-  useEffect(() => {
-    window.api.invoke('pane-mode:get').then(setPaneMode).catch(() => {})
-  }, [])
 
   const hiddenIds = useMemo(() => {
     const h = new Set<string>()
@@ -316,7 +295,6 @@ export default function TagCloud({ sessions, onAttach, onKill, onRename, onResta
     const accent = bubbleColors[session.id] || (isRunning ? theme.primary : theme.dim)
     const opacity = isRunning ? Math.max(baseOpacity, 0.85) : baseOpacity
     const n = nudge(tierIdx)
-    const branch = branchColor(session.cwd || '')
     const hasPriority = (priorities[session.id] || 0) > 0
     const hasMetadata = !!(session.roles && session.roles.length > 0) || !!(session.expertise && session.expertise.length > 0)
     const metadataTooltip = hasMetadata
@@ -363,7 +341,6 @@ export default function TagCloud({ sessions, onAttach, onKill, onRename, onResta
         }}
         title={`${session.tool}: ${session.title}\n📂 ${session.cwd || '未设置'}${hasPriority ? '\n📌 已置顶' : ''}${metadataTooltip}\n点击 attach · 右键菜单`}
       >
-        {/* Title + optional branch below */}
         <div style={{ overflow: 'hidden', minWidth: 0 }}>
           {isEditing ? (
             <input autoFocus value={editTitle}
@@ -377,27 +354,7 @@ export default function TagCloud({ sessions, onAttach, onKill, onRename, onResta
               {session.title}
             </div>
           )}
-          {branch && (
-            <div style={{
-              fontSize: Math.max(fontSize - 4, 7),
-              color: branch.color,
-              fontWeight: 500,
-              lineHeight: 1.2,
-              overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap',
-            }}>
-              {branch.label}
-            </div>
-          )}
         </div>
-        {session.isGitRepo && !(session.cwd || '').includes('.worktrees/') && (
-          <span
-            onClick={(e) => { e.stopPropagation(); setExpandedSessionId(expandedSessionId === session.id ? null : session.id) }}
-            style={{ fontSize: Math.max(fontSize - 4, 7), color: '#10b981', cursor: 'pointer', flexShrink: 0 }}
-            title="Worktree panes"
-          >
-            {session.worktreePanes && session.worktreePanes.length > 0 ? `🌿${session.worktreePanes.length}` : '🌿'}
-          </span>
-        )}
         {hasPriority && (
           <span style={{ fontSize: Math.max(fontSize - 4, 7), flexShrink: 0, opacity: 0.7 }}>📌</span>
         )}
@@ -456,97 +413,6 @@ export default function TagCloud({ sessions, onAttach, onKill, onRename, onResta
               >重启</button>
             </div>
           </div>
-        )}
-      </div>
-    )
-  }
-
-  const mergeStateColor: Record<string, string> = {
-    clean: '#10b981', behind: '#d97706', conflict: '#e11d48', merged: '#6b7280', unknown: '#6b7280'
-  }
-
-  const renderWorktreePanes = (session: SessionInfo) => {
-    if (!session.isGitRepo || (session.cwd || '').includes('.worktrees/') || expandedSessionId !== session.id) return null
-    return (
-      <div style={{
-        position: 'absolute', top: '100%', left: '50%', transform: 'translateX(-50%)',
-        zIndex: 50,
-        display: 'flex', flexDirection: 'column', gap: 2, marginTop: 2,
-        padding: `3px 6px`, borderRadius: 6,
-        background: '#17172fee', backdropFilter: 'blur(12px)', WebkitBackdropFilter: 'blur(12px)',
-        border: '1px solid #46465c44',
-        fontSize: Math.round(9 * scale),
-        fontFamily: "'Plus Jakarta Sans', -apple-system, sans-serif",
-        minWidth: Math.round(160 * scale), maxWidth: Math.round(220 * scale),
-        boxShadow: '0 4px 16px rgba(0,0,0,0.4)',
-      }}
-      onClick={(e) => e.stopPropagation()}
-      onMouseDown={(e) => e.stopPropagation()}
-      >
-        {(session.worktreePanes || []).map((wp) => (
-          <div key={wp.id} style={{ display: 'flex', alignItems: 'center', gap: 6, color: '#e5e3ff' }}>
-            <span style={{
-              width: 6, height: 6, borderRadius: '50%', flexShrink: 0,
-              background: mergeStateColor[wp.mergeState] || '#6b7280',
-            }} />
-            <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', flex: 1 }}>
-              {wp.branch}
-            </span>
-            <button
-              onClick={(e) => { e.stopPropagation(); onRemoveWorktreePane(wp.id, true) }}
-              title="关闭 pane（保留 worktree）"
-              style={{
-                background: 'none', border: 'none', color: '#aaa8c3', cursor: 'pointer',
-                fontSize: Math.round(9 * scale), padding: '0 2px', flexShrink: 0,
-              }}
-            >✕</button>
-          </div>
-        ))}
-        {wtInputSessionId === session.id ? (
-          <div style={{ display: 'flex', gap: 3 }}>
-            <input
-              autoFocus
-              value={wtBranchInput}
-              onChange={(e) => setWtBranchInput(e.target.value)}
-              onKeyDown={(e) => {
-                if (e.key === 'Enter' && wtBranchInput.trim()) {
-                  onCreateWorktreePane(session.id, wtBranchInput.trim())
-                  setWtBranchInput(''); setWtInputSessionId(null)
-                }
-                if (e.key === 'Escape') { setWtBranchInput(''); setWtInputSessionId(null) }
-              }}
-              placeholder="feature/xxx"
-              onClick={(e) => e.stopPropagation()}
-              style={{
-                flex: 1, padding: '3px 6px', borderRadius: 6, fontSize: Math.round(9 * scale),
-                background: '#17172f', border: '1px solid #10b98144',
-                color: '#e5e3ff', outline: 'none', fontFamily: 'inherit', minWidth: 0,
-              }}
-            />
-            <button
-              onClick={(e) => {
-                e.stopPropagation()
-                if (wtBranchInput.trim()) {
-                  onCreateWorktreePane(session.id, wtBranchInput.trim())
-                  setWtBranchInput(''); setWtInputSessionId(null)
-                }
-              }}
-              style={{
-                padding: '3px 8px', borderRadius: 6, fontSize: Math.round(9 * scale),
-                background: '#10b981', border: 'none', color: '#0c0c1f',
-                cursor: 'pointer', fontFamily: 'inherit', fontWeight: 600,
-              }}
-            >GO</button>
-          </div>
-        ) : (
-          <button
-            onClick={(e) => { e.stopPropagation(); setWtInputSessionId(session.id) }}
-            style={{
-              background: 'none', border: '1px dashed #46465c44', borderRadius: 6,
-              color: '#10b981', fontSize: Math.round(9 * scale), cursor: 'pointer',
-              padding: '2px 6px', fontFamily: 'inherit',
-            }}
-          >+ worktree pane</button>
         )}
       </div>
     )
@@ -646,7 +512,6 @@ export default function TagCloud({ sessions, onAttach, onKill, onRename, onResta
                 {g.sessions.map((s) => (
                   <div key={s.id} style={{ display: 'flex', flexDirection: 'column', alignItems: 'center' }}>
                     {renderTag(s, tierMap.get(s.id) || 3)}
-                    {renderWorktreePanes(s)}
                   </div>
                 ))}
               </div>
@@ -661,7 +526,6 @@ export default function TagCloud({ sessions, onAttach, onKill, onRename, onResta
           {grouped.ungrouped.map((s) => (
             <div key={s.id} style={{ display: 'flex', flexDirection: 'column', alignItems: 'center' }}>
               {renderTag(s, 2)}
-              {renderWorktreePanes(s)}
             </div>
           ))}
         </div>
@@ -670,7 +534,6 @@ export default function TagCloud({ sessions, onAttach, onKill, onRename, onResta
           {grouped.ungrouped.map((s) => (
             <div key={s.id} style={{ display: 'flex', flexDirection: 'column', alignItems: 'center' }}>
               {renderTag(s, 2)}
-              {renderWorktreePanes(s)}
             </div>
           ))}
         </div>
@@ -679,7 +542,6 @@ export default function TagCloud({ sessions, onAttach, onKill, onRename, onResta
           {(showAllUngrouped ? small : small.slice(0, 3)).map((s) => (
             <div key={s.id} style={{ display: 'flex', flexDirection: 'column', alignItems: 'center' }}>
               {renderTag(s, tierMap.get(s.id) || 3)}
-              {renderWorktreePanes(s)}
             </div>
           ))}
           {small.length > 3 && !showAllUngrouped && (
@@ -696,13 +558,11 @@ export default function TagCloud({ sessions, onAttach, onKill, onRename, onResta
           {medium.map((s) => (
             <div key={s.id} style={{ display: 'flex', flexDirection: 'column', alignItems: 'center' }}>
               {renderTag(s, tierMap.get(s.id) || 1)}
-              {renderWorktreePanes(s)}
             </div>
           ))}
           {hero && (
             <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center' }}>
               {renderTag(hero, 0)}
-              {renderWorktreePanes(hero)}
             </div>
           )}
         </div>
@@ -787,7 +647,7 @@ export default function TagCloud({ sessions, onAttach, onKill, onRename, onResta
               { label: '📂 打开目录', action: () => { const s = alive.find(x => x.id === ctxMenu.id); if (s?.cwd) window.api.invoke('shell:open-path', s.cwd); setCtxMenu(null) } },
               { label: '📦 技能', action: () => { onOpenSkills(ctxMenu.id); setCtxMenu(null) } },
               { label: '🌱 环境变量', action: () => { onEditEnv(ctxMenu.id); setCtxMenu(null) } },
-              ...(paneMode && ctxMenu && sessions.find(s => s.id === ctxMenu.id)?.groupId ? [{
+              ...(ctxMenu && sessions.find(s => s.id === ctxMenu.id)?.groupId ? [{
                 label: '📌 设为主窗口',
                 action: async () => {
                   const session = sessions.find(s => s.id === ctxMenu!.id)

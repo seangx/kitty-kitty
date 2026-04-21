@@ -5,16 +5,14 @@
  * standalone Node.js script that Claude Code launches via stdio.
  *
  * Provides session orchestration tools:
- *   - create_pane     (all sessions)   — split tmux pane + launch agent
- *   - list_panes      (all sessions)   — list tmux panes
- *   - close_pane      (all sessions)   — close a tmux pane, optionally cleanup worktree
- *   - create_worktree (git repo only)  — git worktree add + symlinks + .mcp.json
+ *   - create_pane — split tmux pane + launch agent
+ *   - list_panes  — list tmux panes
+ *   - close_pane  — close a tmux pane
  *
  * Environment variables (set by kitty-kitty when injecting):
  *   KITTY_AGENT_ID      - this agent's session id
  *   KITTY_TMUX_NAME     - tmux session name (e.g., "kitty_abc123")
  *   KITTY_PROJECT_ROOT  - project root path
- *   KITTY_IS_GIT_REPO   - "1" if project is a git repo
  */
 
 export const SESSION_MCP_SERVER_SCRIPT = `#!/usr/bin/env node
@@ -27,7 +25,6 @@ const AGENT_ID = process.env.KITTY_AGENT_ID || 'unknown';
 const TMUX_NAME = process.env.KITTY_TMUX_NAME || '';
 const TMUX_BIN = process.env.KITTY_TMUX_BIN || 'tmux';
 const PROJECT_ROOT = process.env.KITTY_PROJECT_ROOT || '';
-const IS_GIT_REPO = process.env.KITTY_IS_GIT_REPO === '1';
 
 // Shell-safe quoting: wraps in single quotes, escapes embedded single quotes
 function shellQuote(s) {
@@ -62,7 +59,7 @@ function writeProtocolMessage(msg) {
 
 // --- Tools ---
 
-const COMMON_TOOLS = [
+const TOOLS = [
   {
     name: 'create_pane',
     description: 'Open a new tmux pane in this session and launch an AI agent or shell. Use for parallel sub-tasks, pair programming, or running commands in a separate pane.',
@@ -87,50 +84,17 @@ const COMMON_TOOLS = [
   },
   {
     name: 'close_pane',
-    description: 'Close a tmux pane. Optionally remove the associated git worktree and delete the branch if applicable.',
+    description: 'Close a tmux pane.',
     inputSchema: {
       type: 'object',
       properties: {
-        pane_id: { type: 'string', description: 'Tmux pane ID to close (from list_panes)' },
-        branch: { type: 'string', description: 'Branch name — used to find worktree pane if pane_id not provided' },
-        cleanup: { type: 'boolean', description: 'Also remove git worktree and delete merged branch', default: false }
+        pane_id: { type: 'string', description: 'Tmux pane ID to close (from list_panes)' }
       },
+      required: ['pane_id'],
       additionalProperties: false
     }
   }
 ];
-
-const GIT_TOOLS = [
-  {
-    name: 'create_worktree',
-    description: 'Create a git worktree for a branch. Returns the worktree path. Use with create_pane to delegate a sub-task to a separate branch: first create_worktree to get the path, then create_pane with that path as cwd.',
-    inputSchema: {
-      type: 'object',
-      properties: {
-        branch: { type: 'string', description: 'Branch name (e.g. feat/user-auth)' },
-        base_branch: { type: 'string', description: 'Base branch (default: auto-detect main/master)', default: '' }
-      },
-      required: ['branch'],
-      additionalProperties: false
-    }
-  },
-  {
-    name: 'fork_session',
-    description: 'Fork the current session into a new git worktree branch. Creates a worktree, splits a tmux pane, and launches claude with --fork-session to continue the conversation context in the new branch. One-step shortcut for create_worktree + create_pane.',
-    inputSchema: {
-      type: 'object',
-      properties: {
-        branch: { type: 'string', description: 'Branch name for the worktree (e.g. feat/user-auth)' },
-        base_branch: { type: 'string', description: 'Base branch (default: auto-detect main/master)', default: '' },
-        message: { type: 'string', description: 'Optional initial message to prepend after forking' }
-      },
-      required: ['branch'],
-      additionalProperties: false
-    }
-  }
-];
-
-const TOOLS = IS_GIT_REPO ? [...COMMON_TOOLS, ...GIT_TOOLS] : COMMON_TOOLS;
 
 // --- Tool handlers ---
 
@@ -218,135 +182,6 @@ function handleCreatePane(args) {
   }
 }
 
-function handleCreateWorktree(args) {
-  try {
-    if (!PROJECT_ROOT) {
-      return { content: [{ type: 'text', text: 'KITTY_PROJECT_ROOT is not set.' }], isError: true };
-    }
-
-    const rawBranch = String(args.branch || '').trim();
-    if (!rawBranch) {
-      return { content: [{ type: 'text', text: 'branch is required.' }], isError: true };
-    }
-
-    // 1. Sanitize branch name
-    const branch = rawBranch.replace(/[^a-zA-Z0-9\\/_.-]/g, '-');
-
-    // 2. Build worktree path
-    const worktreesDir = path.join(PROJECT_ROOT, '.worktrees');
-    const worktreePath = path.join(worktreesDir, branch.replace(/\\//g, '-'));
-
-    // 3. git worktree add
-    if (!fs.existsSync(worktreesDir)) {
-      fs.mkdirSync(worktreesDir, { recursive: true });
-    }
-
-    if (!fs.existsSync(worktreePath)) {
-      let branchExists = false;
-      try {
-        execSync('git -C ' + shellQuote(PROJECT_ROOT) + ' rev-parse --verify ' + shellQuote(branch), { stdio: 'pipe' });
-        branchExists = true;
-      } catch {}
-
-      const baseBranch = String(args.base_branch || '').trim();
-      let base = baseBranch;
-      if (!base) {
-        try {
-          execSync('git -C ' + shellQuote(PROJECT_ROOT) + ' rev-parse --verify main', { stdio: 'pipe' });
-          base = 'main';
-        } catch {
-          try {
-            execSync('git -C ' + shellQuote(PROJECT_ROOT) + ' rev-parse --verify master', { stdio: 'pipe' });
-            base = 'master';
-          } catch {
-            base = '';
-          }
-        }
-      }
-
-      if (branchExists) {
-        execSync(
-          'git -C ' + shellQuote(PROJECT_ROOT) + ' worktree add ' + shellQuote(worktreePath) + ' ' + shellQuote(branch),
-          { stdio: 'pipe' }
-        );
-      } else {
-        const newBranchCmd = base
-          ? 'git -C ' + shellQuote(PROJECT_ROOT) + ' worktree add -b ' + shellQuote(branch) + ' ' + shellQuote(worktreePath) + ' ' + shellQuote(base)
-          : 'git -C ' + shellQuote(PROJECT_ROOT) + ' worktree add -b ' + shellQuote(branch) + ' ' + shellQuote(worktreePath);
-        execSync(newBranchCmd, { stdio: 'pipe' });
-      }
-    }
-
-    // 4. Ensure .worktrees in .gitignore
-    const gitignorePath = path.join(PROJECT_ROOT, '.gitignore');
-    const gitignoreEntry = '.worktrees/';
-    try {
-      let gitignoreContent = '';
-      if (fs.existsSync(gitignorePath)) {
-        gitignoreContent = fs.readFileSync(gitignorePath, 'utf-8');
-      }
-      if (!gitignoreContent.split('\\n').some(line => line.trim() === gitignoreEntry || line.trim() === '.worktrees')) {
-        fs.appendFileSync(gitignorePath, '\\n' + gitignoreEntry + '\\n');
-      }
-    } catch {}
-
-    // 5. Symlink Claude project dir
-    try {
-      const homeDir = os.homedir();
-      const claudeProjectsDir = path.join(homeDir, '.claude', 'projects');
-            const encodeProjectPath = (p) => p.replace(/[^a-zA-Z0-9]/g, '-');
-      const mainProjectKey = encodeProjectPath(PROJECT_ROOT);
-      const worktreeProjectKey = encodeProjectPath(worktreePath);
-      const mainClaudeDir = path.join(claudeProjectsDir, mainProjectKey);
-      const worktreeClaudeDir = path.join(claudeProjectsDir, worktreeProjectKey);
-
-      if (fs.existsSync(mainClaudeDir) && !fs.existsSync(worktreeClaudeDir)) {
-        if (!fs.existsSync(claudeProjectsDir)) {
-          fs.mkdirSync(claudeProjectsDir, { recursive: true });
-        }
-        fs.symlinkSync(mainClaudeDir, worktreeClaudeDir);
-      }
-    } catch {}
-
-    // 6. Symlink openspec dir
-    try {
-      const openspecSrc = path.join(PROJECT_ROOT, 'openspec');
-      const openspecDst = path.join(worktreePath, 'openspec');
-      if (fs.existsSync(openspecSrc) && !fs.existsSync(openspecDst)) {
-        fs.symlinkSync(openspecSrc, openspecDst);
-      }
-    } catch {}
-
-    // 7. Write .mcp.json for worktree agent
-    try {
-      const wtAgentId = AGENT_ID + '-' + branch.replace(/\\//g, '-');
-      const mainMcpPath = path.join(PROJECT_ROOT, '.mcp.json');
-      let mcpConfig = {};
-      try { mcpConfig = JSON.parse(fs.readFileSync(mainMcpPath, 'utf-8')); } catch {}
-      if (!mcpConfig.mcpServers) mcpConfig.mcpServers = {};
-
-      if (mcpConfig.mcpServers['kitty-session']) {
-        mcpConfig.mcpServers['kitty-session'] = JSON.parse(JSON.stringify(mcpConfig.mcpServers['kitty-session']));
-        mcpConfig.mcpServers['kitty-session'].env = mcpConfig.mcpServers['kitty-session'].env || {};
-        mcpConfig.mcpServers['kitty-session'].env.KITTY_AGENT_ID = wtAgentId;
-        mcpConfig.mcpServers['kitty-session'].env.KITTY_PROJECT_ROOT = worktreePath;
-      }
-
-
-      fs.writeFileSync(path.join(worktreePath, '.mcp.json'), JSON.stringify(mcpConfig, null, 2));
-    } catch {}
-
-    return {
-      content: [{
-        type: 'text',
-        text: 'Worktree created.\\nbranch: ' + branch + '\\npath: ' + worktreePath + '\\n\\nUse create_pane with cwd=' + JSON.stringify(worktreePath) + ' to open a pane in this worktree.'
-      }]
-    };
-  } catch (e) {
-    return { content: [{ type: 'text', text: 'create_worktree failed: ' + (e && e.message ? e.message : String(e)) }], isError: true };
-  }
-}
-
 function handleListPanes() {
   try {
     if (!TMUX_NAME) {
@@ -374,279 +209,24 @@ function handleListPanes() {
 
 function handleClosePane(args) {
   try {
-    const targetPaneId = String(args.pane_id || '').trim();
-    const targetBranch = String(args.branch || '').trim();
-    const cleanup = Boolean(args.cleanup);
-
-    let paneToKill = targetPaneId;
-    let worktreePath = '';
-
-    if (!paneToKill && targetBranch && TMUX_NAME) {
-      const branchDir = targetBranch.replace(/\\//g, '-');
-      const output = execSync(
-        TMUX_BIN + ' list-panes -t ' + shellQuote(TMUX_NAME) + ' -F "#{pane_id}:#{pane_current_path}"',
-        { stdio: 'pipe' }
-      ).toString().trim();
-      for (const line of output.split('\\n')) {
-        const idx = line.indexOf(':');
-        if (idx < 0) continue;
-        const pid = line.slice(0, idx);
-        const cwd = line.slice(idx + 1);
-        if (cwd.includes('.worktrees/' + branchDir) || cwd.includes('.worktrees/' + targetBranch)) {
-          paneToKill = pid;
-          worktreePath = cwd;
-          break;
-        }
-      }
-    }
-
+    const paneToKill = String(args.pane_id || '').trim();
     if (!paneToKill) {
-      return { content: [{ type: 'text', text: 'Could not find pane. Provide pane_id or branch.' }], isError: true };
+      return { content: [{ type: 'text', text: 'pane_id is required.' }], isError: true };
     }
-
-    let paneKilled = false;
     try {
       execSync(TMUX_BIN + ' kill-pane -t ' + shellQuote(paneToKill), { stdio: 'pipe' });
-      paneKilled = true;
-    } catch (killErr) {
-      // Pane may already be dead — continue with cleanup
+      return { content: [{ type: 'text', text: 'Pane ' + paneToKill + ' closed.' }] };
+    } catch {
+      return { content: [{ type: 'text', text: 'Pane ' + paneToKill + ' not found (may be already dead).' }] };
     }
-
-    let worktreeCleaned = false;
-    if (cleanup && PROJECT_ROOT) {
-      // If we only have pane_id, try to resolve worktree path from pane's cwd
-      if (!worktreePath && !targetBranch && paneToKill) {
-        try {
-          const output = execSync(
-            TMUX_BIN + ' display-message -t ' + shellQuote(paneToKill) + ' -p "#{pane_current_path}"',
-            { stdio: 'pipe' }
-          ).toString().trim();
-          if (output.includes('.worktrees/')) worktreePath = output;
-        } catch {}
-      }
-      if (!worktreePath && targetBranch) {
-        worktreePath = path.join(PROJECT_ROOT, '.worktrees', targetBranch.replace(/\\//g, '-'));
-      }
-      if (worktreePath && fs.existsSync(worktreePath)) {
-        // Clean up Claude project dir for this worktree — try both encoding
-        // variants so legacy ('.'→'-') and current ('.' preserved) both get wiped.
-        try {
-          const homeDir = os.homedir();
-          const encNew = worktreePath.replace(/[\\\\/]/g, '-');
-          const encOld = worktreePath.replace(/[\\\\/\\.]/g, '-');
-          const keys = Array.from(new Set([encNew, encOld]));
-          const rmSync = fs.rmSync || fs.rmdirSync;
-          for (const key of keys) {
-            const wtProjDir = path.join(homeDir, '.claude', 'projects', key);
-            if (fs.existsSync(wtProjDir)) {
-              try { rmSync(wtProjDir, { recursive: true, force: true }); } catch {}
-            }
-          }
-        } catch {}
-        try { fs.unlinkSync(path.join(worktreePath, '.mcp.json')); } catch {}
-        try {
-          execSync('git worktree remove ' + shellQuote(worktreePath) + ' --force', { stdio: 'pipe' });
-          worktreeCleaned = true;
-        } catch {}
-        if (targetBranch) {
-          try {
-            execSync('git -C ' + shellQuote(PROJECT_ROOT) + ' branch -d ' + shellQuote(targetBranch), { stdio: 'pipe' });
-          } catch {}
-        }
-      }
-    }
-
-    const parts = [];
-    parts.push(paneKilled ? 'Pane ' + paneToKill + ' closed.' : 'Pane ' + paneToKill + ' not found (may be already dead).');
-    if (cleanup) {
-      parts.push(worktreeCleaned ? 'Worktree cleaned up.' : 'Worktree cleanup skipped (not found or failed).');
-    }
-    return { content: [{ type: 'text', text: parts.join(' ') }] };
   } catch (e) {
     return { content: [{ type: 'text', text: 'close_pane failed: ' + (e && e.message ? e.message : String(e)) }], isError: true };
-  }
-}
-
-function handleForkSession(args) {
-  try {
-    if (!TMUX_NAME) {
-      return { content: [{ type: 'text', text: 'KITTY_TMUX_NAME is not set.' }], isError: true };
-    }
-    if (!PROJECT_ROOT) {
-      return { content: [{ type: 'text', text: 'KITTY_PROJECT_ROOT is not set.' }], isError: true };
-    }
-    if (!IS_GIT_REPO) {
-      return { content: [{ type: 'text', text: 'Not a git repo. fork_session requires git.' }], isError: true };
-    }
-
-    // Step 1: Create worktree (reuse handleCreateWorktree logic inline)
-    const rawBranch = String(args.branch || '').trim();
-    if (!rawBranch) {
-      return { content: [{ type: 'text', text: 'branch is required.' }], isError: true };
-    }
-    const branch = rawBranch.replace(/[^a-zA-Z0-9\\/_.-]/g, '-');
-    const worktreesDir = path.join(PROJECT_ROOT, '.worktrees');
-    const worktreePath = path.join(worktreesDir, branch.replace(/\\//g, '-'));
-
-    if (!fs.existsSync(worktreesDir)) {
-      fs.mkdirSync(worktreesDir, { recursive: true });
-    }
-
-    if (!fs.existsSync(worktreePath)) {
-      let branchExists = false;
-      try {
-        execSync('git -C ' + shellQuote(PROJECT_ROOT) + ' rev-parse --verify ' + shellQuote(branch), { stdio: 'pipe' });
-        branchExists = true;
-      } catch {}
-
-      const baseBranch = String(args.base_branch || '').trim();
-      let base = baseBranch;
-      if (!base) {
-        try {
-          execSync('git -C ' + shellQuote(PROJECT_ROOT) + ' rev-parse --verify main', { stdio: 'pipe' });
-          base = 'main';
-        } catch {
-          try {
-            execSync('git -C ' + shellQuote(PROJECT_ROOT) + ' rev-parse --verify master', { stdio: 'pipe' });
-            base = 'master';
-          } catch { base = ''; }
-        }
-      }
-
-      if (branchExists) {
-        execSync('git -C ' + shellQuote(PROJECT_ROOT) + ' worktree add ' + shellQuote(worktreePath) + ' ' + shellQuote(branch), { stdio: 'pipe' });
-      } else {
-        const cmd = base
-          ? 'git -C ' + shellQuote(PROJECT_ROOT) + ' worktree add -b ' + shellQuote(branch) + ' ' + shellQuote(worktreePath) + ' ' + shellQuote(base)
-          : 'git -C ' + shellQuote(PROJECT_ROOT) + ' worktree add -b ' + shellQuote(branch) + ' ' + shellQuote(worktreePath);
-        execSync(cmd, { stdio: 'pipe' });
-      }
-    }
-
-    // Ensure .worktrees in .gitignore
-    const gitignorePath = path.join(PROJECT_ROOT, '.gitignore');
-    try {
-      let content = '';
-      if (fs.existsSync(gitignorePath)) content = fs.readFileSync(gitignorePath, 'utf-8');
-      if (!content.split('\\n').some(line => line.trim() === '.worktrees/' || line.trim() === '.worktrees')) {
-        fs.appendFileSync(gitignorePath, '\\n.worktrees/\\n');
-      }
-    } catch {}
-
-    // Find latest session and copy to worktree project dir
-    const homeDir = os.homedir();
-    const claudeProjectsDir = path.join(homeDir, '.claude', 'projects');
-    // Claude Code 2.1+: encode '/' → '-', preserve '.'
-    const encodeProjectPath = (p) => p.replace(/[\\\\/]/g, '-');
-    const mainClaudeDir = path.join(claudeProjectsDir, encodeProjectPath(PROJECT_ROOT));
-    const wtClaudeDir = path.join(claudeProjectsDir, encodeProjectPath(worktreePath));
-    let latestSession = '';
-    try {
-      if (fs.existsSync(mainClaudeDir)) {
-        const files = fs.readdirSync(mainClaudeDir).filter(f => f.endsWith('.jsonl'));
-        let newest = { file: '', mtime: 0 };
-        for (const f of files) {
-          const st = fs.statSync(path.join(mainClaudeDir, f));
-          if (st.mtimeMs > newest.mtime) { newest = { file: f, mtime: st.mtimeMs }; }
-        }
-        if (newest.file) {
-          latestSession = newest.file.replace('.jsonl', '');
-          if (!fs.existsSync(wtClaudeDir)) fs.mkdirSync(wtClaudeDir, { recursive: true });
-          // Hardlink .jsonl (atomic, zero disk, live updates visible)
-          const srcJsonl = path.join(mainClaudeDir, newest.file);
-          const dstJsonl = path.join(wtClaudeDir, newest.file);
-          if (!fs.existsSync(dstJsonl)) {
-            try { fs.linkSync(srcJsonl, dstJsonl); } catch {
-              try { fs.copyFileSync(srcJsonl, dstJsonl); } catch {}
-            }
-          }
-          // Symlink session metadata dir
-          const metaDir = path.join(mainClaudeDir, latestSession);
-          const wtMetaDir = path.join(wtClaudeDir, latestSession);
-          if (fs.existsSync(metaDir) && !fs.existsSync(wtMetaDir)) {
-            try { fs.symlinkSync(metaDir, wtMetaDir); } catch {}
-          }
-          // Symlink memory
-          const memDir = path.join(mainClaudeDir, 'memory');
-          const wtMemDir = path.join(wtClaudeDir, 'memory');
-          if (fs.existsSync(memDir) && !fs.existsSync(wtMemDir)) {
-            try { fs.symlinkSync(memDir, wtMemDir); } catch {}
-          }
-        }
-      }
-    } catch {}
-
-    // Write .mcp.json for worktree
-    try {
-      const wtAgentId = AGENT_ID + '-' + branch.replace(/\\//g, '-');
-      const mainMcpPath = path.join(PROJECT_ROOT, '.mcp.json');
-      let mcpConfig = {};
-      try { mcpConfig = JSON.parse(fs.readFileSync(mainMcpPath, 'utf-8')); } catch {}
-      if (!mcpConfig.mcpServers) mcpConfig.mcpServers = {};
-      if (mcpConfig.mcpServers['kitty-session']) {
-        mcpConfig.mcpServers['kitty-session'] = JSON.parse(JSON.stringify(mcpConfig.mcpServers['kitty-session']));
-        mcpConfig.mcpServers['kitty-session'].env = mcpConfig.mcpServers['kitty-session'].env || {};
-        mcpConfig.mcpServers['kitty-session'].env.KITTY_AGENT_ID = wtAgentId;
-        mcpConfig.mcpServers['kitty-session'].env.KITTY_PROJECT_ROOT = worktreePath;
-      }
-      fs.writeFileSync(path.join(worktreePath, '.mcp.json'), JSON.stringify(mcpConfig, null, 2));
-    } catch {}
-
-    // Step 2: Split pane and launch claude with --fork-session
-    const message = String(args.message || '').trim();
-    const paneAgentId = AGENT_ID + '-' + branch.replace(/\\//g, '-');
-    const paneAgentName = branch;
-    const envPrefix = 'KITTY_PANE_AGENT_ID=' + shellQuote(paneAgentId) + ' KITTY_PANE_AGENT_NAME=' + shellQuote(paneAgentName);
-
-    let forkCmd = latestSession
-      ? 'claude --resume ' + latestSession + ' --fork-session'
-      : 'claude';
-    if (message && latestSession) {
-      forkCmd = 'claude --resume ' + latestSession + ' --fork-session -p ' + shellQuote(message);
-    }
-    forkCmd = 'env ' + envPrefix + ' ' + forkCmd;
-
-    let paneCount = 1;
-    try {
-      paneCount = execSync(
-        TMUX_BIN + ' list-panes -t ' + shellQuote(TMUX_NAME) + ' -F "#{pane_id}"',
-        { stdio: 'pipe' }
-      ).toString().trim().split('\\n').length;
-    } catch {}
-
-    const splitFlag = paneCount <= 1 ? '-h -p 65' : '-v';
-    let splitTarget = shellQuote(TMUX_NAME);
-    if (paneCount > 1) {
-      try {
-        const panes = execSync(
-          TMUX_BIN + ' list-panes -t ' + shellQuote(TMUX_NAME) + ' -F "#{pane_id}"',
-          { stdio: 'pipe' }
-        ).toString().trim().split('\\n');
-        splitTarget = shellQuote(panes[panes.length - 1]);
-      } catch {}
-    }
-
-    const paneIdRaw = execSync(
-      TMUX_BIN + ' split-window -t ' + splitTarget + ' ' + splitFlag + ' -c ' + shellQuote(worktreePath) + ' -P -F "#{pane_id}" ' + shellQuote(forkCmd),
-      { stdio: 'pipe' }
-    ).toString().trim();
-
-    return {
-      content: [{
-        type: 'text',
-        text: 'Session forked.\\nbranch: ' + branch + '\\nworktree: ' + worktreePath + '\\npaneId: ' + paneIdRaw + '\\n\\nThe forked session inherits your current conversation context via --fork-session.'
-      }]
-    };
-  } catch (e) {
-    return { content: [{ type: 'text', text: 'fork_session failed: ' + (e && e.message ? e.message : String(e)) }], isError: true };
   }
 }
 
 function handleToolCall(name, args) {
   switch (name) {
     case 'create_pane': return handleCreatePane(args);
-    case 'create_worktree': return handleCreateWorktree(args);
-    case 'fork_session': return handleForkSession(args);
     case 'list_panes': return handleListPanes();
     case 'close_pane': return handleClosePane(args);
     default:

@@ -63,7 +63,6 @@ const CONFIG_PATH = join(homedir(), '.kitty-kitty', 'config.json')
 
 interface KittyConfig {
   toolArgs?: Record<string, string>
-  paneMode?: boolean
   ntfyTopic?: string
 }
 
@@ -74,7 +73,7 @@ function loadConfig(): KittyConfig {
     }
   } catch { /* ignore parse errors */ }
   // Create default config if missing
-  const defaultConfig: KittyConfig = { toolArgs: { claude: '' }, paneMode: false }
+  const defaultConfig: KittyConfig = { toolArgs: { claude: '' } }
   try {
     mkdirSync(join(homedir(), '.kitty-kitty'), { recursive: true })
     writeFileSync(CONFIG_PATH, JSON.stringify(defaultConfig, null, 2))
@@ -85,11 +84,6 @@ function loadConfig(): KittyConfig {
 export function getUserToolArgs(tool: string): string {
   const config = loadConfig()
   return config.toolArgs?.[tool] ?? ''
-}
-
-export function getPaneMode(): boolean {
-  const config = loadConfig()
-  return config.paneMode ?? false
 }
 
 export function getNtfyTopic(): string {

@@ -20,7 +20,6 @@ interface DirPickResult {
   dir: string
   sessions: Array<{ id: string; summary: string; date: string }>
   isGitRepo: boolean
-  discoveredWorktrees?: Array<{ branch: string; path: string; isTracked: boolean }>
 }
 
 export default function PetCanvas() {
@@ -36,7 +35,7 @@ export default function PetCanvas() {
   const clickTimer = useRef<ReturnType<typeof setTimeout> | null>(null)
   const dragOffset = useRef({ x: 0, y: 0 })
 
-  const { sessions, loadSessions, createSession, importSessions, attachSession, killSession, renameSession, createWorktreePane, removeWorktreePane } = useSessionStore()
+  const { sessions, loadSessions, createSession, importSessions, attachSession, killSession, renameSession } = useSessionStore()
   const { bubble, setBubble } = useConfigStore()
 
   const machine = useMemo(() => new PetStateMachine(setAnimation), [])
@@ -65,24 +64,6 @@ export default function PetCanvas() {
     const unsub = window.api.on('window-blur', closeAll)
     return () => { scheduler.stop(); machine.destroy(); clearInterval(poll); unsub() }
   }, [scheduler, machine, loadSessions, closeAll])
-
-  useEffect(() => {
-    const unsubAdvice = window.api.on('worktree:advice', (advice: any) => {
-      let message = ''
-      switch (advice.type) {
-        case 'suggest-cleanup':
-          message = `${advice.branch} 已合并，要清理吗？`; break
-        case 'warn-conflict':
-          message = `${advice.branches.join(' 和 ')} 修改了相同文件`; break
-        case 'warn-stale':
-          message = `${advice.branch} 已 ${advice.staleDays} 天没有提交`; break
-        case 'suggest-rebase':
-          message = `${advice.branch} 落后 ${advice.behind} 个提交`; break
-      }
-      if (message) say(message, 5000)
-    })
-    return () => { unsubAdvice() }
-  }, [say])
 
   // Real-time collab message display
   useEffect(() => {
@@ -208,13 +189,7 @@ export default function PetCanvas() {
       const result = await window.api.invoke('session:create-in-dir', 'claude') as any
       if (!result) { machine.forceState('idle'); return }
       if (result.type === 'pick') {
-        let discovered: any[] = []
-        if (result.isGitRepo) {
-          try {
-            discovered = await window.api.invoke('worktree:discover', result.dir)
-          } catch { /* ignore */ }
-        }
-        setDirPick({ ...result, discoveredWorktrees: discovered } as DirPickResult)
+        setDirPick(result as DirPickResult)
       } else if (result.type === 'created') {
         machine.forceState('happy', 2000)
         say('在新目录开始啦~')
@@ -238,22 +213,6 @@ export default function PetCanvas() {
     } catch (err) {
       console.error('[kitty] dir confirm failed:', err)
       machine.forceState('sad', 1500); say('出错了喵...')
-    }
-    setDirPick(null)
-  }, [dirPick, machine, loadSessions, say])
-
-  const handleWorktree = useCallback(async (branch: string, resumeId?: string) => {
-    if (!dirPick) return
-    try {
-      machine.forceState('dance', 15000)
-      say('创建 worktree 中喵~')
-      await window.api.invoke('session:create-worktree', 'claude', dirPick.dir, branch, resumeId)
-      machine.forceState('happy', 2000)
-      say(`🌿 worktree ${branch} 启动喵~`)
-      await loadSessions()
-    } catch (err: any) {
-      machine.forceState('sad', 1500)
-      say(err?.message || 'worktree 创建失败喵...')
     }
     setDirPick(null)
   }, [dirPick, machine, loadSessions, say])
@@ -381,11 +340,7 @@ export default function PetCanvas() {
         <SessionPicker
           dir={dirPick.dir}
           sessions={dirPick.sessions}
-          isGitRepo={dirPick.isGitRepo}
-          discoveredWorktrees={dirPick.discoveredWorktrees}
           onPick={handleDirConfirm}
-          onWorktree={handleWorktree}
-          onAttachWorktrees={async (worktrees) => { setDirPick(null) }}
           onClose={() => setDirPick(null)}
         />
       </DraggablePopup>
@@ -436,22 +391,6 @@ export default function PetCanvas() {
           }
         }}
         onEditEnv={(id) => setEnvEditor(id)}
-        onCreateWorktreePane={async (sessionId, branch) => {
-          try {
-            machine.forceState('dance', 15000)
-            say('创建 pane 中喵~')
-            await createWorktreePane(sessionId, branch)
-            machine.forceState('happy', 2000)
-            say(`${branch} pane 已创建喵~`)
-          } catch (err: any) {
-            machine.forceState('sad', 1500)
-            say(err?.message || 'worktree pane 创建失败喵...')
-          }
-        }}
-        onRemoveWorktreePane={async (paneId, keepWorktree) => {
-          await removeWorktreePane(paneId, keepWorktree)
-          say('pane 已关闭喵~')
-        }}
         onOpenSkills={(id) => window.api.invoke('popup-open', 'skills', id)}
       />
       </div>

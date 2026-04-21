@@ -7,7 +7,6 @@ import { initDB, closeDB } from './db/database'
 import { initLogger, log } from './logger'
 import { hasTmux, focusAnyAttachedSession } from './tmux/session-manager'
 import * as sessionMcp from './mcp/session-mcp-manager'
-import * as worktreeMonitor from './worktree/worktree-monitor'
 import * as ntfy from './ntfy'
 
 app.whenReady().then(() => {
@@ -35,7 +34,6 @@ app.whenReady().then(() => {
   try { registerIpcHandlers(); log('app', 'ipc handlers registered') } catch (e) { log('app', 'ipc error:', e) }
   try { createTray(); log('app', 'tray created') } catch (e) { log('app', 'tray error:', e) }
   try { createPetWindow(); log('app', 'pet window created') } catch (e) { log('app', 'window error:', e) }
-  try { worktreeMonitor.start(); log('app', 'worktree monitor started') } catch (e) { log('app', 'worktree monitor error:', e) }
   try { ntfy.start(); log('app', 'ntfy listener started') } catch (e) { log('app', 'ntfy error:', e) }
 })
 
@@ -55,7 +53,6 @@ app.on('activate', () => {
 
 app.on('before-quit', () => {
   ntfy.stop()
-  worktreeMonitor.stop()
   sessionMcp.cleanupAll()
   closeDB()
 })

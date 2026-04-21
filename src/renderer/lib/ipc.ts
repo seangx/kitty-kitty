@@ -1,7 +1,6 @@
 import { IPC } from '@shared/types/ipc'
 import type { SessionInfo } from '@shared/types/session'
 import type { PetState, InteractionType } from '@shared/types/pet'
-import type { WorktreePaneInfo, DiscoveredWorktree } from '@shared/types/worktree'
 import type { SkillsListResult, SkillOpResult, SearchResult } from '@shared/types/skills'
 
 const api = () => window.api
@@ -37,25 +36,6 @@ export const getPetState = () =>
 
 export const petInteract = (type: InteractionType, detail?: string) =>
   api().invoke(IPC.PET_INTERACT, type, detail) as Promise<PetState>
-
-// Worktree panes
-export const discoverWorktrees = (projectRoot: string) =>
-  api().invoke(IPC.WORKTREE_DISCOVER, projectRoot) as Promise<DiscoveredWorktree[]>
-
-export const createWorktreePane = (sessionId: string, branch: string, baseBranch?: string, tool?: string) =>
-  api().invoke(IPC.WORKTREE_CREATE_PANE, sessionId, branch, baseBranch, tool) as Promise<WorktreePaneInfo>
-
-export const attachWorktreePanes = (sessionId: string, worktrees: Array<{ branch: string; path: string }>, tool?: string) =>
-  api().invoke(IPC.WORKTREE_ATTACH_PANES, sessionId, worktrees, tool) as Promise<WorktreePaneInfo[]>
-
-export const removeWorktreePane = (paneId: string, opts?: { keepWorktree?: boolean }) =>
-  api().invoke(IPC.WORKTREE_REMOVE_PANE, paneId, opts) as Promise<{ success: boolean }>
-
-export const pruneMergedPanes = (sessionId: string) =>
-  api().invoke(IPC.WORKTREE_PRUNE_MERGED, sessionId) as Promise<string[]>
-
-export const listWorktreePanes = (sessionId: string) =>
-  api().invoke(IPC.WORKTREE_LIST_PANES, sessionId) as Promise<WorktreePaneInfo[]>
 
 // Skills
 export const listSkills = (sessionId: string) =>

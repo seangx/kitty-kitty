@@ -13,8 +13,6 @@ interface SessionState {
   attachSession: (id: string) => Promise<boolean>
   killSession: (id: string) => Promise<void>
   renameSession: (id: string, title: string) => void
-  createWorktreePane: (sessionId: string, branch: string, baseBranch?: string, tool?: string) => Promise<void>
-  removeWorktreePane: (paneId: string, keepWorktree?: boolean) => Promise<void>
   setAgentMetadata: (id: string, roles: string, expertise: string) => Promise<void>
 }
 
@@ -71,16 +69,6 @@ export const useSessionStore = create<SessionState>((set, get) => ({
     }))
     // Persist to DB
     window.api.invoke('session:rename', id, title).catch(console.error)
-  },
-
-  createWorktreePane: async (sessionId, branch, baseBranch, tool) => {
-    await ipc.createWorktreePane(sessionId, branch, baseBranch, tool)
-    await get().loadSessions()
-  },
-
-  removeWorktreePane: async (paneId, keepWorktree) => {
-    await ipc.removeWorktreePane(paneId, { keepWorktree })
-    await get().loadSessions()
   },
 
   setAgentMetadata: async (id, roles, expertise) => {

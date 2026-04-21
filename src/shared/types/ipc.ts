@@ -8,14 +8,6 @@ export const IPC = {
   SESSION_KILL: 'session:kill',
   SESSION_SYNC: 'session:sync',
 
-  // Worktree panes
-  WORKTREE_DISCOVER: 'worktree:discover',
-  WORKTREE_CREATE_PANE: 'worktree:create-pane',
-  WORKTREE_ATTACH_PANES: 'worktree:attach-panes',
-  WORKTREE_REMOVE_PANE: 'worktree:remove-pane',
-  WORKTREE_PRUNE_MERGED: 'worktree:prune-merged',
-  WORKTREE_LIST_PANES: 'worktree:list-panes',
-
   // Collab messages (push from main → renderer)
   COLLAB_MESSAGE: 'collab:message',
 
@@ -35,10 +27,8 @@ export const IPC = {
   CONFIG_GET: 'config:get',
   CONFIG_SET: 'config:set',
 
-  // Pane mode
+  // Group session management
   SESSION_CREATE_IN_GROUP: 'session:create-in-group',
-  PANE_MODE_GET: 'pane-mode:get',
-  PANE_MODE_SET: 'pane-mode:set',
   GROUP_SET_MAIN_SESSION: 'group:set-main-session',
 
   // Ntfy push notifications
