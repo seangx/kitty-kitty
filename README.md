@@ -25,7 +25,7 @@
 | **Node.js** >= 18 | 运行时 | [nodejs.org](https://nodejs.org) |
 | **tmux** | 会话管理核心 | macOS: `brew install tmux` / Ubuntu: `sudo apt install tmux` |
 | **Ghostty** (可选) | 推荐终端模拟器 | [ghostty.org](https://ghostty.org) |
-| **skillsmgr** (可选) | 技能管理 CLI | 内部工具 |
+| **skillsmgr** (可选) | 技能管理 CLI | [skills-manager](https://github.com/jtianling/skills-manager) |
 
 > 启动时会自动检测 tmux，未安装会弹窗提示。
 > 从 `/Applications` 启动时会自动查找 `/opt/homebrew/bin/tmux` 等常见路径，无需额外配置 PATH。

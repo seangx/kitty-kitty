@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback } from 'react'
+import { useState, useEffect, useCallback, useRef } from 'react'
 import * as ipc from '../lib/ipc'
 import type { SkillCategory, GroupInfo, SearchResult, NativeSkill } from '@shared/types/skills'
 
@@ -7,6 +7,12 @@ interface Props {
   onClose: () => void
   onSay: (text: string, duration?: number) => void
   onDance: () => void
+}
+
+interface Toast {
+  id: number
+  text: string
+  tone: 'info' | 'success' | 'error'
 }
 
 const C = {
@@ -34,6 +40,16 @@ export default function SkillsPanel({ sessionId, onClose, onSay, onDance }: Prop
   // Collapsed groups
   const [collapsed, setCollapsed] = useState<Set<string>>(new Set())
 
+  // Inline toast so feedback reaches the user even when this panel is a detached window
+  const [toast, setToast] = useState<Toast | null>(null)
+  const toastTimer = useRef<ReturnType<typeof setTimeout> | null>(null)
+  const notify = useCallback((text: string, tone: Toast['tone'] = 'info', duration = 3000) => {
+    onSay(text, duration)
+    if (toastTimer.current) clearTimeout(toastTimer.current)
+    setToast({ id: Date.now(), text, tone })
+    toastTimer.current = setTimeout(() => setToast(null), duration)
+  }, [onSay])
+
   const refresh = useCallback(async () => {
     setLoading(true)
     try {
@@ -55,14 +71,14 @@ export default function SkillsPanel({ sessionId, onClose, onSay, onDance }: Prop
     try {
       if (deployed.has(skillName)) {
         const res = await ipc.removeSkill(sessionId, skillName)
-        onSay(res?.success ? `${skillName} 已移除` : (res?.message || '移除失败'), 3000)
+        notify(res?.success ? `${skillName} 已移除` : (res?.message || '移除失败'), res?.success ? 'success' : 'error')
       } else {
         const res = await ipc.addSkill(sessionId, skillName)
-        onSay(res?.success ? `${skillName} 已部署` : (res?.message || '部署失败'), 3000)
+        notify(res?.success ? `${skillName} 已部署` : (res?.message || '部署失败'), res?.success ? 'success' : 'error')
       }
       await refresh()
     } catch (err: any) {
-      onSay(err?.message || '操作失败', 3000)
+      notify(err?.message || '操作失败', 'error')
     }
     setOperating(null)
   }
@@ -83,13 +99,14 @@ export default function SkillsPanel({ sessionId, onClose, onSay, onDance }: Prop
   const handleInstall = async (name: string) => {
     setInstalling(name)
     onDance()
+    notify(`安装 ${name} 中…`, 'info', 15000)
     try {
       const res = await ipc.installSkill(name)
-      if (!res) { onSay('安装失败', 3000); return }
-      onSay(res.success ? `${name} 已安装` : (res.message || '安装失败'), 3000)
+      if (!res) { notify('安装失败', 'error'); return }
+      notify(res.success ? `${name} 已安装` : (res.message || '安装失败'), res.success ? 'success' : 'error', 5000)
       if (res.success) await refresh()
     } catch (err: any) {
-      onSay(err?.message || '安装失败', 3000)
+      notify(err?.message || '安装失败', 'error')
     }
     setInstalling(null)
   }
@@ -114,10 +131,10 @@ export default function SkillsPanel({ sessionId, onClose, onSay, onDance }: Prop
           await ipc.addSkill(sessionId, skill)
         }
       }
-      onSay(allDeployed ? '已全部移除' : '已全部部署', 3000)
+      notify(allDeployed ? '已全部移除' : '已全部部署', 'success')
       await refresh()
     } catch (err: any) {
-      onSay(err?.message || '批量操作失败', 3000)
+      notify(err?.message || '批量操作失败', 'error')
     }
     setOperating(null)
   }
@@ -141,6 +158,23 @@ export default function SkillsPanel({ sessionId, onClose, onSay, onDance }: Prop
         <span style={{ fontSize: 18, fontWeight: 600 }}>📦 技能管理</span>
         <button onClick={onClose} style={{ background: 'none', border: 'none', color: C.textDim, cursor: 'pointer', fontSize: 20 }}>✕</button>
       </div>
+
+      {/* Inline toast (survives in popup window where cat bubble isn't reachable) */}
+      {toast && (
+        <div
+          key={toast.id}
+          onClick={() => setToast(null)}
+          style={{
+            marginBottom: 10, padding: '8px 12px', borderRadius: 8,
+            fontSize: 13, lineHeight: 1.4, cursor: 'pointer',
+            background: toast.tone === 'success' ? `${C.green}22` : toast.tone === 'error' ? `${C.red}22` : `${C.primaryDim}22`,
+            border: `1px solid ${toast.tone === 'success' ? C.green : toast.tone === 'error' ? C.red : C.primaryDim}66`,
+            color: toast.tone === 'success' ? C.green : toast.tone === 'error' ? C.red : C.primary,
+            wordBreak: 'break-word',
+          }}
+          title="点击关闭"
+        >{toast.text}</div>
+      )}
 
       {/* Search */}
       <div style={{ display: 'flex', gap: 4, marginBottom: 10, flexShrink: 0 }}>

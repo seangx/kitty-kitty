@@ -25,23 +25,6 @@ function setBubbleColorLS(id: string, color: string | null) {
   else localStorage.removeItem(`kitty-bubble-color-${id}`)
 }
 
-function getBubblePriority(id: string): number {
-  try { return parseInt(localStorage.getItem(`kitty-bubble-priority-${id}`) || '0', 10) } catch { return 0 }
-}
-function setBubblePriorityLS(id: string, priority: number) {
-  if (priority) localStorage.setItem(`kitty-bubble-priority-${id}`, String(priority))
-  else localStorage.removeItem(`kitty-bubble-priority-${id}`)
-}
-
-
-function getGroupPriority(groupId: string): number {
-  try { return parseInt(localStorage.getItem(`kitty-group-priority-${groupId}`) || '0', 10) } catch { return 0 }
-}
-function setGroupPriorityLS(groupId: string, priority: number) {
-  if (priority) localStorage.setItem(`kitty-group-priority-${groupId}`, String(priority))
-  else localStorage.removeItem(`kitty-group-priority-${groupId}`)
-}
-
 const BUBBLE_PRESETS = ['#645efb', '#10b981', '#e11d48', '#d97706', '#06b6d4', '#8b5cf6']
 
 // Tier config: [baseFontSize, verticalPad, horizontalPad, opacity]
@@ -131,13 +114,11 @@ export default function TagCloud({ sessions, onAttach, onKill, onRename, onResta
     }
   }, [hiddenIds, loadSessions])
 
-  // Sort: priority (desc) → running first → newest first
+  // Sort: running first → newest first
   const alive = useMemo(() => {
     return sessions
       .filter((s) => s.status !== 'dead' && !hiddenIds.has(s.id))
       .sort((a, b) => {
-        const pa = getBubblePriority(a.id), pb = getBubblePriority(b.id)
-        if (pa !== pb) return pb - pa
         if (a.status !== b.status) return a.status === 'running' ? -1 : 1
         return 0
       })
@@ -152,47 +133,11 @@ export default function TagCloud({ sessions, onAttach, onKill, onRename, onResta
     setBubbleColors(c)
   }, [sessions])
 
-  const [priorities, setPriorities] = useState<Record<string, number>>(() => {
-    const p: Record<string, number> = {}
-    alive.forEach((s) => { const v = getBubblePriority(s.id); if (v) p[s.id] = v })
-    return p
-  })
-
   const handleSetColor = useCallback((id: string, color: string | null) => {
     setBubbleColorLS(id, color)
     setBubbleColors((p) => { const n = { ...p }; if (color) n[id] = color; else delete n[id]; return n })
     setCtxMenu(null)
   }, [])
-
-  const handleSetPriority = useCallback((id: string, priority: number) => {
-    // Exclusive: clear all others first
-    if (priority > 0) {
-      for (const s of alive) {
-        if (s.id !== id) setBubblePriorityLS(s.id, 0)
-      }
-    }
-    setBubblePriorityLS(id, priority)
-    setPriorities(priority > 0 ? { [id]: priority } : {})
-    setCtxMenu(null)
-  }, [alive])
-
-  const [groupPriorities, setGroupPriorities] = useState<Record<string, number>>(() => {
-    const p: Record<string, number> = {}
-    const groupIds = new Set(sessions.filter(s => s.groupId).map(s => s.groupId!))
-    for (const gid of groupIds) { const v = getGroupPriority(gid); if (v) p[gid] = v }
-    return p
-  })
-
-  const handleSetGroupPriority = useCallback((groupId: string, priority: number) => {
-    // Exclusive: clear other group priorities
-    if (priority > 0) {
-      for (const s of alive) {
-        if (s.groupId && s.groupId !== groupId) setGroupPriorityLS(s.groupId, 0)
-      }
-    }
-    setGroupPriorityLS(groupId, priority)
-    setGroupPriorities(priority > 0 ? { [groupId]: priority } : {})
-  }, [alive])
 
   const theme = bubble.colorTheme === 'custom' && bubble.customColor
     ? { primary: bubble.customColor, dim: bubble.customColor, glass: '#23233f' }
@@ -272,9 +217,7 @@ export default function TagCloud({ sessions, onAttach, onKill, onRename, onResta
         ungrouped.push(s)
       }
     }
-    const sortedGroups = [...map.entries()].sort((a, b) => {
-      return getGroupPriority(b[0]) - getGroupPriority(a[0])
-    })
+    const sortedGroups = [...map.entries()]
     return { groups: sortedGroups, ungrouped }
   }, [alive, groups])
 
@@ -296,7 +239,6 @@ export default function TagCloud({ sessions, onAttach, onKill, onRename, onResta
     const accent = bubbleColors[session.id] || (isRunning ? theme.primary : theme.dim)
     const opacity = isRunning ? Math.max(baseOpacity, 0.85) : baseOpacity
     const n = nudge(tierIdx)
-    const hasPriority = (priorities[session.id] || 0) > 0
     const hasMetadata = !!(session.roles && session.roles.length > 0) || !!(session.expertise && session.expertise.length > 0)
     const metadataTooltip = hasMetadata
       ? `\n🏷 ${session.roles || ''}${session.expertise ? '\n' + session.expertise.slice(0, 60) + (session.expertise.length > 60 ? '...' : '') : ''}`
@@ -341,7 +283,7 @@ export default function TagCloud({ sessions, onAttach, onKill, onRename, onResta
           maxWidth: Math.round((isHero ? 240 : 170) * scale),
           animation: `kitty-float ${floatDuration}s ease-in-out ${floatDelay}s infinite`,
         }}
-        title={`${session.tool}: ${session.title}\n📂 ${session.cwd || '未设置'}${hasPriority ? '\n📌 已置顶' : ''}${metadataTooltip}\n点击 attach · 右键菜单`}
+        title={`${session.tool}: ${session.title}\n📂 ${session.cwd || '未设置'}${metadataTooltip}\n点击 attach · 右键菜单`}
       >
         <div style={{ overflow: 'hidden', minWidth: 0 }}>
           {isEditing ? (
@@ -357,9 +299,6 @@ export default function TagCloud({ sessions, onAttach, onKill, onRename, onResta
             </div>
           )}
         </div>
-        {hasPriority && (
-          <span style={{ fontSize: Math.max(fontSize - 4, 7), flexShrink: 0, opacity: 0.7 }}>📌</span>
-        )}
         {hasMetadata && (
           <span style={{ fontSize: Math.max(fontSize - 4, 7), flexShrink: 0, opacity: 0.7 }}>🏷</span>
         )}
@@ -383,22 +322,6 @@ export default function TagCloud({ sessions, onAttach, onKill, onRename, onResta
               boxShadow: '0 4px 12px rgba(0,0,0,0.4)',
               border: `1px solid ${accent}33`,
             }}>
-              {!hasPriority && (
-                <button
-                  onClick={(e) => { e.stopPropagation(); handleSetPriority(session.id, 1) }}
-                  style={{
-                    display: 'inline-flex', alignItems: 'center', justifyContent: 'center',
-                    padding: '3px 8px', height: 20,
-                    background: 'transparent',
-                    border: 'none', borderRadius: 7, cursor: 'pointer',
-                    fontSize: 10, color: '#fff', lineHeight: 1,
-                    fontFamily: 'inherit',
-                    transition: 'background 0.15s',
-                  }}
-                  onMouseEnter={(e) => { (e.currentTarget as HTMLElement).style.background = 'rgba(255,255,255,0.18)' }}
-                  onMouseLeave={(e) => { (e.currentTarget as HTMLElement).style.background = 'transparent' }}
-                >置顶</button>
-              )}
               <button
                 onClick={(e) => { e.stopPropagation(); onRestart(session.id) }}
                 style={{
@@ -496,15 +419,6 @@ export default function TagCloud({ sessions, onAttach, onKill, onRename, onResta
               {runningCount > 0 && <span style={{ fontSize: 9, color: '#10b981' }}>●{runningCount > 1 ? runningCount : ''}</span>}
               {detachedCount > 0 && <span style={{ fontSize: 9, color: '#d97706' }}>●{detachedCount > 1 ? detachedCount : ''}</span>}
               <span style={{ fontSize: 9, color: '#aaa8c3' }}>({g.sessions.length})</span>
-              <button
-                onClick={(e) => { e.stopPropagation(); handleSetGroupPriority(groupId, (groupPriorities[groupId] || 0) > 0 ? 0 : 1) }}
-                style={{
-                  fontSize: 9, background: 'none', border: 'none', cursor: 'pointer',
-                  opacity: (groupPriorities[groupId] || 0) > 0 ? 1 : 0.4,
-                  padding: 0, flexShrink: 0,
-                }}
-                title={(groupPriorities[groupId] || 0) > 0 ? '取消置顶' : '置顶显示'}
-              >📌</button>
             </div>
             {isExpanded && (
               <div style={{
@@ -625,7 +539,9 @@ export default function TagCloud({ sessions, onAttach, onKill, onRename, onResta
 
       {/* Hidden sessions toggle */}
       {(() => {
-        const hiddenAlive = sessions.filter((s) => s.status !== 'dead' && hiddenIds.has(s.id))
+        // Include dead hidden sessions too — otherwise they vanish from UI entirely
+        // once marked dead, and user has no way to delete/restore them without DB surgery.
+        const hiddenAlive = sessions.filter((s) => hiddenIds.has(s.id))
         const draggedSession = draggingSessionId ? sessions.find(x => x.id === draggingSessionId) : null
         // Valid drop-to-hide target when dragging a non-hidden session
         const isHideTarget = !!draggedSession && !draggedSession.hidden
@@ -705,14 +621,6 @@ export default function TagCloud({ sessions, onAttach, onKill, onRename, onResta
                 title="恢复默认">✕</button>
             </div>
             <div style={{ margin: '3px 8px', borderTop: '1px solid #46465c30' }} />
-            {/* Priority — only show when not pinned; a group always has one pinned session */}
-            {!((priorities[ctxMenu.id] || 0) > 0) && (
-              <button onClick={() => handleSetPriority(ctxMenu.id, 1)}
-                style={{ display: 'block', width: '100%', textAlign: 'left', padding: '6px 12px', fontSize: 12, color: '#e5e3ff', background: 'none', border: 'none', cursor: 'pointer', fontFamily: 'inherit' }}
-                onMouseEnter={(e) => { (e.target as HTMLElement).style.background = `${theme.dim}33` }}
-                onMouseLeave={(e) => { (e.target as HTMLElement).style.background = 'none' }}
-              >📌 置顶</button>
-            )}
             {[
               { label: '✏️ 重命名', action: () => { const s = alive.find(x => x.id === ctxMenu.id); if (s) startRename(s) } },
               { label: '♻️ 重启会话', action: () => { onRestart(ctxMenu.id); setCtxMenu(null) } },

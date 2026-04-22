@@ -601,13 +601,15 @@ export function registerSessionHandlers(): void {
         }
       } else {
         // Unhide: restore pane in background so IPC returns fast for UI refresh
-        if (session.groupId) {
-          const gid = session.groupId
-          const sid = sessionId
-          const sCwd = session.cwd
-          const sTool = session.tool
-          setTimeout(() => {
-            try {
+        const sid = sessionId
+        const sCwd = session.cwd
+        const sTool = session.tool
+        const sTmuxName = session.tmuxName
+        const gid = session.groupId
+        setTimeout(() => {
+          try {
+            if (gid) {
+              // Grouped: re-join as a pane in the group's host session
               const groupSessions = sessionRepo.listSessionsByGroup(gid)
                 .filter(s => s.id !== sid && !s.hidden && tmux.isSessionAlive(s.tmuxName))
               const hostTmux = groupSessions[0]?.tmuxName
@@ -625,13 +627,27 @@ export function registerSessionHandlers(): void {
                 ).trim().split('\n')
                 sessionRepo.updateSessionPaneId(sid, newPanes[newPanes.length - 1])
                 getDB().prepare("UPDATE sessions SET tmux_name = ? WHERE id = ?").run(hostTmux, sid)
+                sessionRepo.updateSessionStatus(sid, 'detached')
                 tmux.applyMainVerticalLayout(hostTmux)
               }
-            } catch (err) {
-              log('pane-mode', `unhide restore pane failed:`, err)
+            } else {
+              // Ungrouped: rebuild standalone tmux session if the old one is gone
+              if (sTmuxName && !tmux.isSessionAlive(sTmuxName) && sCwd && existsSync(sCwd)) {
+                const script = generateLaunchScript(sTool || 'claude', 'restore')
+                execSync(
+                  `${tmux.TMUX} new-session -d -s "${sTmuxName}" -c "${sCwd}" "${script}"`,
+                  { stdio: 'ignore', env: { ...process.env, TERM: 'xterm-256color' } }
+                )
+                tmux.applyKittyStatusBar(sTmuxName)
+                sessionRepo.updateSessionStatus(sid, 'detached')
+              } else if (tmux.isSessionAlive(sTmuxName)) {
+                sessionRepo.updateSessionStatus(sid, 'detached')
+              }
             }
-          }, 0)
-        }
+          } catch (err) {
+            log('pane-mode', `unhide restore failed:`, err)
+          }
+        }, 0)
       }
     }
 
