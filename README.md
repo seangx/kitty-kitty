@@ -4,7 +4,7 @@
 
 基于 Electron + React + tmux 构建，同组会话合并为 tmux 分屏窗口。
 
-多 agent 协作通讯请使用 [**kitty-hive**](https://github.com/seangx/kitty-hive) — 独立的多 agent 协作服务器，支持 DM、任务分配、工作流审批和联邦节点。
+多 agent 协作通讯请使用 [**kitty-hive**](https://github.com/seangx/kitty-hive) — 独立的多 agent 协作服务器，支持 DM、任务分配、工作流审批和联邦节点。kitty-kitty 会自动把会话身份同步给 hive，详见 [hive 协作](#hive-协作)。
 
 ## 功能
 
@@ -16,6 +16,7 @@
 - **环境变量** — 每个会话独立环境变量，重启时通过 `tmux respawn-pane -e` 注入
 - **推送通知** — 订阅 ntfy.sh topic，部署状态等消息直接推送到桌宠气泡
 - **技能管理** — 搜索、安装、按分类批量部署 superpowers 技能到会话
+- **Hive 协作** — 会话身份自动同步到 [kitty-hive](https://github.com/seangx/kitty-hive)，改名/删除实时对齐，可选
 
 ## 前置依赖
 
@@ -126,13 +127,22 @@ curl -H "Title: Deploy" -H "Tags: white_check_mark" \
 - **分类批量操作** — 按 category / group 一键全部部署或移除
 - 技能面板通过独立窗口展示（会话气泡右键 → 技能）
 
-### Agent 端 MCP 工具
+### Hive 协作
 
-kitty-kitty 会向每个 claude 会话的 `.mcp.json` 注入 `kitty-session` MCP server，提供给 agent 调用：
+和 [**kitty-hive**](https://github.com/seangx/kitty-hive) (>= v0.6.2) 的轻量集成，让 kitty 里的每个会话在 hive 上自动有个对应 agent，DM / 任务分派直接点名即可。
 
-- `create_pane` — 在当前 tmux session 内分屏并拉起 claude/codex/shell
-- `list_panes` — 列出当前 session 所有 pane 及其 cwd
-- `close_pane` — 关闭指定 pane
+**工作原理**：
+
+- 创建/重启会话时，kitty 通过 `tmux new-session -e` / `respawn-pane -e` 注入两个环境变量：
+  - `HIVE_AGENT_KEY` = kitty 里的 session id（稳定不变，重启不换）
+  - `HIVE_AGENT_NAME` = 会话标题
+- [kitty-hive channel plugin](https://github.com/seangx/kitty-hive) 启动时读这两个变量，按 key 在 hive 上 upsert 出 agent，同 key 永远映射到同一 agent_id。
+- 会话**改名** → kitty 立刻调 `kitty-hive agent register --key ... --display-name ...` 同步新名字到 hive。
+- 会话**删除** → 调 `kitty-hive agent remove --key ... --yes`，hive agent 一起清掉。
+
+**零依赖**：kitty-hive 没装、server 没启动、网络不通——三条 CLI 调用全部静默失败，kitty 正常跑。
+
+**注意**：已经在跑的老会话 pane env 里没有 `HIVE_AGENT_*`，需要右键"重启会话"一次才会首次同步到 hive。新建的会话开箱即用。
 
 ## 项目结构
 
@@ -142,7 +152,6 @@ src/
     db/        #   SQLite 数据库
     ipc/       #   IPC 处理器
     tmux/      #   tmux 会话管理 + CLI wrapper
-    mcp/       #   kitty-session MCP server 注入
     skills/    #   skillsmgr CLI 集成
     windows/   #   窗口管理 + 位置持久化
     ntfy.ts    #   ntfy.sh SSE 订阅

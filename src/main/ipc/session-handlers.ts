@@ -1,18 +1,68 @@
 import { ipcMain, dialog, BrowserWindow, shell } from 'electron'
 import { IPC } from '@shared/types/ipc'
-import { readdirSync, existsSync, statSync } from 'fs'
+import { readdirSync, existsSync, statSync, mkdirSync, readFileSync, writeFileSync, unlinkSync } from 'fs'
 import { join, basename } from 'path'
-import { homedir } from 'os'
-import { execSync } from 'child_process'
+import { homedir, tmpdir } from 'os'
+import { execSync, spawn } from 'child_process'
 import { v4 as uuid } from 'uuid'
 import { log } from '../logger'
 import * as tmux from '../tmux/session-manager'
 import { generateLaunchScript, isToolInstalled, getInstallHint, getNtfyTopic, setNtfyTopic, needsDevChannelAutoAccept } from '../tmux/cli-wrapper'
-import * as sessionMcp from '../mcp/session-mcp-manager'
 import * as sessionRepo from '../db/session-repo'
 import { getDB } from '../db/database'
 import * as ntfy from '../ntfy'
 import type { SessionInfo } from '@shared/types/session'
+
+/**
+ * One-time cleanup: strip legacy `kitty-session` MCP entry from each session's .mcp.json
+ * (the MCP server was removed; leaving stale entries would keep claude spawning it).
+ */
+/**
+ * Fire-and-forget kitty-hive CLI call. If hive isn't installed or the command fails,
+ * we silently ignore — hive is optional and kitty must keep running without it.
+ */
+function hiveCli(args: string[]): void {
+  try {
+    const child = spawn('kitty-hive', args, {
+      stdio: 'ignore',
+      detached: true,
+      env: { ...process.env, PATH: `/opt/homebrew/bin:/usr/local/bin:${process.env.PATH || ''}` },
+    })
+    const timeout = setTimeout(() => { try { child.kill() } catch { /* ignore */ } }, 3000)
+    child.on('exit', () => clearTimeout(timeout))
+    child.on('error', () => { /* hive not installed / PATH miss — ignore */ })
+    child.unref()
+  } catch { /* ignore */ }
+}
+
+let legacyMcpCleanupDone = false
+function cleanupLegacyKittySessionMcp(): void {
+  if (legacyMcpCleanupDone) return
+  legacyMcpCleanupDone = true
+
+  try { unlinkSync(join(tmpdir(), 'kitty-session-server.js')) } catch { /* ignore */ }
+
+  for (const row of sessionRepo.listSessions()) {
+    const configPath = row.cwd ? join(row.cwd, '.mcp.json') : ''
+    if (!configPath || !existsSync(configPath)) continue
+    try {
+      const config = JSON.parse(readFileSync(configPath, 'utf-8'))
+      if (!config?.mcpServers?.['kitty-session']) continue
+      delete config.mcpServers['kitty-session']
+      const mcpEmpty = !config.mcpServers || Object.keys(config.mcpServers).length === 0
+      const otherKeys = Object.keys(config).filter(k => k !== 'mcpServers')
+      if (mcpEmpty && otherKeys.length === 0) {
+        unlinkSync(configPath)
+      } else {
+        if (mcpEmpty) delete config.mcpServers
+        writeFileSync(configPath, JSON.stringify(config, null, 2))
+      }
+      log('mcp-cleanup', `stripped kitty-session from ${configPath}`)
+    } catch (err) {
+      log('mcp-cleanup', `failed on ${configPath}:`, err)
+    }
+  }
+}
 
 /**
  * Find Claude session IDs in a project directory.
@@ -108,9 +158,6 @@ export function registerSessionHandlers(): void {
     const script = generateLaunchScript(tool || 'claude', 'new')
     const session = tmux.createTmuxSession(tool || 'claude', firstMessage, undefined, script)
     sessionRepo.saveSession(session)
-    try {
-      sessionMcp.injectSessionMcp(session.id, session.cwd, session.tmuxName, session.title)
-    } catch (e) { log('session', 'mcp inject failed (non-fatal):', e) }
     tmux.attachSession(session.tmuxName)
     return toSessionInfo(session)
   })
@@ -152,9 +199,6 @@ export function registerSessionHandlers(): void {
     const script = generateLaunchScript(tool || 'claude', mode, resumeId === '__new__' ? undefined : resumeId || undefined)
     const session = tmux.createTmuxSession(tool || 'claude', undefined, dir, script)
     sessionRepo.saveSession(session)
-    try {
-      sessionMcp.injectSessionMcp(session.id, dir, session.tmuxName, session.title)
-    } catch (e) { log('session', 'mcp inject failed (non-fatal):', e) }
     tmux.attachSession(session.tmuxName)
     return toSessionInfo(session)
   })
@@ -225,9 +269,9 @@ export function registerSessionHandlers(): void {
     const rows = sessionRepo.listSessions()
     const session = rows.find((s) => s.id === id)
     if (session) {
-      sessionMcp.removeSessionMcp(session.id, session.cwd)
       tmux.killSession(session.tmuxName)
       sessionRepo.deleteSession(id)
+      hiveCli(['agent', 'remove', '--key', id, '--yes'])
     }
     return { success: true }
   })
@@ -239,7 +283,6 @@ export function registerSessionHandlers(): void {
     const session = rows.find((s) => s.id === id)
     if (!session) return { success: true }
 
-    sessionMcp.removeSessionMcp(session.id, session.cwd)
     tmux.killSession(session.tmuxName)
 
     // Delete session directory if under ~/.kitty-kitty/sessions/
@@ -258,6 +301,7 @@ export function registerSessionHandlers(): void {
     }
 
     sessionRepo.deleteSession(id)
+    hiveCli(['agent', 'remove', '--key', id, '--yes'])
     log('session', `kill-and-delete: ${session.title}`)
     return { success: true }
   })
@@ -265,6 +309,10 @@ export function registerSessionHandlers(): void {
   // Rename a session
   ipcMain.handle('session:rename', (_event, id: string, title: string) => {
     sessionRepo.updateSessionTitle(id, title)
+    // Sync display_name to hive so agents keep the same id but show the new title
+    if (title && title.trim()) {
+      hiveCli(['agent', 'register', '--key', id, '--display-name', title])
+    }
     return { success: true }
   })
 
@@ -286,14 +334,6 @@ export function registerSessionHandlers(): void {
     const session = sessionRepo.listSessions().find(s => s.id === id)
     if (!session) throw new Error('Session not found')
 
-    // Re-inject .mcp.json with new roles/expertise
-    try {
-      sessionMcp.removeSessionMcp(id, session.cwd)
-      sessionMcp.injectSessionMcp(id, session.cwd, session.tmuxName, session.title)
-    } catch (err) {
-      log('session', `metadata inject failed for ${id}:`, err)
-    }
-
     return { success: true }
   })
 
@@ -314,10 +354,6 @@ export function registerSessionHandlers(): void {
       restartSessionTool(session.tmuxName, session.mainPane || '0.0', session.tool, nextTool)
     }
     sessionRepo.updateSessionTool(id, nextTool)
-
-    // Re-inject MCP after tool switch
-    sessionMcp.removeSessionMcp(id, session.cwd)
-    sessionMcp.injectSessionMcp(session.id, session.cwd, session.tmuxName, session.title)
 
     return { success: true }
   })
@@ -429,9 +465,6 @@ export function registerSessionHandlers(): void {
   })
 
   ipcMain.handle('group:delete', (_event, groupId: string) => {
-    for (const session of sessionRepo.listSessionsByGroup(groupId)) {
-      sessionMcp.updateGroupId(session.id, session.cwd, '', '')
-    }
     sessionRepo.deleteGroup(groupId)
   })
 
@@ -449,9 +482,6 @@ export function registerSessionHandlers(): void {
     if (!session) throw new Error('Session not found')
 
     const oldGroupId = session.groupId
-
-    const nextGroup = groupId ? sessionRepo.getGroupById(groupId) : undefined
-    sessionMcp.updateGroupId(sessionId, session.cwd, groupId || '', nextGroup?.name || '')
 
     // Move the pane between group tmux sessions
     {
@@ -619,14 +649,16 @@ export function registerSessionHandlers(): void {
   })
 
   ipcMain.handle(IPC.SESSION_CREATE_IN_GROUP, (_event, groupId: string) => {
-
     ensureReady('claude')
 
     const group = sessionRepo.getGroupById(groupId)
     if (!group) throw new Error('Group not found')
 
-    const groupSessions = sessionRepo.listSessionsByGroup(groupId)
-    const mainSession = groupSessions.find(s => s.id === group.mainSessionId) || groupSessions[0]
+    // Pick an ALIVE, non-hidden host session in the group to split into.
+    // Prefer the group's main session; fall back to any other alive one.
+    const allGroupSessions = sessionRepo.listSessionsByGroup(groupId)
+    const aliveGroupSessions = allGroupSessions.filter(s => !s.hidden && tmux.isSessionAlive(s.tmuxName))
+    const hostSession = aliveGroupSessions.find(s => s.id === group.mainSessionId) || aliveGroupSessions[0]
 
     // Use a fresh session dir so claude starts a new conversation
     const freshId = uuid().slice(0, 8)
@@ -635,13 +667,9 @@ export function registerSessionHandlers(): void {
 
     const script = generateLaunchScript('claude', 'new')
 
-    if (groupSessions.length > 0 && mainSession) {
+    if (hostSession) {
       // Split into the group's tmux session
-      const hostTmuxName = mainSession.tmuxName
-      if (!tmux.isSessionAlive(hostTmuxName)) {
-        throw new Error('Group host session is not running')
-      }
-
+      const hostTmuxName = hostSession.tmuxName
       const isFirstSplit = tmux.getPaneCount(hostTmuxName) === 1
       const paneId = tmux.createPaneInSession(hostTmuxName, script, isFirstSplit, freshCwd)
 
@@ -659,41 +687,35 @@ export function registerSessionHandlers(): void {
       sessionRepo.updateSessionGroup(freshId, groupId)
 
       if (!group.mainSessionId) {
-        sessionRepo.setGroupMainSession(groupId, groupSessions[0]?.id || freshId)
+        sessionRepo.setGroupMainSession(groupId, hostSession.id)
       }
 
-      try {
-        sessionMcp.injectSessionMcp(freshId, freshCwd, hostTmuxName, session.title)
-      } catch (e) { log('session', 'mcp inject failed:', e) }
-
+      try { tmux.applyMainVerticalLayout(hostTmuxName) } catch { /* ignore */ }
       tmux.focusSession(hostTmuxName)
       tmux.refreshAllStatusBars()
       return toSessionInfo(session)
-    } else {
-      // First session in the group: create independent tmux session
-      const session = tmux.createTmuxSession('claude', undefined, freshCwd, script)
-      sessionRepo.saveSession(session)
-      // Record pane_id for the new session
-      try {
-        const newPaneId = execSync(
-          `${tmux.TMUX} list-panes -t "${session.tmuxName}" -F '#{pane_id}'`,
-          { encoding: 'utf-8' }
-        ).trim().split('\n')[0]
-        if (newPaneId) sessionRepo.updateSessionPaneId(session.id, newPaneId)
-      } catch { /* ignore */ }
-      sessionRepo.updateSessionGroup(session.id, groupId)
-
-      if (!group.mainSessionId) {
-        sessionRepo.setGroupMainSession(groupId, session.id)
-      }
-
-      try {
-        sessionMcp.injectSessionMcp(session.id, session.cwd, session.tmuxName, session.title)
-      } catch (e) { log('session', 'mcp inject failed:', e) }
-
-      tmux.attachSession(session.tmuxName)
-      return toSessionInfo(session)
     }
+
+    // No alive host in the group: create a standalone tmux session and attach it to the group
+    const session = tmux.createTmuxSession('claude', undefined, freshCwd, script)
+    sessionRepo.saveSession(session)
+    try {
+      const newPaneId = execSync(
+        `${tmux.TMUX} list-panes -t "${session.tmuxName}" -F '#{pane_id}'`,
+        { encoding: 'utf-8' }
+      ).trim().split('\n')[0]
+      if (newPaneId) sessionRepo.updateSessionPaneId(session.id, newPaneId)
+    } catch { /* ignore */ }
+    sessionRepo.updateSessionGroup(session.id, groupId)
+
+    if (!group.mainSessionId) {
+      sessionRepo.setGroupMainSession(groupId, session.id)
+    }
+
+    tmux.applyKittyStatusBar(session.tmuxName)
+    tmux.attachSession(session.tmuxName)
+    tmux.refreshAllStatusBars()
+    return toSessionInfo(session)
   })
 
   ipcMain.handle(IPC.GROUP_SET_MAIN_SESSION, (_event, groupId: string, sessionId: string) => {
@@ -878,12 +900,8 @@ function syncAndList(): SessionInfo[] {
     tmux.refreshAllStatusBars()
   }
 
-  // Inject session MCP for all live sessions with cwd (every sync, idempotent)
-  for (const row of sessionRepo.listSessions()) {
-    if (liveNames.has(row.tmuxName) && row.cwd) {
-      sessionMcp.injectSessionMcp(row.id, row.cwd, row.tmuxName, row.title)
-    }
-  }
+  // One-time cleanup of any legacy kitty-session entries left in per-session .mcp.json
+  cleanupLegacyKittySessionMcp()
 
   // Normal sync: update status based on tmux state
   // tmux gone → keep as 'detached' (restorable on next launch), NOT 'dead'
@@ -1018,6 +1036,9 @@ function restartSessionPane(session: sessionRepo.SessionRow): void {
       }
     } catch { /* ignore bad env json */ }
   }
+  // Hive identity — re-inject on every restart so MCP re-registers this agent
+  envFlags += ` -e "HIVE_AGENT_KEY=${session.id}"`
+  envFlags += ` -e "HIVE_AGENT_NAME=${String(session.title || '').replace(/"/g, '\\"')}"`
 
   execSync(`${tmux.TMUX} respawn-pane -k${envFlags} -t "${target}" "${launch}"`, { stdio: 'ignore' })
   log('session', `restart: ${session.title} (mode=${mode})`)

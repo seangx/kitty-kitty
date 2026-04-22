@@ -107,6 +107,7 @@ export default function TagCloud({ sessions, onAttach, onKill, onRename, onResta
   const [expandedGroupId, setExpandedGroupId] = useState<string | null>(null)
   const [showAllUngrouped, setShowAllUngrouped] = useState(false)
   const [showHidden, setShowHidden] = useState(false)
+  const [draggingSessionId, setDraggingSessionId] = useState<string | null>(null)
   const { bubble } = useConfigStore()
 
   useEffect(() => { injectAnimations() }, [])
@@ -309,7 +310,8 @@ export default function TagCloud({ sessions, onAttach, onKill, onRename, onResta
       <div
         key={session.id}
         draggable
-        onDragStart={(e) => { e.dataTransfer.setData('text/plain', session.id); e.dataTransfer.effectAllowed = 'move' }}
+        onDragStart={(e) => { e.dataTransfer.setData('text/plain', session.id); e.dataTransfer.effectAllowed = 'move'; setDraggingSessionId(session.id) }}
+        onDragEnd={() => setDraggingSessionId(null)}
         onMouseEnter={() => enterHover(session.id)}
         onMouseLeave={leaveHover}
         onClick={(e) => { e.stopPropagation(); if (!isEditing) onAttach(session.id) }}
@@ -520,63 +522,125 @@ export default function TagCloud({ sessions, onAttach, onKill, onRename, onResta
         )
       })}
 
-      {/* Ungrouped sessions — layout-dependent */}
-      {bubble.layout === 'stack' ? (
-        <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: Math.round(4 * scale) }}>
-          {grouped.ungrouped.map((s) => (
-            <div key={s.id} style={{ display: 'flex', flexDirection: 'column', alignItems: 'center' }}>
-              {renderTag(s, 2)}
+      {/* Ungrouped zone — plain bubbles by default; show a labeled drop frame only while dragging a group/hidden session */}
+      {(() => {
+        const hasUngrouped = grouped.ungrouped.length > 0
+        const draggedSession = draggingSessionId ? sessions.find(x => x.id === draggingSessionId) : null
+        const isValidTarget = !!draggedSession && (!!draggedSession.groupId || !!draggedSession.hidden)
+        if (!hasUngrouped && !isValidTarget) return null
+
+        const ungroupedDropProps = {
+          onDragOver: (e: React.DragEvent) => {
+            e.preventDefault(); e.dataTransfer.dropEffect = 'move'
+          },
+          onDrop: async (e: React.DragEvent) => {
+            e.preventDefault()
+            const sessionId = e.dataTransfer.getData('text/plain')
+            if (!sessionId) return
+            const s = sessions.find(x => x.id === sessionId)
+            if (s?.hidden) {
+              await window.api.invoke('session:set-hidden', sessionId, false)
+            }
+            if (s?.groupId) {
+              await window.api.invoke('session:set-group', sessionId, null)
+            }
+            await loadSessions()
+          },
+        }
+
+        const innerBubbles = bubble.layout === 'stack' ? (
+          <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: Math.round(4 * scale) }}>
+            {grouped.ungrouped.map((s) => (
+              <div key={s.id} style={{ display: 'flex', flexDirection: 'column', alignItems: 'center' }}>
+                {renderTag(s, 2)}
+              </div>
+            ))}
+          </div>
+        ) : bubble.layout === 'arc' ? (
+          <div style={{ display: 'flex', flexWrap: 'wrap', gap: Math.round(6 * scale), justifyContent: 'center' }}>
+            {grouped.ungrouped.map((s) => (
+              <div key={s.id} style={{ display: 'flex', flexDirection: 'column', alignItems: 'center' }}>
+                {renderTag(s, 2)}
+              </div>
+            ))}
+          </div>
+        ) : (
+          <div style={{ display: 'flex', flexWrap: 'wrap', gap: Math.round(5 * scale), justifyContent: 'center', alignItems: 'flex-end' }}>
+            {(showAllUngrouped ? small : small.slice(0, 3)).map((s) => (
+              <div key={s.id} style={{ display: 'flex', flexDirection: 'column', alignItems: 'center' }}>
+                {renderTag(s, tierMap.get(s.id) || 3)}
+              </div>
+            ))}
+            {small.length > 3 && !showAllUngrouped && (
+              <button
+                onClick={() => setShowAllUngrouped(true)}
+                style={{
+                  fontSize: Math.round(9 * scale), color: '#aaa8c3', background: '#23233f66',
+                  border: '1px solid #46465c33', borderRadius: 9999,
+                  padding: `${Math.round(3 * scale)}px ${Math.round(10 * scale)}px`,
+                  cursor: 'pointer', fontFamily: "'Plus Jakarta Sans', -apple-system, sans-serif", alignSelf: 'center',
+                }}
+              >+{small.length - 3} more</button>
+            )}
+            {medium.map((s) => (
+              <div key={s.id} style={{ display: 'flex', flexDirection: 'column', alignItems: 'center' }}>
+                {renderTag(s, tierMap.get(s.id) || 1)}
+              </div>
+            ))}
+            {hero && (
+              <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center' }}>
+                {renderTag(hero, 0)}
+              </div>
+            )}
+          </div>
+        )
+
+        // Not dragging a valid drop source — render bubbles plain, no frame/background
+        if (!isValidTarget) return innerBubbles
+
+        // Dragging a valid source — show labeled drop frame
+        return (
+          <div {...ungroupedDropProps}
+            style={{
+              display: 'flex', flexDirection: 'column', alignItems: 'center',
+              gap: Math.round(4 * scale),
+              padding: `${Math.round(5 * scale)}px ${Math.round(8 * scale)}px`,
+              borderRadius: Math.round(10 * scale),
+              background: '#645efb22',
+              border: '1px dashed #645efb88',
+              minWidth: Math.round(160 * scale),
+            }}
+          >
+            <div style={{
+              fontSize: Math.round(9 * scale), color: '#a7a5ff',
+              fontFamily: "'Plus Jakarta Sans', -apple-system, sans-serif",
+              letterSpacing: 0.3,
+            }}>
+              {hasUngrouped ? `未分组 (${grouped.ungrouped.length})` : '拖到此处离开分组'}
             </div>
-          ))}
-        </div>
-      ) : bubble.layout === 'arc' ? (
-        <div style={{ display: 'flex', flexWrap: 'wrap', gap: Math.round(6 * scale), justifyContent: 'center' }}>
-          {grouped.ungrouped.map((s) => (
-            <div key={s.id} style={{ display: 'flex', flexDirection: 'column', alignItems: 'center' }}>
-              {renderTag(s, 2)}
-            </div>
-          ))}
-        </div>
-      ) : (
-        <div style={{ display: 'flex', flexWrap: 'wrap', gap: Math.round(5 * scale), justifyContent: 'center', alignItems: 'flex-end' }}>
-          {(showAllUngrouped ? small : small.slice(0, 3)).map((s) => (
-            <div key={s.id} style={{ display: 'flex', flexDirection: 'column', alignItems: 'center' }}>
-              {renderTag(s, tierMap.get(s.id) || 3)}
-            </div>
-          ))}
-          {small.length > 3 && !showAllUngrouped && (
-            <button
-              onClick={() => setShowAllUngrouped(true)}
-              style={{
-                fontSize: Math.round(9 * scale), color: '#aaa8c3', background: '#23233f66',
-                border: '1px solid #46465c33', borderRadius: 9999,
-                padding: `${Math.round(3 * scale)}px ${Math.round(10 * scale)}px`,
-                cursor: 'pointer', fontFamily: "'Plus Jakarta Sans', -apple-system, sans-serif", alignSelf: 'center',
-              }}
-            >+{small.length - 3} more</button>
-          )}
-          {medium.map((s) => (
-            <div key={s.id} style={{ display: 'flex', flexDirection: 'column', alignItems: 'center' }}>
-              {renderTag(s, tierMap.get(s.id) || 1)}
-            </div>
-          ))}
-          {hero && (
-            <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center' }}>
-              {renderTag(hero, 0)}
-            </div>
-          )}
-        </div>
-      )}
+            {hasUngrouped && innerBubbles}
+          </div>
+        )
+      })()}
 
       {/* Hidden sessions toggle */}
       {(() => {
         const hiddenAlive = sessions.filter((s) => s.status !== 'dead' && hiddenIds.has(s.id))
-        if (hiddenAlive.length === 0) return null
+        const draggedSession = draggingSessionId ? sessions.find(x => x.id === draggingSessionId) : null
+        // Valid drop-to-hide target when dragging a non-hidden session
+        const isHideTarget = !!draggedSession && !draggedSession.hidden
+        // Show the pill if there are any hidden sessions OR if user is dragging a hide-candidate
+        if (hiddenAlive.length === 0 && !isHideTarget) return null
         return (
           <div style={{ display: 'flex', flexWrap: 'wrap', gap: Math.round(4 * scale), justifyContent: 'center', alignItems: 'center' }}>
             <button
               onClick={() => setShowHidden(!showHidden)}
-              onDragOver={(e) => { e.preventDefault(); e.dataTransfer.dropEffect = 'move'; (e.currentTarget as HTMLElement).style.outline = '2px solid #8886a5'; (e.currentTarget as HTMLElement).style.outlineOffset = '-2px' }}
+              onDragOver={(e) => {
+                if (!isHideTarget) return
+                e.preventDefault(); e.dataTransfer.dropEffect = 'move'
+                ;(e.currentTarget as HTMLElement).style.outline = '2px solid #a7a5ff'
+                ;(e.currentTarget as HTMLElement).style.outlineOffset = '-2px'
+              }}
               onDragLeave={(e) => { (e.currentTarget as HTMLElement).style.outline = 'none' }}
               onDrop={async (e) => {
                 e.preventDefault();
@@ -588,19 +652,27 @@ export default function TagCloud({ sessions, onAttach, onKill, onRename, onResta
                 }
               }}
               style={{
-                fontSize: Math.round(9 * scale), color: '#8886a5', background: '#23233f44',
-                border: '1px dashed #46465c44', borderRadius: 9999,
+                fontSize: Math.round(9 * scale),
+                color: isHideTarget ? '#a7a5ff' : '#8886a5',
+                background: isHideTarget ? '#645efb22' : '#23233f44',
+                border: isHideTarget ? '1px dashed #645efb88' : '1px dashed #46465c44',
+                borderRadius: 9999,
                 padding: `${Math.round(2 * scale)}px ${Math.round(8 * scale)}px`,
                 cursor: 'pointer', fontFamily: "'Plus Jakarta Sans', -apple-system, sans-serif",
               }}
-            >{showHidden ? '收起' : `👻 ${hiddenAlive.length} 个已隐藏`}</button>
+            >{isHideTarget
+              ? '拖到此处隐藏'
+              : showHidden
+                ? '收起'
+                : `👻 ${hiddenAlive.length} 个已隐藏`}</button>
             {showHidden && hiddenAlive.map((s) => (
               <div key={s.id}
                 draggable
-                onDragStart={(e) => { e.dataTransfer.setData('text/plain', s.id); e.dataTransfer.effectAllowed = 'move' }}
+                onDragStart={(e) => { e.dataTransfer.setData('text/plain', s.id); e.dataTransfer.effectAllowed = 'move'; setDraggingSessionId(s.id) }}
+                onDragEnd={() => setDraggingSessionId(null)}
                 onClick={() => onAttach(s.id)}
                 onContextMenu={(e) => { e.preventDefault(); e.stopPropagation(); handleToggleHidden(s.id) }}
-                title="拖到分组中显示"
+                title="拖到分组/未分组区显示"
                 style={{
                   display: 'inline-block',
                   fontSize: Math.round(9 * scale), color: '#e5e3ff', background: '#23233fcc',
@@ -720,13 +792,15 @@ export default function TagCloud({ sessions, onAttach, onKill, onRename, onResta
           onClose={() => setGroupCtxMenu(null)}>
           {/* Create session in this group */}
           <button onClick={async () => {
+            const gid = groupCtxMenu.id
+            setGroupCtxMenu(null)
             try {
-              await window.api.invoke('session:create-in-group', groupCtxMenu.id)
+              await window.api.invoke('session:create-in-group', gid)
               await loadSessions()
             } catch (e: any) {
               console.error('create-in-group failed:', e)
+              window.alert(`创建失败: ${e?.message || e}`)
             }
-            setGroupCtxMenu(null)
           }}
             style={{
               display: 'block', width: '100%', padding: '6px 12px', textAlign: 'left',

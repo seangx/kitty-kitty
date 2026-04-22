@@ -90,7 +90,11 @@ export function createTmuxSession(tool: string, firstMessage?: string, cwd?: str
 
   // Use launch script if provided, otherwise raw tool command
   const command = launchScript || getToolCommand(tool)
-  execSync(`${TMUX} new-session -d -s ${shellQuote(tmuxName)} -c ${shellQuote(cwd)} ${shellQuote(command)}`, {
+  // Inject hive identity env so kitty-hive MCP (if installed) auto-registers this agent
+  const hiveEnv =
+    ` -e ${shellQuote(`HIVE_AGENT_KEY=${id}`)}` +
+    ` -e ${shellQuote(`HIVE_AGENT_NAME=${title}`)}`
+  execSync(`${TMUX} new-session -d -s ${shellQuote(tmuxName)} -c ${shellQuote(cwd)}${hiveEnv} ${shellQuote(command)}`, {
     stdio: 'ignore',
     env: { ...process.env, TERM: 'xterm-256color' }
   })

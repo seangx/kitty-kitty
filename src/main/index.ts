@@ -6,7 +6,6 @@ import { registerIpcHandlers } from './ipc/handlers'
 import { initDB, closeDB } from './db/database'
 import { initLogger, log } from './logger'
 import { hasTmux, focusAnyAttachedSession } from './tmux/session-manager'
-import * as sessionMcp from './mcp/session-mcp-manager'
 import * as ntfy from './ntfy'
 
 app.whenReady().then(() => {
@@ -53,6 +52,5 @@ app.on('activate', () => {
 
 app.on('before-quit', () => {
   ntfy.stop()
-  sessionMcp.cleanupAll()
   closeDB()
 })

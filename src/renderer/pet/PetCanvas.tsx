@@ -117,7 +117,20 @@ export default function PetCanvas() {
     e.stopPropagation()
     if (clickTimer.current) {
       clearTimeout(clickTimer.current); clickTimer.current = null
-      setShowInput(true)
+      // Double-click: create a new claude session directly and attach
+      ;(async () => {
+        try {
+          machine.forceState('dance', 10000)
+          say('启动中喵~')
+          await createSession('claude')
+          machine.forceState('happy', 2000)
+          say('开始新对话喵~')
+        } catch (err: any) {
+          console.error('[kitty] create session failed:', err)
+          machine.forceState('sad', 2000)
+          say(err?.message || '出错了喵...')
+        }
+      })()
     } else {
       clickTimer.current = setTimeout(() => {
         clickTimer.current = null
@@ -126,7 +139,7 @@ export default function PetCanvas() {
         machine.forceState(anim, 2000)
       }, 250)
     }
-  }, [machine, anyPopup])
+  }, [machine, anyPopup, createSession, say])
 
   const handleContextMenu = useCallback((e: React.MouseEvent) => {
     e.preventDefault(); e.stopPropagation()
