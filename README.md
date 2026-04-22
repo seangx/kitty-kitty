@@ -53,6 +53,21 @@ npm run pack
 npm run dist
 ```
 
+### 首次打开被系统拦截
+
+本项目**没做苹果签名和公证**，首次打开 `.app` 会弹「无法打开，来自身份不明的开发者」或「已损坏」。绕过方式：
+
+- **右键 → 打开** 两次，在弹窗里选「打开」，之后双击就正常了
+- 或打开「系统设置 → 隐私与安全性」，滚到最下面点「仍要打开」
+- 如果仍打不开（常见于从浏览器下载的 dmg），终端跑：
+  ```bash
+  xattr -cr /Applications/Kitty\ Kitty.app
+  ```
+
+### 自动发布
+
+打 tag 以 `v` 开头（例如 `v0.1.1`）push 到 GitHub 会自动触发 `.github/workflows/release.yml`：macOS runner 跑 `npm run dist`，产出 x64/arm64 两份 dmg 并创建 GitHub Release。流程里关掉了证书自动发现（`CSC_IDENTITY_AUTO_DISCOVERY=false`），仍然是未签名包，用户首次打开按上节绕过。
+
 ## 使用
 
 - **单击** 桌宠 — 互动
