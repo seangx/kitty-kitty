@@ -70,6 +70,17 @@ function injectAnimations() {
   document.head.appendChild(style)
 }
 
+const DRAG_THRESHOLD_PX = 5
+
+interface DragState {
+  sessionId: string
+  title: string
+  x: number
+  y: number
+  active: boolean
+  target: string | null // data-drop value: "group:<id>" | "ungrouped" | "hide" | null
+}
+
 export default function TagCloud({ sessions, onAttach, onKill, onRename, onRestart, onEditEnv, onOpenSkills }: Props) {
   const [hoveredId, setHoveredId] = useState<string | null>(null)
   const hoverTimer = useRef<ReturnType<typeof setTimeout> | null>(null)
@@ -90,7 +101,7 @@ export default function TagCloud({ sessions, onAttach, onKill, onRename, onResta
   const [expandedGroupId, setExpandedGroupId] = useState<string | null>(null)
   const [showAllUngrouped, setShowAllUngrouped] = useState(false)
   const [showHidden, setShowHidden] = useState(false)
-  const [draggingSessionId, setDraggingSessionId] = useState<string | null>(null)
+  const [dragState, setDragState] = useState<DragState | null>(null)
   const { bubble } = useConfigStore()
 
   useEffect(() => { injectAnimations() }, [])
@@ -196,6 +207,110 @@ export default function TagCloud({ sessions, onAttach, onKill, onRename, onResta
     setGroupMenuId(null)
   }, [newGroupName])
 
+  // Dispatch a drop action based on the resolved `data-drop` target.
+  const executeDrop = useCallback(async (sessionId: string, target: string) => {
+    const s = sessions.find(x => x.id === sessionId)
+    if (!s) return
+    try {
+      if (target === 'hide') {
+        if (!s.hidden) {
+          await window.api.invoke('session:set-hidden', sessionId, true)
+          await loadSessions()
+        }
+        return
+      }
+      if (target === 'ungrouped') {
+        if (s.hidden) {
+          await window.api.invoke('session:set-hidden', sessionId, false)
+        }
+        if (s.groupId) {
+          await window.api.invoke('session:set-group', sessionId, null)
+        }
+        if (s.hidden || s.groupId) await loadSessions()
+        return
+      }
+      if (target.startsWith('group:')) {
+        const groupId = target.slice(6)
+        if (s.groupId === groupId && !s.hidden) return
+        if (s.hidden) {
+          setShowHidden(false)
+          await window.api.invoke('session:set-hidden', sessionId, false)
+        }
+        if (s.groupId !== groupId) {
+          await window.api.invoke('session:set-group', sessionId, groupId)
+        }
+        await loadSessions()
+        return
+      }
+    } catch (err) {
+      showCollabError(err)
+    }
+  }, [sessions, loadSessions, showCollabError])
+
+  // Start manual drag — used for both regular session bubbles and hidden bubbles.
+  // We bypass HTML5 DnD entirely because Electron's setIgnoreMouseEvents(true, { forward: true })
+  // doesn't route `dragstart` / `drag` / `drop` to the renderer, only `mousemove`.
+  const startDrag = useCallback((e: React.MouseEvent, sessionId: string, title: string) => {
+    if (e.button !== 0) return
+    // Ignore when inline-editing or right-click / middle-click.
+    if (editingId === sessionId) return
+    // Don't start drag if starting on an interactive child (button, input)
+    const target = e.target as HTMLElement | null
+    if (target && target.closest('button, input, textarea')) return
+
+    e.preventDefault()
+    e.stopPropagation()
+
+    const startX = e.clientX
+    const startY = e.clientY
+    let active = false
+    let hoverTarget: string | null = null
+
+    setDragState({ sessionId, title, x: startX, y: startY, active: false, target: null })
+
+    const onMove = (ev: MouseEvent) => {
+      const dx = ev.clientX - startX
+      const dy = ev.clientY - startY
+      if (!active) {
+        if (Math.hypot(dx, dy) < DRAG_THRESHOLD_PX) return
+        active = true
+        // Tell the host window to stay interactive for the duration of this drag.
+        window.dispatchEvent(new CustomEvent('kitty-drag-start'))
+        document.body.style.cursor = 'grabbing'
+      }
+      // Hit-test against drop targets by coordinates.
+      const el = document.elementFromPoint(ev.clientX, ev.clientY) as HTMLElement | null
+      const dropEl = el?.closest('[data-drop]') as HTMLElement | null
+      hoverTarget = dropEl?.getAttribute('data-drop') || null
+      setDragState({ sessionId, title, x: ev.clientX, y: ev.clientY, active: true, target: hoverTarget })
+    }
+
+    const cleanup = () => {
+      document.removeEventListener('mousemove', onMove)
+      document.removeEventListener('mouseup', onUp)
+      document.body.style.cursor = ''
+      window.dispatchEvent(new CustomEvent('kitty-drag-end'))
+    }
+
+    const onUp = (ev: MouseEvent) => {
+      cleanup()
+      if (active) {
+        if (hoverTarget) void executeDrop(sessionId, hoverTarget)
+      } else {
+        // Not a drag — treat as click. Only fire when mouse hasn't moved much.
+        const dx = ev.clientX - startX
+        const dy = ev.clientY - startY
+        if (Math.hypot(dx, dy) < DRAG_THRESHOLD_PX) {
+          if (editingId !== sessionId) onAttach(sessionId)
+        }
+      }
+      setDragState(null)
+    }
+
+    document.addEventListener('mousemove', onMove)
+    document.addEventListener('mouseup', onUp)
+  }, [editingId, executeDrop, onAttach])
+
   // Group sessions: grouped ones by group, ungrouped separate
   // All groups are shown (even empty ones) for drag-drop targets
   const grouped = useMemo(() => {
@@ -221,7 +336,7 @@ export default function TagCloud({ sessions, onAttach, onKill, onRename, onResta
     return { groups: sortedGroups, ungrouped }
   }, [alive, groups])
 
-  if (alive.length === 0) return null
+  if (alive.length === 0 && !dragState) return null
 
   // Build rows: grouped sections on top, ungrouped below (closest to cat)
   // Ungrouped uses the old hero/medium/small layout
@@ -238,6 +353,7 @@ export default function TagCloud({ sessions, onAttach, onKill, onRename, onResta
     const isRunning = session.status === 'running'
     const accent = bubbleColors[session.id] || (isRunning ? theme.primary : theme.dim)
     const opacity = isRunning ? Math.max(baseOpacity, 0.85) : baseOpacity
+    const isBeingDragged = dragState?.sessionId === session.id && dragState?.active
     const n = nudge(tierIdx)
     const hasMetadata = !!(session.roles && session.roles.length > 0) || !!(session.expertise && session.expertise.length > 0)
     const metadataTooltip = hasMetadata
@@ -251,12 +367,9 @@ export default function TagCloud({ sessions, onAttach, onKill, onRename, onResta
     return (
       <div
         key={session.id}
-        draggable
-        onDragStart={(e) => { e.dataTransfer.setData('text/plain', session.id); e.dataTransfer.effectAllowed = 'move'; setDraggingSessionId(session.id) }}
-        onDragEnd={() => setDraggingSessionId(null)}
+        onMouseDown={(e) => startDrag(e, session.id, session.title)}
         onMouseEnter={() => enterHover(session.id)}
         onMouseLeave={leaveHover}
-        onClick={(e) => { e.stopPropagation(); if (!isEditing) onAttach(session.id) }}
         onContextMenu={(e) => { e.preventDefault(); e.stopPropagation(); setCtxMenu({ id: session.id, x: e.clientX, y: e.clientY }) }}
         style={{
           ...n,
@@ -266,7 +379,7 @@ export default function TagCloud({ sessions, onAttach, onKill, onRename, onResta
           padding: `${Math.round(vPad * scale)}px ${Math.round(hPad * scale)}px`,
           borderRadius: 9999, fontSize,
           fontFamily: "'Plus Jakarta Sans', -apple-system, sans-serif",
-          color: '#e5e3ff', opacity: isHovered ? 1 : opacity,
+          color: '#e5e3ff', opacity: isBeingDragged ? 0.4 : (isHovered ? 1 : opacity),
           background: isHovered
             ? `${accent}cc`
             : isHero
@@ -277,20 +390,23 @@ export default function TagCloud({ sessions, onAttach, onKill, onRename, onResta
             ? `0 0 ${18 * scale}px ${accent}40, 0 4px 14px rgba(0,0,0,0.3)`
             : `0 0 10px ${accent}25, 0 3px 10px rgba(0,0,0,0.2)`,
           border: `1px solid ${accent}${isHero ? '55' : '30'}`,
-          cursor: 'pointer',
-          transition: 'all 0.25s ease',
+          cursor: dragState?.active ? 'grabbing' : 'grab',
+          transition: 'opacity 0.15s ease, background 0.25s ease',
           whiteSpace: 'nowrap',
           maxWidth: Math.round((isHero ? 240 : 170) * scale),
-          animation: `kitty-float ${floatDuration}s ease-in-out ${floatDelay}s infinite`,
+          animation: isBeingDragged ? undefined : `kitty-float ${floatDuration}s ease-in-out ${floatDelay}s infinite`,
+          userSelect: 'none',
         }}
-        title={`${session.tool}: ${session.title}\n📂 ${session.cwd || '未设置'}${metadataTooltip}\n点击 attach · 右键菜单`}
+        title={`${session.tool}: ${session.title}\n📂 ${session.cwd || '未设置'}${metadataTooltip}\n点击 attach · 右键菜单 · 按住拖动`}
       >
         <div style={{ overflow: 'hidden', minWidth: 0 }}>
           {isEditing ? (
             <input autoFocus value={editTitle}
               onChange={(e) => setEditTitle(e.target.value)}
               onKeyDown={(e) => { if (e.key === 'Enter') finishRename(); if (e.key === 'Escape') setEditingId(null) }}
-              onBlur={finishRename} onClick={(e) => e.stopPropagation()}
+              onBlur={finishRename}
+              onMouseDown={(e) => e.stopPropagation()}
+              onClick={(e) => e.stopPropagation()}
               style={{ background: 'transparent', border: 'none', color: '#e5e3ff', fontSize, outline: 'none', width: 80, padding: 0, fontFamily: 'inherit' }}
             />
           ) : (
@@ -302,7 +418,7 @@ export default function TagCloud({ sessions, onAttach, onKill, onRename, onResta
         {hasMetadata && (
           <span style={{ fontSize: Math.max(fontSize - 4, 7), flexShrink: 0, opacity: 0.7 }}>🏷</span>
         )}
-        {isHovered && !isEditing && (
+        {isHovered && !isEditing && !dragState?.active && (
           <div
             onMouseEnter={() => enterHover(session.id)}
             onMouseLeave={leaveHover}
@@ -323,6 +439,7 @@ export default function TagCloud({ sessions, onAttach, onKill, onRename, onResta
               border: `1px solid ${accent}33`,
             }}>
               <button
+                onMouseDown={(e) => e.stopPropagation()}
                 onClick={(e) => { e.stopPropagation(); onRestart(session.id) }}
                 style={{
                   display: 'inline-flex', alignItems: 'center', justifyContent: 'center',
@@ -353,6 +470,10 @@ export default function TagCloud({ sessions, onAttach, onKill, onRename, onResta
     g.sessions.forEach((s, i) => tierMap.set(s.id, 3 + i))
   }
 
+  const draggedSession = dragState ? sessions.find(x => x.id === dragState.sessionId) : null
+  const isUngroupedValidTarget = !!draggedSession && dragState?.active === true && (!!draggedSession.groupId || !!draggedSession.hidden)
+  const isHideTarget = !!draggedSession && dragState?.active === true && !draggedSession.hidden
+
   return (
     <div
       style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: Math.round(8 * scale), padding: '4px 8px' }}
@@ -374,6 +495,7 @@ export default function TagCloud({ sessions, onAttach, onKill, onRename, onResta
         const isExpanded = expandedGroupId === groupId
         const runningCount = g.sessions.filter((s) => s.status === 'running').length
         const detachedCount = g.sessions.length - runningCount
+        const isActiveDrop = dragState?.active && dragState?.target === `group:${groupId}`
         return (
           <div key={groupId} style={{
             display: 'flex', flexDirection: 'column', alignItems: 'stretch',
@@ -383,33 +505,18 @@ export default function TagCloud({ sessions, onAttach, onKill, onRename, onResta
             maxWidth: Math.round(400 * scale),
           }}>
             <div
+              data-drop={`group:${groupId}`}
               onClick={() => setExpandedGroupId(isExpanded ? null : groupId)}
               onContextMenu={(e) => { e.preventDefault(); e.stopPropagation(); setGroupCtxMenu({ id: groupId, x: e.clientX, y: e.clientY }) }}
-              onDragOver={(e) => { e.preventDefault(); e.dataTransfer.dropEffect = 'move'; (e.currentTarget as HTMLElement).style.outline = '2px solid #645efb'; (e.currentTarget as HTMLElement).style.outlineOffset = '-2px' }}
-              onDragLeave={(e) => { (e.currentTarget as HTMLElement).style.outline = 'none' }}
-              onDrop={async (e) => {
-                e.preventDefault();
-                (e.currentTarget as HTMLElement).style.outline = 'none'
-                const sessionId = e.dataTransfer.getData('text/plain')
-                if (sessionId) {
-                  const s = sessions.find(x => x.id === sessionId)
-                  if (s?.hidden) {
-                    setShowHidden(false)
-                    await window.api.invoke('session:set-hidden', sessionId, false)
-                    if (s.groupId !== groupId) {
-                      await window.api.invoke('session:set-group', sessionId, groupId)
-                    }
-                  } else {
-                    await window.api.invoke('session:set-group', sessionId, groupId)
-                  }
-                  await loadSessions()
-                }
-              }}
               style={{
                 display: 'flex', alignItems: 'center', gap: 6,
                 padding: `${Math.round(5 * scale)}px ${Math.round(10 * scale)}px`,
                 cursor: 'pointer', userSelect: 'none',
                 fontFamily: "'Plus Jakarta Sans', -apple-system, sans-serif",
+                outline: isActiveDrop ? '2px solid #645efb' : 'none',
+                outlineOffset: isActiveDrop ? -2 : 0,
+                borderRadius: Math.round(10 * scale),
+                transition: 'outline 0.1s ease',
               }}
             >
               <span style={{ fontSize: 9, color: '#aaa8c3' }}>{isExpanded ? '▾' : '▸'}</span>
@@ -439,28 +546,7 @@ export default function TagCloud({ sessions, onAttach, onKill, onRename, onResta
       {/* Ungrouped zone — plain bubbles by default; show a labeled drop frame only while dragging a group/hidden session */}
       {(() => {
         const hasUngrouped = grouped.ungrouped.length > 0
-        const draggedSession = draggingSessionId ? sessions.find(x => x.id === draggingSessionId) : null
-        const isValidTarget = !!draggedSession && (!!draggedSession.groupId || !!draggedSession.hidden)
-        if (!hasUngrouped && !isValidTarget) return null
-
-        const ungroupedDropProps = {
-          onDragOver: (e: React.DragEvent) => {
-            e.preventDefault(); e.dataTransfer.dropEffect = 'move'
-          },
-          onDrop: async (e: React.DragEvent) => {
-            e.preventDefault()
-            const sessionId = e.dataTransfer.getData('text/plain')
-            if (!sessionId) return
-            const s = sessions.find(x => x.id === sessionId)
-            if (s?.hidden) {
-              await window.api.invoke('session:set-hidden', sessionId, false)
-            }
-            if (s?.groupId) {
-              await window.api.invoke('session:set-group', sessionId, null)
-            }
-            await loadSessions()
-          },
-        }
+        if (!hasUngrouped && !isUngroupedValidTarget) return null
 
         const innerBubbles = bubble.layout === 'stack' ? (
           <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: Math.round(4 * scale) }}>
@@ -510,25 +596,28 @@ export default function TagCloud({ sessions, onAttach, onKill, onRename, onResta
         )
 
         // Not dragging a valid drop source — render bubbles plain, no frame/background
-        if (!isValidTarget) return innerBubbles
+        if (!isUngroupedValidTarget) return innerBubbles
 
+        const isActiveDrop = dragState?.target === 'ungrouped'
         // Dragging a valid source — show labeled drop frame
         return (
-          <div {...ungroupedDropProps}
+          <div
+            data-drop="ungrouped"
             style={{
               display: 'flex', flexDirection: 'column', alignItems: 'center',
               gap: Math.round(4 * scale),
               padding: `${Math.round(5 * scale)}px ${Math.round(8 * scale)}px`,
               borderRadius: Math.round(10 * scale),
-              background: '#645efb22',
-              border: '1px dashed #645efb88',
+              background: isActiveDrop ? '#645efb44' : '#645efb22',
+              border: isActiveDrop ? '2px dashed #a7a5ff' : '1px dashed #645efb88',
               minWidth: Math.round(160 * scale),
+              transition: 'all 0.1s ease',
             }}
           >
             <div style={{
               fontSize: Math.round(9 * scale), color: '#a7a5ff',
               fontFamily: "'Plus Jakarta Sans', -apple-system, sans-serif",
-              letterSpacing: 0.3,
+              letterSpacing: 0.3, pointerEvents: 'none',
             }}>
               {hasUngrouped ? `未分组 (${grouped.ungrouped.length})` : '拖到此处离开分组'}
             </div>
@@ -542,39 +631,25 @@ export default function TagCloud({ sessions, onAttach, onKill, onRename, onResta
         // Include dead hidden sessions too — otherwise they vanish from UI entirely
         // once marked dead, and user has no way to delete/restore them without DB surgery.
         const hiddenAlive = sessions.filter((s) => hiddenIds.has(s.id))
-        const draggedSession = draggingSessionId ? sessions.find(x => x.id === draggingSessionId) : null
-        // Valid drop-to-hide target when dragging a non-hidden session
-        const isHideTarget = !!draggedSession && !draggedSession.hidden
         // Show the pill if there are any hidden sessions OR if user is dragging a hide-candidate
         if (hiddenAlive.length === 0 && !isHideTarget) return null
+        const isActiveDrop = dragState?.target === 'hide'
         return (
           <div style={{ display: 'flex', flexWrap: 'wrap', gap: Math.round(4 * scale), justifyContent: 'center', alignItems: 'center' }}>
             <button
+              data-drop={isHideTarget ? 'hide' : undefined}
               onClick={() => setShowHidden(!showHidden)}
-              onDragOver={(e) => {
-                if (!isHideTarget) return
-                e.preventDefault(); e.dataTransfer.dropEffect = 'move'
-                ;(e.currentTarget as HTMLElement).style.outline = '2px solid #a7a5ff'
-                ;(e.currentTarget as HTMLElement).style.outlineOffset = '-2px'
-              }}
-              onDragLeave={(e) => { (e.currentTarget as HTMLElement).style.outline = 'none' }}
-              onDrop={async (e) => {
-                e.preventDefault();
-                (e.currentTarget as HTMLElement).style.outline = 'none'
-                const sessionId = e.dataTransfer.getData('text/plain')
-                if (sessionId) {
-                  await window.api.invoke('session:set-hidden', sessionId, true)
-                  await loadSessions()
-                }
-              }}
               style={{
                 fontSize: Math.round(9 * scale),
                 color: isHideTarget ? '#a7a5ff' : '#8886a5',
-                background: isHideTarget ? '#645efb22' : '#23233f44',
-                border: isHideTarget ? '1px dashed #645efb88' : '1px dashed #46465c44',
+                background: isActiveDrop ? '#645efb44' : (isHideTarget ? '#645efb22' : '#23233f44'),
+                border: isActiveDrop
+                  ? '2px dashed #a7a5ff'
+                  : isHideTarget ? '1px dashed #645efb88' : '1px dashed #46465c44',
                 borderRadius: 9999,
                 padding: `${Math.round(2 * scale)}px ${Math.round(8 * scale)}px`,
                 cursor: 'pointer', fontFamily: "'Plus Jakarta Sans', -apple-system, sans-serif",
+                transition: 'all 0.1s ease',
               }}
             >{isHideTarget
               ? '拖到此处隐藏'
@@ -582,25 +657,50 @@ export default function TagCloud({ sessions, onAttach, onKill, onRename, onResta
                 ? '收起'
                 : `👻 ${hiddenAlive.length} 个已隐藏`}</button>
             {showHidden && hiddenAlive.map((s) => (
-              <div key={s.id}
-                draggable
-                onDragStart={(e) => { e.dataTransfer.setData('text/plain', s.id); e.dataTransfer.effectAllowed = 'move'; setDraggingSessionId(s.id) }}
-                onDragEnd={() => setDraggingSessionId(null)}
-                onClick={() => onAttach(s.id)}
+              <div
+                key={s.id}
+                onMouseDown={(e) => startDrag(e, s.id, s.title)}
                 onContextMenu={(e) => { e.preventDefault(); e.stopPropagation(); handleToggleHidden(s.id) }}
-                title="拖到分组/未分组区显示"
+                title="按住拖到分组/未分组区显示"
                 style={{
                   display: 'inline-block',
                   fontSize: Math.round(9 * scale), color: '#e5e3ff', background: '#23233fcc',
                   border: '1px solid #46465c55', borderRadius: 9999,
                   padding: `${Math.round(2 * scale)}px ${Math.round(8 * scale)}px`,
-                  cursor: 'grab', fontFamily: "'Plus Jakarta Sans', -apple-system, sans-serif",
+                  cursor: dragState?.sessionId === s.id && dragState?.active ? 'grabbing' : 'grab',
+                  fontFamily: "'Plus Jakarta Sans', -apple-system, sans-serif",
+                  opacity: dragState?.sessionId === s.id && dragState?.active ? 0.4 : 1,
+                  userSelect: 'none',
                 }}
               >{s.title}</div>
             ))}
           </div>
         )
       })()}
+
+      {/* Ghost preview at cursor while dragging */}
+      {dragState?.active && (
+        <div
+          style={{
+            position: 'fixed',
+            left: dragState.x + 12,
+            top: dragState.y + 12,
+            pointerEvents: 'none',
+            zIndex: 9999,
+            padding: '4px 10px',
+            borderRadius: 9999,
+            background: '#645efbcc',
+            color: '#fff',
+            fontSize: Math.round(10 * scale),
+            fontFamily: "'Plus Jakarta Sans', -apple-system, sans-serif",
+            boxShadow: '0 4px 12px rgba(0,0,0,0.4)',
+            whiteSpace: 'nowrap',
+            maxWidth: 200,
+            overflow: 'hidden',
+            textOverflow: 'ellipsis',
+          }}
+        >{dragState.title}</div>
+      )}
 
       {/* Context menu */}
       {ctxMenu && (

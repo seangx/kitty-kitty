@@ -149,24 +149,6 @@ export default function PetCanvas() {
 
   const handleMouseDown = useCallback((e: React.MouseEvent) => {
     if (e.button !== 0 || anyPopup) return
-    // Mousedown on a draggable bubble: skip window-drag AND lock the window into
-    // interactive mode so the subsequent dragstart/dragover/drop chain isn't cut off
-    // by the transparent-area click-through flip.
-    const target = e.target as HTMLElement | null
-    if (target?.closest('[draggable="true"]')) {
-      mousedownOnDraggable.current = true
-      window.api.invoke('set-ignore-mouse', false)
-      const onUp = () => {
-        document.removeEventListener('mouseup', onUp)
-        mousedownOnDraggable.current = false
-        // If a drag is in progress, dragend/drop will clear state; otherwise restore immediately
-        if (!isDraggingBubble.current && !anyPopup) {
-          window.api.invoke('set-ignore-mouse', true)
-        }
-      }
-      document.addEventListener('mouseup', onUp)
-      return
-    }
     dragOffset.current = { x: e.screenX, y: e.screenY }; isDragging.current = false
     const onMove = (ev: MouseEvent) => {
       const dx = ev.screenX - dragOffset.current.x, dy = ev.screenY - dragOffset.current.y
@@ -286,11 +268,11 @@ export default function PetCanvas() {
     }
   }, [anyPopup])
 
-  // Track HTML5 drag state globally — during a drag we must keep the window
-  // interactive, otherwise transparent-area mouse-moves flip it to click-through
-  // and the drop target never receives dragover/drop.
+  // TagCloud dispatches these custom events when a bubble is being dragged so
+  // we can lock the window into interactive mode (set-ignore-mouse false) for
+  // the full drag duration — otherwise transparent-area mousemove would flip
+  // ignore-mouse back to true and the drag would be broken mid-way.
   const isDraggingBubble = useRef(false)
-  const mousedownOnDraggable = useRef(false)
   useEffect(() => {
     const onStart = () => {
       isDraggingBubble.current = true
@@ -300,24 +282,22 @@ export default function PetCanvas() {
       isDraggingBubble.current = false
       if (!anyPopup) window.api.invoke('set-ignore-mouse', true)
     }
-    document.addEventListener('dragstart', onStart)
-    document.addEventListener('dragend', onEnd)
-    document.addEventListener('drop', onEnd)
+    window.addEventListener('kitty-drag-start', onStart)
+    window.addEventListener('kitty-drag-end', onEnd)
     return () => {
-      document.removeEventListener('dragstart', onStart)
-      document.removeEventListener('dragend', onEnd)
-      document.removeEventListener('drop', onEnd)
+      window.removeEventListener('kitty-drag-start', onStart)
+      window.removeEventListener('kitty-drag-end', onEnd)
     }
   }, [anyPopup])
 
   // Dynamically toggle click-through: transparent area = pass through, pet/UI = capture
   const handleMouseMove = useCallback((e: React.MouseEvent) => {
-    if (anyPopup || isDraggingBubble.current || mousedownOnDraggable.current) return
+    if (anyPopup || isDraggingBubble.current) return
     window.api.invoke('set-ignore-mouse', e.target === e.currentTarget)
   }, [anyPopup])
 
   const handleMouseLeave = useCallback(() => {
-    if (!anyPopup && !isDraggingBubble.current && !mousedownOnDraggable.current) {
+    if (!anyPopup && !isDraggingBubble.current) {
       window.api.invoke('set-ignore-mouse', true)
     }
   }, [anyPopup])
