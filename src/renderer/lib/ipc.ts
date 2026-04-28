@@ -12,9 +12,6 @@ export const createSession = (tool: string, firstMessage?: string) =>
 export const createSessionInDir = (tool: string) =>
   api().invoke(IPC.SESSION_CREATE_IN_DIR, tool) as Promise<SessionInfo | null>
 
-export const importSessions = () =>
-  api().invoke(IPC.SESSION_IMPORT) as Promise<SessionInfo[]>
-
 export const listSessions = () =>
   api().invoke(IPC.SESSION_LIST) as Promise<SessionInfo[]>
 
@@ -29,6 +26,19 @@ export const syncSessions = () =>
 
 export const setAgentMetadata = (id: string, roles: string, expertise: string) =>
   api().invoke('session:set-agent-metadata', id, roles, expertise) as Promise<{ success: boolean }>
+
+export interface SessionDrift {
+  currentId: string | null
+  latestId: string
+  latestSummary: string
+  latestDate: string
+}
+
+export const checkSessionDrift = (id: string) =>
+  api().invoke('session:check-drift', id) as Promise<SessionDrift | null>
+
+export const rebindExternal = (id: string, newExternalId: string) =>
+  api().invoke('session:rebind-external', id, newExternalId) as Promise<{ success: boolean }>
 
 // Pet
 export const getPetState = () =>

@@ -17,7 +17,7 @@ export interface SessionRow {
   roles: string
   expertise: string
   paneId: string
-  claudeSessionId: string
+  externalSessionId: string
   env: string
   hidden?: number
 }
@@ -26,7 +26,6 @@ export interface GroupRow {
   id: string
   name: string
   color: string | null
-  collabEnabled: number
   mainSessionId: string | null
 }
 
@@ -46,7 +45,7 @@ export function listSessions(): SessionRow[] {
     SELECT s.id, s.tmux_name as tmuxName, s.title, s.tool, s.cwd, s.status,
            s.main_pane as mainPane, s.hidden,
            s.roles, s.expertise, s.pane_id as paneId,
-           COALESCE(s.claude_session_id, '') as claudeSessionId,
+           COALESCE(s.claude_session_id, '') as externalSessionId,
            COALESCE(s.env, '') as env,
            s.created_at as createdAt, s.updated_at as updatedAt,
            s.group_id as groupId, g.name as groupName, g.color as groupColor
@@ -106,9 +105,11 @@ export function updateSessionPaneId(id: string, paneId: string): void {
   db.prepare("UPDATE sessions SET pane_id = ?, updated_at = datetime('now') WHERE id = ?").run(paneId, id)
 }
 
-export function updateSessionClaudeId(id: string, claudeSessionId: string): void {
+export function updateSessionExternalId(id: string, externalSessionId: string): void {
   const db = getDB()
-  db.prepare("UPDATE sessions SET claude_session_id = ?, updated_at = datetime('now') WHERE id = ?").run(claudeSessionId, id)
+  // DB column stays `claude_session_id` for backward compat (no migration needed);
+  // semantically it now holds the external CLI session id for any tool (claude/codex/...)
+  db.prepare("UPDATE sessions SET claude_session_id = ?, updated_at = datetime('now') WHERE id = ?").run(externalSessionId, id)
 }
 
 export function updateSessionEnv(id: string, envJson: string): void {
@@ -126,7 +127,7 @@ export function getSessionByTmuxName(tmuxName: string): SessionRow | undefined {
   return db.prepare(`
     SELECT s.id, s.tmux_name as tmuxName, s.title, s.tool, s.cwd, s.status,
            s.main_pane as mainPane, s.pane_id as paneId,
-           COALESCE(s.claude_session_id, '') as claudeSessionId,
+           COALESCE(s.claude_session_id, '') as externalSessionId,
            COALESCE(s.env, '') as env,
            s.created_at as createdAt, s.updated_at as updatedAt,
            s.group_id as groupId, g.name as groupName, g.color as groupColor
@@ -146,7 +147,7 @@ export function createGroup(id: string, name: string, color?: string): void {
 export function listGroups(): GroupRow[] {
   const db = getDB()
   return db.prepare(`
-    SELECT id, name, color, collab_enabled as collabEnabled, main_session_id as mainSessionId
+    SELECT id, name, color, main_session_id as mainSessionId
     FROM groups
     ORDER BY created_at
   `).all() as GroupRow[]
@@ -155,7 +156,7 @@ export function listGroups(): GroupRow[] {
 export function getGroupById(id: string): GroupRow | undefined {
   const db = getDB()
   return db.prepare(`
-    SELECT id, name, color, collab_enabled as collabEnabled, main_session_id as mainSessionId
+    SELECT id, name, color, main_session_id as mainSessionId
     FROM groups
     WHERE id = ?
   `).get(id) as GroupRow | undefined
@@ -166,17 +167,12 @@ export function setGroupMainSession(groupId: string, sessionId: string | null): 
   db.prepare('UPDATE groups SET main_session_id = ? WHERE id = ?').run(sessionId, groupId)
 }
 
-export function setGroupCollabEnabled(id: string, enabled: boolean): void {
-  const db = getDB()
-  db.prepare('UPDATE groups SET collab_enabled = ? WHERE id = ?').run(enabled ? 1 : 0, id)
-}
-
 export function listSessionsByGroup(groupId: string): (SessionRow & { hidden?: number })[] {
   const db = getDB()
   return db.prepare(`
     SELECT s.id, s.tmux_name as tmuxName, s.title, s.tool, s.cwd, s.status,
            s.main_pane as mainPane, s.hidden, s.pane_id as paneId,
-           COALESCE(s.claude_session_id, '') as claudeSessionId,
+           COALESCE(s.claude_session_id, '') as externalSessionId,
            COALESCE(s.env, '') as env,
            s.created_at as createdAt, s.updated_at as updatedAt,
            s.group_id as groupId, g.name as groupName, g.color as groupColor

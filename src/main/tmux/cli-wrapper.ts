@@ -108,9 +108,6 @@ const TOOLS: Record<string, ToolConfig> = {
     continueFlag: 'resume --last',
     resumeFlag: 'resume',
   },
-  aichat: {
-    cmd: 'aichat',
-  },
   shell: {
     cmd: '$SHELL',
   },
@@ -133,7 +130,6 @@ export function getInstallHint(tool: string): string {
   switch (tool) {
     case 'claude': return '安装方法: npm install -g @anthropic-ai/claude-code'
     case 'codex': return '安装方法: npm install -g @openai/codex'
-    case 'aichat': return '安装方法: brew install aichat'
     default: return `请先安装 ${tool}`
   }
 }

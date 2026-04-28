@@ -1,6 +1,6 @@
 import { useState } from 'react'
 
-interface ClaudeSession {
+interface ExternalSession {
   id: string
   summary: string
   date: string
@@ -8,7 +8,8 @@ interface ClaudeSession {
 
 interface Props {
   dir: string
-  sessions: ClaudeSession[]
+  tool: string
+  sessions: ExternalSession[]
   onPick: (resumeId: string | null) => void
   onClose: () => void
 }
@@ -19,14 +20,14 @@ const C = {
   primaryDim: '#645efb', primary: '#a7a5ff', outline: '#46465c',
 }
 
-export default function SessionPicker({ dir, sessions: initialSessions, onPick, onClose }: Props) {
+export default function SessionPicker({ dir, tool, sessions: initialSessions, onPick, onClose }: Props) {
   const dirName = dir.split('/').pop() || dir
   const [sessions, setSessions] = useState(initialSessions)
 
   const handleDelete = async (id: string, e: React.MouseEvent) => {
     e.stopPropagation()
     try {
-      await window.api.invoke('session:delete-claude-session', dir, id)
+      await window.api.invoke('session:delete-external-session', tool, dir, id)
       setSessions((prev) => prev.filter((s) => s.id !== id))
     } catch (err) {
       console.error('Failed to delete session:', err)

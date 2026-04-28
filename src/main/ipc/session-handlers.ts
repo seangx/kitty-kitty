@@ -1,8 +1,8 @@
 import { ipcMain, dialog, BrowserWindow, shell } from 'electron'
 import { IPC } from '@shared/types/ipc'
-import { readdirSync, existsSync, statSync, mkdirSync, readFileSync, writeFileSync, unlinkSync } from 'fs'
+import { readdirSync, existsSync, statSync, mkdirSync, readFileSync } from 'fs'
 import { join, basename } from 'path'
-import { homedir, tmpdir } from 'os'
+import { homedir } from 'os'
 import { execSync, spawn } from 'child_process'
 import { v4 as uuid } from 'uuid'
 import { log } from '../logger'
@@ -11,12 +11,9 @@ import { generateLaunchScript, isToolInstalled, getInstallHint, getNtfyTopic, se
 import * as sessionRepo from '../db/session-repo'
 import { getDB } from '../db/database'
 import * as ntfy from '../ntfy'
+import { getProvider } from '../sessions'
 import type { SessionInfo } from '@shared/types/session'
 
-/**
- * One-time cleanup: strip legacy `kitty-session` MCP entry from each session's .mcp.json
- * (the MCP server was removed; leaving stale entries would keep claude spawning it).
- */
 /**
  * Fire-and-forget kitty-hive CLI call. If hive isn't installed or the command fails,
  * we silently ignore — hive is optional and kitty must keep running without it.
@@ -35,103 +32,11 @@ function hiveCli(args: string[]): void {
   } catch { /* ignore */ }
 }
 
-let legacyMcpCleanupDone = false
-function cleanupLegacyKittySessionMcp(): void {
-  if (legacyMcpCleanupDone) return
-  legacyMcpCleanupDone = true
-
-  try { unlinkSync(join(tmpdir(), 'kitty-session-server.js')) } catch { /* ignore */ }
-
-  for (const row of sessionRepo.listSessions()) {
-    const configPath = row.cwd ? join(row.cwd, '.mcp.json') : ''
-    if (!configPath || !existsSync(configPath)) continue
-    try {
-      const config = JSON.parse(readFileSync(configPath, 'utf-8'))
-      if (!config?.mcpServers?.['kitty-session']) continue
-      delete config.mcpServers['kitty-session']
-      const mcpEmpty = !config.mcpServers || Object.keys(config.mcpServers).length === 0
-      const otherKeys = Object.keys(config).filter(k => k !== 'mcpServers')
-      if (mcpEmpty && otherKeys.length === 0) {
-        unlinkSync(configPath)
-      } else {
-        if (mcpEmpty) delete config.mcpServers
-        writeFileSync(configPath, JSON.stringify(config, null, 2))
-      }
-      log('mcp-cleanup', `stripped kitty-session from ${configPath}`)
-    } catch (err) {
-      log('mcp-cleanup', `failed on ${configPath}:`, err)
-    }
-  }
-}
-
-/**
- * Find Claude session IDs in a project directory.
- * Claude stores sessions under ~/.claude/projects/<encoded-path>/
- */
-function findClaudeSessions(projectDir: string): Array<{ id: string; summary: string; date: string }> {
-  const sessions: Array<{ id: string; summary: string; date: string }> = []
-  try {
-    const claudeDir = join(homedir(), '.claude', 'projects')
-    if (!existsSync(claudeDir)) return sessions
-
-    // Claude encodes path: /Users/foo/bar → -Users-foo-bar
-    const encodedPath = projectDir.replace(/\//g, '-')
-
-    // Find matching project directories
-    const projectDirs = readdirSync(claudeDir).filter((d) => d === encodedPath)
-    if (projectDirs.length === 0) return sessions
-
-    for (const dir of projectDirs) {
-      const projPath = join(claudeDir, dir)
-
-      // Session .jsonl files are directly in the project dir (not in a sessions/ subfolder)
-      const fs = require('fs')
-      const files = readdirSync(projPath)
-        .filter((f: string) => f.endsWith('.jsonl'))
-        .map((f: string) => ({
-          name: f,
-          mtime: fs.statSync(join(projPath, f)).mtime.getTime()
-        }))
-        .sort((a: { mtime: number }, b: { mtime: number }) => b.mtime - a.mtime) // newest first
-        .slice(0, 5)
-
-      for (const file of files) {
-        const id = file.name.replace('.jsonl', '')
-        let summary = ''
-        let customTitle = ''
-        try {
-          const content = fs.readFileSync(join(projPath, file.name), 'utf-8')
-          for (const line of content.split('\n')) {
-            if (!line.trim()) continue
-            try {
-              const parsed = JSON.parse(line)
-              // Prefer custom-title
-              if (parsed.type === 'custom-title' && parsed.customTitle) {
-                customTitle = parsed.customTitle
-              }
-              // First user message as fallback summary
-              if (!summary && parsed.type === 'user') {
-                let text = parsed.message?.content
-                if (Array.isArray(text)) {
-                  text = text.find((c: any) => c.type === 'text')?.text || ''
-                }
-                if (typeof text === 'string' && text) {
-                  summary = text.slice(0, 60)
-                }
-              }
-              // Stop early once we have both
-              if (customTitle && summary) break
-            } catch { /* skip bad line */ }
-          }
-        } catch { /* ignore */ }
-
-        const displaySummary = customTitle || summary || id.slice(0, 8)
-        const date = new Date(file.mtime).toISOString().slice(0, 16).replace('T', ' ')
-        sessions.push({ id, summary: displaySummary, date })
-      }
-    }
-  } catch { /* ignore */ }
-  return sessions
+/** List recent on-disk CLI sessions for the given tool, started from `projectDir`. */
+function findExternalSessions(tool: string, projectDir: string): Array<{ id: string; summary: string; date: string }> {
+  const provider = getProvider(tool)
+  if (!provider) return []
+  try { return provider.findSessions(projectDir) } catch { return [] }
 }
 
 let statusBarsInitialized = false
@@ -174,7 +79,7 @@ export function registerSessionHandlers(): void {
     if (result.canceled || result.filePaths.length === 0) return null
 
     const dir = result.filePaths[0]
-    const existingSessions = tool === 'claude' ? findClaudeSessions(dir) : []
+    const existingSessions = findExternalSessions(tool || 'claude', dir)
     const isGitRepo = isGitRepository(dir)
 
     if (existingSessions.length > 0 || isGitRepo) {
@@ -201,24 +106,6 @@ export function registerSessionHandlers(): void {
     sessionRepo.saveSession(session)
     tmux.attachSession(session.tmuxName)
     return toSessionInfo(session)
-  })
-
-  // Import existing tmux sessions (non-kitty ones)
-  ipcMain.handle(IPC.SESSION_IMPORT, () => {
-    const allSessions = tmux.listAllTmuxSessions()
-    const tracked = new Set(sessionRepo.listSessions().map((s) => s.tmuxName))
-
-    const untracked = allSessions.filter((s) => !tracked.has(s.name))
-    if (untracked.length === 0) return []
-
-    const imported: SessionInfo[] = []
-    for (const s of untracked) {
-      const session = tmux.importTmuxSession(s.name)
-      session.status = s.attached ? 'running' : 'detached'
-      sessionRepo.saveSession(session)
-      imported.push(toSessionInfo(session))
-    }
-    return imported
   })
 
   // List all sessions with live status sync
@@ -265,6 +152,44 @@ export function registerSessionHandlers(): void {
   })
 
   // Kill a session
+  // Detect if claude/codex has rolled over to a newer on-disk session id than the
+  // one kitty has stored. Returns drift info or null. Used by attach flow to
+  // prompt the user before reattaching to a stale session.
+  ipcMain.handle('session:check-drift', (_event, id: string) => {
+    const rows = sessionRepo.listSessions()
+    const session = rows.find((s) => s.id === id)
+    if (!session || !session.cwd) return null
+
+    const provider = getProvider(session.tool)
+    if (!provider) return null
+
+    let entries: Array<{ id: string; summary: string; date: string }> = []
+    try { entries = provider.findSessions(session.cwd) } catch { return null }
+    if (entries.length === 0) return null
+
+    const latest = entries[0]
+    if (!latest?.id || latest.id === session.externalSessionId) return null
+    return {
+      currentId: session.externalSessionId || null,
+      latestId: latest.id,
+      latestSummary: latest.summary,
+      latestDate: latest.date,
+    }
+  })
+
+  // Kill the live tmux session and rebind to a different external session id.
+  // Next attach goes through the restore path and resumes with the new id.
+  ipcMain.handle('session:rebind-external', (_event, id: string, newExternalId: string) => {
+    const rows = sessionRepo.listSessions()
+    const session = rows.find((s) => s.id === id)
+    if (!session) return { success: false }
+    try { tmux.killSession(session.tmuxName) } catch { /* ignore */ }
+    sessionRepo.updateSessionExternalId(id, newExternalId)
+    sessionRepo.updateSessionStatus(id, 'detached')
+    log('session', `rebind ${session.title} → ${newExternalId.slice(0, 8)}`)
+    return { success: true }
+  })
+
   ipcMain.handle(IPC.SESSION_KILL, (_event, id: string) => {
     const rows = sessionRepo.listSessions()
     const session = rows.find((s) => s.id === id)
@@ -291,13 +216,12 @@ export function registerSessionHandlers(): void {
       try { fs.rmSync(session.cwd, { recursive: true, force: true }) } catch { /* ignore */ }
     }
 
-    // Delete claude session file if we know its ID
-    if (session.claudeSessionId && session.cwd) {
-      const encoded = session.cwd.replace(/[/.]/g, '-')
-      const claudeFile = join(homedir(), '.claude', 'projects', encoded, `${session.claudeSessionId}.jsonl`)
-      try {
-        if (fs.existsSync(claudeFile)) fs.unlinkSync(claudeFile)
-      } catch { /* ignore */ }
+    // Delete the on-disk CLI session file if we know its id
+    if (session.externalSessionId && session.cwd) {
+      const provider = getProvider(session.tool)
+      if (provider) {
+        try { provider.deleteSessionFile(session.externalSessionId, session.cwd) } catch { /* ignore */ }
+      }
     }
 
     sessionRepo.deleteSession(id)
@@ -426,21 +350,11 @@ export function registerSessionHandlers(): void {
     return { success: true }
   })
 
-  // Delete a Claude session file
-  ipcMain.handle('session:delete-claude-session', (_event, projectDir: string, sessionId: string) => {
-    const fs = require('fs')
-    const encodedPath = projectDir.replace(/\//g, '-')
-    const claudeDir = join(homedir(), '.claude', 'projects')
-    const projPath = join(claudeDir, encodedPath)
-    const filePath = join(projPath, `${sessionId}.jsonl`)
-    if (existsSync(filePath)) {
-      fs.unlinkSync(filePath)
-    }
-    // Also remove directory if it exists (session folder)
-    const dirPath = join(projPath, sessionId)
-    if (existsSync(dirPath)) {
-      fs.rmSync(dirPath, { recursive: true, force: true })
-    }
+  // Delete an external CLI session file (claude / codex / ...)
+  ipcMain.handle('session:delete-external-session', (_event, tool: string, projectDir: string, sessionId: string) => {
+    const provider = getProvider(tool)
+    if (!provider) return { success: false }
+    try { provider.deleteSessionFile(sessionId, projectDir) } catch { /* ignore */ }
     return { success: true }
   })
 
@@ -451,17 +365,14 @@ export function registerSessionHandlers(): void {
 
   // --- Group management ---
   ipcMain.handle('group:list', () => {
-    return sessionRepo.listGroups().map((g) => ({
-      ...g,
-      collabEnabled: Boolean(g.collabEnabled),
-    }))
+    return sessionRepo.listGroups()
   })
 
   ipcMain.handle('group:create', (_event, name: string, color?: string) => {
 
     const id = uuid().slice(0, 8)
     sessionRepo.createGroup(id, name, color)
-    return { id, name, color, collabEnabled: false }
+    return { id, name, color }
   })
 
   ipcMain.handle('group:delete', (_event, groupId: string) => {
@@ -795,7 +706,9 @@ function migrateToPane(): void {
         }
         tmux.joinSessionAsPane(other.tmuxName, mainSession.tmuxName)
         const db = getDB()
-        db.prepare("UPDATE sessions SET tmux_name = ? WHERE tmux_name = ?").run(mainSession.tmuxName, other.tmuxName)
+        // Update by row id only — `WHERE tmux_name = ?` previously could cross-update
+        // sessions in OTHER groups that happened to share the same tmux_name.
+        db.prepare("UPDATE sessions SET tmux_name = ? WHERE id = ?").run(mainSession.tmuxName, other.id)
         joinedIds.push(other.id)
       } catch (err) {
         log('pane-mode', `join failed for ${other.tmuxName}:`, err)
@@ -884,9 +797,9 @@ function syncAndList(): SessionInfo[] {
       // (includes 'dead' from previous crash — only user-kill deletes from DB entirely)
       if (!liveNames.has(row.tmuxName) && row.cwd && existsSync(row.cwd) && !row.hidden) {
         try {
-          // Use resume with claude session ID if available, otherwise fallback to restore
-          const script = row.claudeSessionId
-            ? generateLaunchScript(row.tool, 'resume', row.claudeSessionId)
+          // Use resume with external session id if available, otherwise fallback to restore
+          const script = row.externalSessionId
+            ? generateLaunchScript(row.tool, 'resume', row.externalSessionId)
             : generateLaunchScript(row.tool, 'restore')
 
           execSync(
@@ -916,9 +829,6 @@ function syncAndList(): SessionInfo[] {
     tmux.refreshAllStatusBars()
   }
 
-  // One-time cleanup of any legacy kitty-session entries left in per-session .mcp.json
-  cleanupLegacyKittySessionMcp()
-
   // Normal sync: update status based on tmux state
   // tmux gone → keep as 'detached' (restorable on next launch), NOT 'dead'
   // Only user-initiated kill sets 'dead'
@@ -944,8 +854,8 @@ function syncAndList(): SessionInfo[] {
   // Keep pane_ids in sync with actual tmux state
   syncPaneIds()
 
-  // Sync claude session IDs for live sessions missing them
-  syncClaudeSessionIds()
+  // Sync external CLI session IDs (claude/codex/...) for live sessions missing them
+  syncExternalSessionIds()
 
   const result = sessionRepo.listSessions().map((row) => ({
     id: row.id,
@@ -953,7 +863,6 @@ function syncAndList(): SessionInfo[] {
     title: row.title,
     tool: row.tool,
     cwd: row.cwd,
-    mainPane: row.mainPane || '0.0',
     paneId: row.paneId || '',
     status: row.status as SessionInfo['status'],
     createdAt: row.createdAt,
@@ -970,41 +879,28 @@ function syncAndList(): SessionInfo[] {
 }
 
 /**
- * Scan claude's session files to find session IDs for kitty sessions.
- * Claude stores sessions at ~/.claude/projects/<encoded-path>/<uuid>.jsonl
- * The path is encoded by replacing / with - and prepending -.
+ * Backfill `external_session_id` for live sessions that don't have one yet, by
+ * asking each tool's provider to find the most-recent on-disk session file
+ * matching the session's cwd. Skips sessions whose tool has no on-disk store
+ * (e.g. `shell`).
  */
-function syncClaudeSessionIds(): void {
+function syncExternalSessionIds(): void {
   const sessions = sessionRepo.listSessions()
-  // Only sync for live sessions without a claude_session_id
-  const needsSync = sessions.filter(s => s.tool === 'claude' && !s.claudeSessionId && s.cwd)
+  const needsSync = sessions.filter(s => !s.externalSessionId && s.cwd && getProvider(s.tool))
   if (needsSync.length === 0) return
 
-  // Already-assigned IDs across ALL sessions (to avoid double-assigning)
-  const usedIds = new Set(sessions.map(s => s.claudeSessionId).filter(Boolean))
+  // Already-claimed ids across ALL sessions (avoid double-assignment within kitty)
+  const claimed = new Set(sessions.map(s => s.externalSessionId).filter(Boolean))
 
   for (const row of needsSync) {
+    const provider = getProvider(row.tool)
+    if (!provider) continue
     try {
-      // claude encodes both `/` and `.` as `-` in the project dir name
-      const encoded = row.cwd.replace(/[/.]/g, '-')
-      const claudeDir = join(homedir(), '.claude', 'projects', encoded)
-      if (!existsSync(claudeDir)) continue
-
-      // List .jsonl files sorted by mtime desc
-      const files = readdirSync(claudeDir)
-        .filter(f => f.endsWith('.jsonl'))
-        .map(f => ({ name: f, mtime: statSync(join(claudeDir, f)).mtimeMs }))
-        .sort((a, b) => b.mtime - a.mtime)
-
-      // Pick the most recent one not already used
-      for (const f of files) {
-        const id = f.name.replace('.jsonl', '')
-        if (!usedIds.has(id)) {
-          sessionRepo.updateSessionClaudeId(row.id, id)
-          usedIds.add(id)
-          log('sync', `claude session ID: ${row.title} → ${id.slice(0, 8)}`)
-          break
-        }
+      const id = provider.findUnclaimedSessionId(row.cwd, claimed)
+      if (id) {
+        sessionRepo.updateSessionExternalId(row.id, id)
+        claimed.add(id)
+        log('sync', `${row.tool} session ID: ${row.title} → ${id.slice(0, 8)}`)
       }
     } catch { /* ignore */ }
   }
@@ -1026,7 +922,6 @@ function toSessionInfo(s: tmux.TmuxSession): SessionInfo {
     title: s.title,
     tool: s.tool,
     cwd: s.cwd,
-    mainPane: '0.0',
     paneId: '',
     status: s.status,
     createdAt: s.createdAt,
@@ -1039,8 +934,8 @@ function restartSessionPane(session: sessionRepo.SessionRow): void {
   const target = session.paneId
     ? session.paneId
     : resolvePaneTarget(session.tmuxName, session.mainPane || '0.0')
-  const mode = session.claudeSessionId ? 'resume' : 'continue'
-  const launch = generateLaunchScript(session.tool, mode, session.claudeSessionId || undefined)
+  const mode = session.externalSessionId ? 'resume' : 'continue'
+  const launch = generateLaunchScript(session.tool, mode, session.externalSessionId || undefined)
 
   // Parse per-session env and pass via respawn-pane -e KEY=VALUE
   let envFlags = ''

@@ -6,8 +6,6 @@
   "scripts": {
     "dev": "electron-vite dev",
     "build": "electron-vite build",
-    "test:mcp": "node scripts/mcp-regression.js && node scripts/mcp-config-regression.js && node scripts/mcp-stability-regression.js",
-    "verify": "npm run test:mcp && npm run build",
     "preview": "electron-vite preview",
     "postinstall": "electron-builder install-app-deps",
     "pack": "electron-builder --dir",

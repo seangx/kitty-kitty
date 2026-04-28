@@ -142,9 +142,6 @@ export function createPetWindow(): BrowserWindow {
 
       popupWindow.on('closed', () => {
         popupWindow = null
-        // Notify pet window that popup closed
-        const p = getPetWindow()
-        if (p && !p.isDestroyed()) p.webContents.send('popup-closed', type)
       })
     })
     ipcMain.handle('move-popup', (_e, dx: number, dy: number) => {

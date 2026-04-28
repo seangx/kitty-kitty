@@ -2,14 +2,10 @@ export const IPC = {
   // Session management
   SESSION_CREATE: 'session:create',
   SESSION_CREATE_IN_DIR: 'session:create-in-dir',  // pick folder → start CLI there
-  SESSION_IMPORT: 'session:import',                 // import existing tmux sessions
   SESSION_LIST: 'session:list',
   SESSION_ATTACH: 'session:attach',
   SESSION_KILL: 'session:kill',
   SESSION_SYNC: 'session:sync',
-
-  // Collab messages (push from main → renderer)
-  COLLAB_MESSAGE: 'collab:message',
 
   // Skills (skillsmgr integration)
   SKILLS_LIST: 'skills:list',

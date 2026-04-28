@@ -9,7 +9,6 @@ interface SessionState {
   loadSessions: () => Promise<void>
   createSession: (tool: string, firstMessage?: string) => Promise<SessionInfo>
   createSessionInDir: (tool: string) => Promise<SessionInfo | null>
-  importSessions: () => Promise<number>
   attachSession: (id: string) => Promise<boolean>
   killSession: (id: string) => Promise<void>
   renameSession: (id: string, title: string) => void
@@ -41,12 +40,6 @@ export const useSessionStore = create<SessionState>((set, get) => ({
     const session = await ipc.createSessionInDir(tool)
     if (session) await get().loadSessions()
     return session
-  },
-
-  importSessions: async () => {
-    const imported = await ipc.importSessions()
-    if (imported.length > 0) await get().loadSessions()
-    return imported.length
   },
 
   attachSession: async (id: string) => {

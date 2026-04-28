@@ -14,10 +14,12 @@ import type { AnimationState, SkinId } from '@shared/types/pet'
 import { IPC } from '@shared/types/ipc'
 import { useSessionStore } from '../store/session-store'
 import { useConfigStore } from '../store/config-store'
+import type { ToolId } from '../store/config-store'
 
 interface DirPickResult {
   type: 'pick'
   dir: string
+  tool: ToolId
   sessions: Array<{ id: string; summary: string; date: string }>
   isGitRepo: boolean
 }
@@ -31,12 +33,14 @@ export default function PetCanvas() {
   const [speech, setSpeech] = useState<string | null>(null)
   const [showSkinPicker, setShowSkinPicker] = useState(false)
   const [envEditor, setEnvEditor] = useState<string | null>(null)
+  const [groupPrompt, setGroupPrompt] = useState(false)
+  const [driftPrompt, setDriftPrompt] = useState<{ sessionId: string; drift: import('../lib/ipc').SessionDrift } | null>(null)
   const isDragging = useRef(false)
   const clickTimer = useRef<ReturnType<typeof setTimeout> | null>(null)
   const dragOffset = useRef({ x: 0, y: 0 })
 
-  const { sessions, loadSessions, createSession, importSessions, attachSession, killSession, renameSession } = useSessionStore()
-  const { bubble, setBubble } = useConfigStore()
+  const { sessions, loadSessions, createSession, attachSession, killSession, renameSession } = useSessionStore()
+  const { bubble, setBubble, lastTool, setLastTool } = useConfigStore()
 
   const machine = useMemo(() => new PetStateMachine(setAnimation), [])
   const scheduler = useMemo(() => new BehaviorScheduler(machine), [machine])
@@ -54,6 +58,8 @@ export default function PetCanvas() {
     setShowSkinPicker(false)
     setDirPick(null)
     setContextMenu(null)
+    setGroupPrompt(false)
+    setDriftPrompt(null)
     // Don't close envEditor on blur — user must dismiss it explicitly
   }, [])
 
@@ -64,17 +70,6 @@ export default function PetCanvas() {
     const unsub = window.api.on('window-blur', closeAll)
     return () => { scheduler.stop(); machine.destroy(); clearInterval(poll); unsub() }
   }, [scheduler, machine, loadSessions, closeAll])
-
-  // Real-time collab message display
-  useEffect(() => {
-    const unsub = window.api.on(IPC.COLLAB_MESSAGE, (msg: any) => {
-      const preview = msg.message.length > 60
-        ? msg.message.slice(0, 57) + '...'
-        : msg.message
-      say(`💬 ${msg.from}: ${preview}`, 5000)
-    })
-    return () => { unsub() }
-  }, [say])
 
   // Ntfy push notifications — keep last 3
   const [ntfyMessages, setNtfyMessages] = useState<Array<{ id: number; text: string; url?: string; color: string; time: string }>>([])
@@ -107,7 +102,7 @@ export default function PetCanvas() {
     setTimeout(() => { setNtfyMessages([]); setNtfyDismissing(false) }, count * 80 + 200)
   }, [ntfyMessages.length])
 
-  const anyPopup = showInput || showSettings || showSkinPicker || !!dirPick || !!envEditor
+  const anyPopup = showInput || showSettings || showSkinPicker || !!dirPick || !!envEditor || groupPrompt || !!driftPrompt
 
   const clickAnimations: AnimationState[] = ['happy', 'dance', 'jump', 'roll', 'stretch', 'lick', 'sneak']
   const clickIndex = useRef(0)
@@ -117,12 +112,12 @@ export default function PetCanvas() {
     e.stopPropagation()
     if (clickTimer.current) {
       clearTimeout(clickTimer.current); clickTimer.current = null
-      // Double-click: create a new claude session directly and attach
+      // Double-click: create a new session directly and attach using the last-used tool
       ;(async () => {
         try {
           machine.forceState('dance', 10000)
-          say('启动中喵~')
-          await createSession('claude')
+          say(lastTool === 'codex' ? '启动 Codex 中喵~' : '启动中喵~')
+          await createSession(lastTool)
           machine.forceState('happy', 2000)
           say('开始新对话喵~')
         } catch (err: any) {
@@ -139,7 +134,7 @@ export default function PetCanvas() {
         machine.forceState(anim, 2000)
       }, 250)
     }
-  }, [machine, anyPopup, createSession, say])
+  }, [machine, anyPopup, createSession, say, lastTool])
 
   const handleContextMenu = useCallback((e: React.MouseEvent) => {
     e.preventDefault(); e.stopPropagation()
@@ -168,17 +163,18 @@ export default function PetCanvas() {
     document.addEventListener('mousemove', onMove); document.addEventListener('mouseup', onUp)
   }, [anyPopup])
 
-  const handleCreateSession = useCallback(async (message: string, tool: string) => {
+  const handleCreateSession = useCallback(async (message: string, tool: ToolId) => {
+    setLastTool(tool)
     try {
       machine.forceState('dance', 15000)
-      say('启动中喵~')
+      say(tool === 'codex' ? '启动 Codex 中喵~' : '启动中喵~')
       await createSession(tool, message)
       machine.forceState('happy', 2000)
       say('开始新对话喵~')
     } catch (err) { console.error('[kitty] create session failed:', err); machine.forceState('sad', 2000); say('出错了喵...') }
-  }, [createSession, machine, say])
+  }, [createSession, machine, say, setLastTool])
 
-  const handleAttach = useCallback(async (id: string) => {
+  const performAttach = useCallback(async (id: string) => {
     machine.forceState('dance', 15000)
     say('连接中喵~')
     const alive = await attachSession(id)
@@ -196,13 +192,31 @@ export default function PetCanvas() {
     }
   }, [attachSession, sessions, machine, say])
 
+  const handleAttach = useCallback(async (id: string) => {
+    // Drift check: if claude/codex has rolled over to a newer jsonl, prompt before attaching
+    try {
+      const session = sessions.find(s => s.id === id)
+      // Only check when we're going to restart the pane (not when it's already alive),
+      // otherwise switching the session id won't take effect until next restart.
+      if (session && session.status !== 'running') {
+        const { checkSessionDrift } = await import('../lib/ipc')
+        const drift = await checkSessionDrift(id)
+        if (drift) {
+          setDriftPrompt({ sessionId: id, drift })
+          return
+        }
+      }
+    } catch { /* drift check failure shouldn't block attach */ }
+    void performAttach(id)
+  }, [sessions, performAttach])
+
   const handleOpenInDir = useCallback(async () => {
     try {
       machine.forceState('dance', 15000)
-      const result = await window.api.invoke('session:create-in-dir', 'claude') as any
+      const result = await window.api.invoke('session:create-in-dir', lastTool) as any
       if (!result) { machine.forceState('idle'); return }
       if (result.type === 'pick') {
-        setDirPick(result as DirPickResult)
+        setDirPick({ ...result, tool: lastTool } as DirPickResult)
       } else if (result.type === 'created') {
         machine.forceState('happy', 2000)
         say('在新目录开始啦~')
@@ -212,14 +226,14 @@ export default function PetCanvas() {
       console.error('[kitty] open in dir failed:', err)
       machine.forceState('sad', 1500); say('打开失败了喵...')
     }
-  }, [machine, loadSessions, say])
+  }, [machine, loadSessions, say, lastTool])
 
   const handleDirConfirm = useCallback(async (resumeId: string | null) => {
     if (!dirPick) return
     try {
       machine.forceState('dance', 15000)
       say('准备中喵~')
-      await window.api.invoke('session:create-in-dir-confirm', 'claude', dirPick.dir, resumeId || undefined)
+      await window.api.invoke('session:create-in-dir-confirm', dirPick.tool, dirPick.dir, resumeId || undefined)
       machine.forceState('happy', 2000)
       say(resumeId && resumeId !== '__new__' ? '继续之前的对话喵~' : '开始新对话喵~')
       await loadSessions()
@@ -233,13 +247,7 @@ export default function PetCanvas() {
   const menuItems = useMemo(() => [
     { label: '💬 新对话', onClick: () => setShowInput(true) },
     { label: '📂 在目录中开始', onClick: handleOpenInDir },
-    { label: '📁 新建分组', onClick: async () => {
-      const name = window.prompt('分组名称')
-      if (name?.trim()) {
-        await window.api.invoke('group:create', name.trim())
-        await loadSessions()
-      }
-    }},
+    { label: '📁 新建分组', onClick: () => setGroupPrompt(true) },
     { separator: true as const },
     { label: '♻️ 重启全部', onClick: async () => {
       try {
@@ -368,12 +376,13 @@ export default function PetCanvas() {
     )}
 
     {/* Floating popups — outside pet area */}
-    {showInput && <DraggablePopup><InputPopup sessions={sessions} onSubmit={handleCreateSession} onClose={() => setShowInput(false)} /></DraggablePopup>}
+    {showInput && <DraggablePopup><InputPopup defaultTool={lastTool} onSubmit={handleCreateSession} onClose={() => setShowInput(false)} /></DraggablePopup>}
     {showSettings && <DraggablePopup><SettingsPanel onClose={() => setShowSettings(false)} /></DraggablePopup>}
     {dirPick && (
       <DraggablePopup>
         <SessionPicker
           dir={dirPick.dir}
+          tool={dirPick.tool}
           sessions={dirPick.sessions}
           onPick={handleDirConfirm}
           onClose={() => setDirPick(null)}
@@ -397,6 +406,49 @@ export default function PetCanvas() {
           sessionTitle={sessions.find(s => s.id === envEditor)?.title || ''}
           onClose={() => setEnvEditor(null)}
           onSaved={() => { machine.forceState('happy', 1500); say('环境变量已保存喵~') }}
+        />
+      </DraggablePopup>
+    )}
+    {groupPrompt && (
+      <DraggablePopup>
+        <GroupNamePrompt
+          onSubmit={async (name) => {
+            await window.api.invoke('group:create', name)
+            await loadSessions()
+            setGroupPrompt(false)
+            machine.forceState('happy', 1500)
+            say('新分组已创建喵~')
+          }}
+          onClose={() => setGroupPrompt(false)}
+        />
+      </DraggablePopup>
+    )}
+    {driftPrompt && (
+      <DraggablePopup>
+        <SessionDriftPrompt
+          sessionTitle={sessions.find(s => s.id === driftPrompt.sessionId)?.title || ''}
+          drift={driftPrompt.drift}
+          onKeepCurrent={() => {
+            const id = driftPrompt.sessionId
+            setDriftPrompt(null)
+            void performAttach(id)
+          }}
+          onUseLatest={async () => {
+            const { sessionId, drift } = driftPrompt
+            setDriftPrompt(null)
+            try {
+              const { rebindExternal } = await import('../lib/ipc')
+              await rebindExternal(sessionId, drift.latestId)
+              await loadSessions()
+              say('已切到新对话喵~')
+            } catch (err) {
+              console.error('[kitty] rebind failed:', err)
+              say('切换失败了喵...')
+              return
+            }
+            void performAttach(sessionId)
+          }}
+          onClose={() => setDriftPrompt(null)}
         />
       </DraggablePopup>
     )}
@@ -568,6 +620,160 @@ function EnvEditor({ sessionId, sessionTitle, onClose, onSaved }: {
           color: '#fff', fontSize: 11, cursor: 'pointer', fontFamily: 'inherit',
           opacity: saving || loading ? 0.5 : 1,
         }}>{saving ? '保存中...' : '保存'}</button>
+      </div>
+    </div>
+  )
+}
+
+// ─── Group Name Prompt ──────────────────
+
+function GroupNamePrompt({ onSubmit, onClose }: { onSubmit: (name: string) => void; onClose: () => void }) {
+  const [name, setName] = useState('')
+  const inputRef = useRef<HTMLInputElement>(null)
+  useEffect(() => {
+    const t = setTimeout(() => inputRef.current?.focus(), 100)
+    return () => clearTimeout(t)
+  }, [])
+  const submit = () => {
+    const v = name.trim()
+    if (v) onSubmit(v)
+  }
+  const C = { surface: '#0c0c1f', container: '#17172f', variant: '#23233f', primary: '#a7a5ff', primaryDim: '#645efb', text: '#e5e3ff', textDim: '#aaa8c3', outline: '#46465c' }
+  return (
+    <div style={{
+      background: `${C.variant}99`,
+      backdropFilter: 'blur(32px)',
+      WebkitBackdropFilter: 'blur(32px)',
+      borderRadius: 16,
+      padding: 10,
+      width: 260,
+      boxShadow: `0 10px 40px rgba(0,0,0,0.5), inset 0 1px 0 ${C.outline}26`,
+      fontFamily: "'Plus Jakarta Sans', -apple-system, sans-serif"
+    }}>
+      <div data-drag-handle style={{ height: 4, cursor: 'grab' }} />
+      <div style={{ fontSize: 11, color: C.textDim, padding: '2px 4px 6px' }}>📁 新建分组</div>
+      <div style={{ display: 'flex', gap: 6 }}>
+        <input
+          ref={inputRef}
+          type="text"
+          value={name}
+          onChange={(e) => setName(e.target.value)}
+          onKeyDown={(e) => {
+            if (e.key === 'Enter') submit()
+            if (e.key === 'Escape') onClose()
+          }}
+          placeholder="分组名称..."
+          style={{
+            flex: 1,
+            padding: '7px 12px',
+            borderRadius: 9999,
+            border: `1px solid ${C.outline}33`,
+            background: `${C.container}cc`,
+            color: C.text,
+            fontSize: 12,
+            outline: 'none',
+            fontFamily: 'inherit'
+          }}
+        />
+        <button
+          onClick={submit}
+          style={{
+            padding: '7px 16px',
+            borderRadius: 9999,
+            border: 'none',
+            background: `linear-gradient(135deg, ${C.primary}, ${C.primaryDim})`,
+            color: C.surface,
+            fontSize: 12,
+            cursor: 'pointer',
+            fontWeight: 600
+          }}
+        >
+          ▶
+        </button>
+      </div>
+      <div style={{ marginTop: 6, fontSize: 9, color: C.textDim, textAlign: 'center', opacity: 0.6 }}>
+        Enter 创建 · Esc 取消
+      </div>
+    </div>
+  )
+}
+
+// ─── Session Drift Prompt ──────────────────
+
+function SessionDriftPrompt({
+  sessionTitle,
+  drift,
+  onKeepCurrent,
+  onUseLatest,
+  onClose,
+}: {
+  sessionTitle: string
+  drift: import('../lib/ipc').SessionDrift
+  onKeepCurrent: () => void
+  onUseLatest: () => void
+  onClose: () => void
+}) {
+  const C = { surface: '#0c0c1f', container: '#17172f', variant: '#23233f', primary: '#a7a5ff', primaryDim: '#645efb', text: '#e5e3ff', textDim: '#aaa8c3', outline: '#46465c' }
+  const currentLabel = drift.currentId ? drift.currentId.slice(0, 8) : '(无)'
+  return (
+    <div style={{
+      background: `${C.variant}f5`,
+      backdropFilter: 'blur(32px)',
+      WebkitBackdropFilter: 'blur(32px)',
+      borderRadius: 16,
+      padding: 14,
+      width: 320,
+      boxShadow: `0 12px 48px rgba(0,0,0,0.6), inset 0 1px 0 ${C.outline}26`,
+      fontFamily: "'Plus Jakarta Sans', -apple-system, sans-serif",
+      color: C.text,
+    }}>
+      <div data-drag-handle style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 10, cursor: 'grab' }}>
+        <div>
+          <div style={{ fontSize: 13, fontWeight: 600 }}>⚠️ 检测到新对话</div>
+          <div style={{ fontSize: 10, color: C.textDim, marginTop: 2 }}>{sessionTitle}</div>
+        </div>
+        <button onClick={onClose} style={{ background: 'none', border: 'none', color: C.textDim, cursor: 'pointer', fontSize: 14 }}>✕</button>
+      </div>
+
+      <div style={{ fontSize: 11, color: C.textDim, marginBottom: 8, lineHeight: 1.5 }}>
+        当前绑定的对话 <code style={{ color: C.primary }}>{currentLabel}</code> 不是该目录下最新的。
+      </div>
+
+      <div style={{
+        background: `${C.container}cc`,
+        border: `1px solid ${C.outline}33`,
+        borderRadius: 10,
+        padding: '8px 10px',
+        marginBottom: 10,
+      }}>
+        <div style={{ fontSize: 10, color: C.textDim, marginBottom: 2 }}>最新对话</div>
+        <div style={{ fontSize: 12, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+          🔄 {drift.latestSummary}
+        </div>
+        <div style={{ fontSize: 10, color: C.textDim, marginTop: 2 }}>{drift.latestDate} · {drift.latestId.slice(0, 8)}</div>
+      </div>
+
+      <div style={{ display: 'flex', gap: 6 }}>
+        <button
+          onClick={onKeepCurrent}
+          style={{
+            flex: 1, padding: '8px 12px', borderRadius: 10,
+            background: `${C.container}cc`, border: `1px solid ${C.outline}44`,
+            color: C.text, fontSize: 12, fontWeight: 600, cursor: 'pointer', fontFamily: 'inherit',
+          }}
+        >
+          继续当前
+        </button>
+        <button
+          onClick={onUseLatest}
+          style={{
+            flex: 1, padding: '8px 12px', borderRadius: 10,
+            background: `linear-gradient(135deg, ${C.primary}, ${C.primaryDim})`,
+            border: 'none', color: C.surface, fontSize: 12, fontWeight: 600, cursor: 'pointer', fontFamily: 'inherit',
+          }}
+        >
+          切到最新
+        </button>
       </div>
     </div>
   )

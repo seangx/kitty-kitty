@@ -11,3 +11,4 @@ dist/
 .mcp.json
 openspec/
 src/renderer/pet/.DS_Store
+tsconfig.*.tsbuildinfo

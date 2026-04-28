@@ -271,7 +271,5 @@ export function listNativeSkills(tool: string, cwd: string): NativeSkill[] {
     } catch { /* ignore */ }
   }
 
-  // TODO: add codex/aichat native skill scanning when directory structure is known
-
   return skills
 }

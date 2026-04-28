@@ -4,7 +4,6 @@ export interface SessionInfo {
   title: string
   tool: string
   cwd: string
-  mainPane?: string
   status: 'running' | 'detached' | 'dead'
   createdAt: string
   groupId?: string
@@ -21,6 +20,5 @@ export interface GroupInfo {
   id: string
   name: string
   color?: string
-  collabEnabled?: boolean
   mainSessionId?: string
 }

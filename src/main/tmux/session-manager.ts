@@ -48,7 +48,6 @@ const SESSION_PREFIX = 'kitty_'
 const TOOL_COMMANDS: Record<string, string> = {
   claude: 'claude',
   codex: 'codex',
-  aichat: 'aichat',
   shell: '$SHELL'
 }
 
@@ -224,28 +223,6 @@ export function listAllTmuxSessions(): Array<{ name: string; attached: boolean }
       })
   } catch {
     return []
-  }
-}
-
-/**
- * Import an existing tmux session into kitty management
- */
-export function importTmuxSession(tmuxName: string): TmuxSession {
-  const id = uuid().slice(0, 8)
-  // Try to get the cwd from the tmux session
-  let cwd = ''
-  try {
-    cwd = execSync(`${TMUX} display-message -t ${shellQuote(tmuxName)} -p "#{pane_current_path}"`,
-      { encoding: 'utf-8', stdio: ['ignore', 'pipe', 'ignore'] }).trim()
-  } catch { /* ignore */ }
-  return {
-    id,
-    tmuxName,
-    title: tmuxName,
-    tool: 'shell',
-    cwd,
-    status: 'detached',
-    createdAt: new Date().toISOString()
   }
 }
 
