@@ -213,10 +213,9 @@ function scanDir(dir: string, ext: string): string[] {
 
 export function listNativeSkills(tool: string, cwd: string): NativeSkill[] {
   const skills: NativeSkill[] = []
+  const home = homedir()
 
   if (tool === 'claude' || tool === 'shell') {
-    const home = homedir()
-
     // Global commands: ~/.claude/commands/*.md
     const globalCmds = join(home, '.claude', 'commands')
     for (const name of scanDir(globalCmds, '.md')) {
@@ -269,6 +268,52 @@ export function listNativeSkills(tool: string, cwd: string): NativeSkill[] {
         }
       }
     } catch { /* ignore */ }
+  }
+
+  if (tool === 'codex') {
+    // Codex layout:
+    //   skills:   ~/.codex/skills/<name>/SKILL.md (each skill is a directory)
+    //   prompts:  ~/.codex/prompts/*.md  (slash commands)
+    // Project-level paths under <cwd>/.codex/* mirror the global layout.
+    const codexSkills = join(home, '.codex', 'skills')
+    if (existsSync(codexSkills)) {
+      try {
+        for (const name of readdirSync(codexSkills)) {
+          const skillPath = join(codexSkills, name)
+          try {
+            if (require('fs').statSync(skillPath).isDirectory()) {
+              skills.push({ name, source: 'skill', path: skillPath })
+            }
+          } catch { /* ignore */ }
+        }
+      } catch { /* ignore */ }
+    }
+
+    const codexPrompts = join(home, '.codex', 'prompts')
+    for (const name of scanDir(codexPrompts, '.md')) {
+      skills.push({ name, source: 'command', path: join(codexPrompts, name + '.md') })
+    }
+
+    if (cwd) {
+      const projSkills = join(cwd, '.codex', 'skills')
+      if (existsSync(projSkills)) {
+        try {
+          for (const name of readdirSync(projSkills)) {
+            const p = join(projSkills, name)
+            try {
+              if (require('fs').statSync(p).isDirectory()) {
+                skills.push({ name, source: 'project-skill', path: p })
+              }
+            } catch { /* ignore */ }
+          }
+        } catch { /* ignore */ }
+      }
+
+      const projPrompts = join(cwd, '.codex', 'prompts')
+      for (const name of scanDir(projPrompts, '.md')) {
+        skills.push({ name, source: 'project-command', path: join(projPrompts, name + '.md') })
+      }
+    }
   }
 
   return skills

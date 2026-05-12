@@ -11,6 +11,7 @@ export interface ExternalSessionEntry {
   id: string
   summary: string
   date: string
+  tool?: string  // filled in by handlers when merging entries from multiple providers
 }
 
 export interface ExternalSessionProvider {

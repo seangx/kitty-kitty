@@ -1,4 +1,4 @@
-import { existsSync, readdirSync, readFileSync, statSync, unlinkSync } from 'fs'
+import { closeSync, existsSync, openSync, readdirSync, readSync, statSync, unlinkSync } from 'fs'
 import { homedir } from 'os'
 import { join } from 'path'
 import type { ExternalSessionEntry, ExternalSessionProvider } from './external-session'
@@ -45,12 +45,37 @@ function* walkRecentDayFolders(dayLimit: number): Generator<string> {
   }
 }
 
-function readHeader(filePath: string): { id: string; cwd: string } | null {
+/** Read only the first line of a (potentially huge) jsonl by streaming chunks. */
+function readFirstLine(filePath: string, maxBytes = 256 * 1024): string | null {
+  let fd: number | null = null
   try {
-    // Read up to 8KB — session_meta is the first line and rarely longer than that.
-    const content = readFileSync(filePath, 'utf-8').slice(0, 8192)
-    const firstLine = content.split('\n', 1)[0]
-    if (!firstLine.trim()) return null
+    fd = openSync(filePath, 'r')
+    const buf = Buffer.alloc(16 * 1024)
+    let acc = ''
+    let totalRead = 0
+    while (totalRead < maxBytes) {
+      const n = readSync(fd, buf, 0, buf.length, null)
+      if (n <= 0) break
+      acc += buf.slice(0, n).toString('utf-8')
+      totalRead += n
+      const nl = acc.indexOf('\n')
+      if (nl >= 0) return acc.slice(0, nl)
+    }
+    // No newline found — return what we have if we already exhausted the file
+    return acc || null
+  } catch {
+    return null
+  } finally {
+    if (fd !== null) { try { closeSync(fd) } catch { /* ignore */ } }
+  }
+}
+
+function readHeader(filePath: string): { id: string; cwd: string } | null {
+  // session_meta is the first line. Codex embeds `base_instructions.text`
+  // (the full system prompt) in it, so the line can easily exceed 20KB.
+  const firstLine = readFirstLine(filePath)
+  if (!firstLine || !firstLine.trim()) return null
+  try {
     const parsed = JSON.parse(firstLine)
     if (parsed?.type !== 'session_meta') return null
     const id = parsed.payload?.id

@@ -33,10 +33,19 @@ function hiveCli(args: string[]): void {
 }
 
 /** List recent on-disk CLI sessions for the given tool, started from `projectDir`. */
-function findExternalSessions(tool: string, projectDir: string): Array<{ id: string; summary: string; date: string }> {
+function findExternalSessions(tool: string, projectDir: string): Array<{ id: string; summary: string; date: string; tool: string }> {
   const provider = getProvider(tool)
   if (!provider) return []
-  try { return provider.findSessions(projectDir) } catch { return [] }
+  try { return provider.findSessions(projectDir).map((e) => ({ ...e, tool })) } catch { return [] }
+}
+
+/** List recent sessions across ALL supported tools, sorted by date desc (string sort, ISO-ish). */
+function findAllExternalSessions(projectDir: string): Array<{ id: string; summary: string; date: string; tool: string }> {
+  const merged: Array<{ id: string; summary: string; date: string; tool: string }> = []
+  for (const tool of ['claude', 'codex']) {
+    merged.push(...findExternalSessions(tool, projectDir))
+  }
+  return merged.sort((a, b) => (b.date || '').localeCompare(a.date || '')).slice(0, 8)
 }
 
 let statusBarsInitialized = false
@@ -79,7 +88,9 @@ export function registerSessionHandlers(): void {
     if (result.canceled || result.filePaths.length === 0) return null
 
     const dir = result.filePaths[0]
-    const existingSessions = findExternalSessions(tool || 'claude', dir)
+    // Always show ALL tools' history in this dir so the user can pick a codex
+    // session even when their default tool is claude (and vice versa).
+    const existingSessions = findAllExternalSessions(dir)
     const isGitRepo = isGitRepository(dir)
 
     if (existingSessions.length > 0 || isGitRepo) {
@@ -130,6 +141,12 @@ export function registerSessionHandlers(): void {
           return true
         }
       }
+      // tmux gone — try to restore on the fly before giving up. Only mark dead
+      // when the cwd is missing or tmux itself refuses to spawn the session.
+      if (tryRestoreSession(session)) {
+        tmux.attachSession(session.tmuxName)
+        return true
+      }
       sessionRepo.updateSessionStatus(id, 'dead')
       return false
     }
@@ -167,8 +184,13 @@ export function registerSessionHandlers(): void {
     try { entries = provider.findSessions(session.cwd) } catch { return null }
     if (entries.length === 0) return null
 
-    const latest = entries[0]
-    if (!latest?.id || latest.id === session.externalSessionId) return null
+    // Exclude the currently-bound jsonl: when claude has resumed it, its mtime
+    // is always the freshest, which would mask any real drift. We want to know
+    // about other jsonls newer than what kitty's record points at.
+    const others = entries.filter((e) => e.id !== session.externalSessionId)
+    if (others.length === 0) return null
+
+    const latest = others[0]
     return {
       currentId: session.externalSessionId || null,
       latestId: latest.id,
@@ -177,16 +199,22 @@ export function registerSessionHandlers(): void {
     }
   })
 
-  // Kill the live tmux session and rebind to a different external session id.
-  // Next attach goes through the restore path and resumes with the new id.
-  ipcMain.handle('session:rebind-external', (_event, id: string, newExternalId: string) => {
+  // Rebind a session row to a different external session id.
+  //   keepTmux=false (default): kill the tmux session so next attach goes
+  //     through the restore path and resumes with the new id.
+  //   keepTmux=true: only update the DB. The live pane keeps running the
+  //     CLI's already-active session (e.g. claude after `/clear` rolled to a
+  //     new jsonl); the new id only takes effect on next kitty launch.
+  ipcMain.handle('session:rebind-external', (_event, id: string, newExternalId: string, keepTmux: boolean = false) => {
     const rows = sessionRepo.listSessions()
     const session = rows.find((s) => s.id === id)
     if (!session) return { success: false }
-    try { tmux.killSession(session.tmuxName) } catch { /* ignore */ }
+    if (!keepTmux) {
+      try { tmux.killSession(session.tmuxName) } catch { /* ignore */ }
+      sessionRepo.updateSessionStatus(id, 'detached')
+    }
     sessionRepo.updateSessionExternalId(id, newExternalId)
-    sessionRepo.updateSessionStatus(id, 'detached')
-    log('session', `rebind ${session.title} → ${newExternalId.slice(0, 8)}`)
+    log('session', `rebind ${session.title} → ${newExternalId.slice(0, 8)}${keepTmux ? ' (soft)' : ''}`)
     return { success: true }
   })
 
@@ -394,21 +422,34 @@ export function registerSessionHandlers(): void {
 
     const oldGroupId = session.groupId
 
-    // Move the pane between group tmux sessions
-    {
-      // Find the actual tmux session hosting this session's pane
-      let hostTmux = session.tmuxName
-      if (!tmux.isSessionAlive(hostTmux) && oldGroupId) {
-        const oldGroupSessions = sessionRepo.listSessionsByGroup(oldGroupId)
-          .filter(s => tmux.isSessionAlive(s.tmuxName))
-        if (oldGroupSessions.length > 0) hostTmux = oldGroupSessions[0].tmuxName
+    // Find the actual tmux session hosting this session's pane
+    let hostTmux = session.tmuxName
+    if (!tmux.isSessionAlive(hostTmux) && oldGroupId) {
+      const oldGroupSessions = sessionRepo.listSessionsByGroup(oldGroupId)
+        .filter(s => tmux.isSessionAlive(s.tmuxName))
+      if (oldGroupSessions.length > 0) hostTmux = oldGroupSessions[0].tmuxName
+    }
+
+    // Detach the row from its current pane and start it as a fresh standalone
+    // tmux session. Used when ungrouping or when a join target doesn't exist.
+    // We can't safely `tmux break-pane` into a new session (break-pane defaults
+    // to same-session new-window), so we kill the pane and restore from cwd.
+    const detachAsStandalone = (sourcePaneId: string): void => {
+      const newName = `kitty_${uuid().slice(0, 8)}`
+      if (sourcePaneId) {
+        try { execSync(`${tmux.TMUX} kill-pane -t ${sourcePaneId}`, { stdio: 'ignore' }) } catch { /* ignore */ }
       }
+      const db = getDB()
+      db.prepare("UPDATE sessions SET tmux_name = ?, pane_id = ? WHERE id = ?").run(newName, '', sessionId)
+      const refreshed = sessionRepo.listSessions().find(s => s.id === sessionId)
+      if (refreshed) tryRestoreSession(refreshed)
+    }
 
-      if (tmux.isSessionAlive(hostTmux)) {
+    if (tmux.isSessionAlive(hostTmux)) {
+      // Use stored paneId for precise matching
+      const sourcePaneId = session.paneId || ''
+
       try {
-        // Use stored paneId for precise matching
-        const sourcePaneId = session.paneId || ''
-
         if (sourcePaneId && groupId) {
           const targetGroupSessions = sessionRepo.listSessionsByGroup(groupId)
             .filter(s => !s.hidden && s.id !== sessionId && tmux.isSessionAlive(s.tmuxName))
@@ -421,7 +462,6 @@ export function registerSessionHandlers(): void {
             ).trim().split('\n')
             const targetLastPane = targetPanes[targetPanes.length - 1]
             execSync(`${tmux.TMUX} join-pane -s ${sourcePaneId} -t ${targetLastPane} -v`, { stdio: 'ignore' })
-            // Query new pane ID after join
             const newPanes = execSync(
               `${tmux.TMUX} list-panes -t "${targetHost.tmuxName}" -F '#{pane_id}'`,
               { encoding: 'utf-8' }
@@ -434,20 +474,15 @@ export function registerSessionHandlers(): void {
               tmux.applyMainVerticalLayout(hostTmux)
             }
           } else {
-            const newName = `kitty_${uuid().slice(0, 8)}`
-            execSync(`${tmux.TMUX} break-pane -d -s ${sourcePaneId}`, { stdio: 'ignore' })
-            const db = getDB()
-            db.prepare("UPDATE sessions SET tmux_name = ? WHERE id = ?").run(newName, sessionId)
-            sessionRepo.updateSessionPaneId(sessionId, '')
+            // Target group has no live host yet — promote this row to a fresh standalone
+            // session so it later acts as the host once siblings join.
+            detachAsStandalone(sourcePaneId)
           }
         } else if (sourcePaneId && !groupId) {
-          const newName = `kitty_${uuid().slice(0, 8)}`
-          execSync(`${tmux.TMUX} break-pane -d -s ${sourcePaneId}`, { stdio: 'ignore' })
-          const db = getDB()
-          db.prepare("UPDATE sessions SET tmux_name = ? WHERE id = ?").run(newName, sessionId)
-          sessionRepo.updateSessionPaneId(sessionId, '')
+          // Plain ungroup
+          detachAsStandalone(sourcePaneId)
         } else if (!sourcePaneId && groupId && tmux.isSessionAlive(session.tmuxName)) {
-          // No pane_id: this is a standalone session, join it as a whole into the target group
+          // Standalone session (no pane_id), join it whole into the target group
           const targetGroupSessions = sessionRepo.listSessionsByGroup(groupId)
             .filter(s => !s.hidden && s.id !== sessionId && tmux.isSessionAlive(s.tmuxName))
           const targetHost = targetGroupSessions[0]
@@ -462,16 +497,19 @@ export function registerSessionHandlers(): void {
             db.prepare("UPDATE sessions SET tmux_name = ? WHERE id = ?").run(targetHost.tmuxName, sessionId)
             tmux.applyMainVerticalLayout(targetHost.tmuxName)
           }
+          // No target host: leave the standalone session as-is, it'll be promoted
+          // to host on next group action.
         }
       } catch (err) {
+        // tmux operation failed — DON'T flip group_id, otherwise DB says "moved"
+        // while tmux still has the pane in the old group. Bubble up to renderer.
         log('pane-mode', `move pane between groups failed:`, err)
+        throw err
       }
-      } // end if (tmux.isSessionAlive(hostTmux))
     }
 
-    // Move DB group update AFTER tmux operations succeed
+    // Commit DB group_id only after tmux ops succeeded (or were trivially skipped).
     sessionRepo.updateSessionGroup(sessionId, groupId)
-
     tmux.refreshAllStatusBars()
   })
 
@@ -778,6 +816,31 @@ function syncPaneIds(): void {
 }
 
 /**
+ * Spawn a fresh tmux session for `row` and run the appropriate launch script.
+ * Returns true on success. Caller decides what to do on failure — never sets
+ * `dead` from here; a failed restore is recoverable on next attempt.
+ */
+function tryRestoreSession(row: sessionRepo.SessionRow): boolean {
+  if (!row.cwd || !existsSync(row.cwd)) return false
+  try {
+    const script = row.externalSessionId
+      ? generateLaunchScript(row.tool, 'resume', row.externalSessionId)
+      : generateLaunchScript(row.tool, 'restore')
+    execSync(
+      `${tmux.TMUX} new-session -d -s "${row.tmuxName}" -c "${row.cwd}" "${script}"`,
+      { stdio: ['ignore', 'ignore', 'pipe'], env: { ...process.env, TERM: 'xterm-256color' } }
+    )
+    tmux.applyKittyStatusBar(row.tmuxName)
+    sessionRepo.updateSessionStatus(row.id, 'detached')
+    log('restore', `rebuilt ${row.title} (${row.tmuxName})`)
+    return true
+  } catch (err) {
+    log('restore', `failed for ${row.tmuxName}:`, err)
+    return false
+  }
+}
+
+/**
  * Sync tmux session states with our DB and return updated list.
  * On first sync, auto-restore sessions that were previously alive.
  */
@@ -792,28 +855,54 @@ function syncAndList(): SessionInfo[] {
   if (!statusBarsInitialized) {
     statusBarsInitialized = true
 
-    for (const row of dbSessions) {
-      // Restore any session whose tmux is gone but cwd still exists
-      // (includes 'dead' from previous crash — only user-kill deletes from DB entirely)
-      if (!liveNames.has(row.tmuxName) && row.cwd && existsSync(row.cwd) && !row.hidden) {
-        try {
-          // Use resume with external session id if available, otherwise fallback to restore
-          const script = row.externalSessionId
-            ? generateLaunchScript(row.tool, 'resume', row.externalSessionId)
-            : generateLaunchScript(row.tool, 'restore')
-
-          execSync(
-            `${tmux.TMUX} new-session -d -s "${row.tmuxName}" -c "${row.cwd}" "${script}"`,
-            { stdio: 'ignore', env: { ...process.env, TERM: 'xterm-256color' } }
-          )
-          tmux.applyKittyStatusBar(row.tmuxName)
-          sessionRepo.updateSessionStatus(row.id, 'detached')
-          liveNames.add(row.tmuxName)
-          console.log(`[restore] Rebuilt session: ${row.title} (${row.tmuxName})`)
-        } catch (err) {
-          console.error(`[restore] Failed to restore ${row.tmuxName}:`, err)
-          sessionRepo.updateSessionStatus(row.id, 'dead')
+    // Reset DB tmux_name to per-row `kitty_<id>` whenever a row's claimed
+    // tmux_name doesn't have an actual pane backing it. Two failure modes:
+    //   1) Host tmux is gone entirely → all sharers must reset, then restore.
+    //   2) Host tmux is alive but its pane count is smaller than the number of
+    //      DB rows pointing at it (e.g. user opened in a dir → claude crash →
+    //      first-launch only resurrected ONE pane for the whole group). In
+    //      that case keep ONE row mapped to the host and reset the rest.
+    // After this reset, the per-row restore loop spawns missing tmux sessions
+    // and migrateToPane() re-merges siblings back into panes of the host.
+    {
+      const db = getDB()
+      const sharedNames = new Map<string, sessionRepo.SessionRow[]>()
+      for (const row of dbSessions) {
+        if (row.hidden) continue
+        ;(sharedNames.get(row.tmuxName) || sharedNames.set(row.tmuxName, []).get(row.tmuxName)!).push(row)
+      }
+      for (const [name, rows] of sharedNames) {
+        const alivePaneCount = liveNames.has(name) ? tmux.getPaneCount(name) : 0
+        if (alivePaneCount >= rows.length) continue  // healthy: each row has a pane
+        // Decide which row keeps the existing tmux_name. If host is alive,
+        // prefer the group's main session (so the user's pinned host stays
+        // attached to the live pane). Otherwise reset everyone.
+        let keepId: string | null = null
+        if (alivePaneCount > 0) {
+          const groupId = rows[0].groupId
+          if (groupId) {
+            const grp = sessionRepo.getGroupById(groupId)
+            const mainId = grp?.mainSessionId
+            keepId = mainId && rows.some((r) => r.id === mainId) ? mainId : rows[0].id
+          } else {
+            keepId = rows[0].id
+          }
         }
+        for (const row of rows) {
+          if (row.id === keepId) continue
+          const expected = `kitty_${row.id}`
+          if (row.tmuxName !== expected) {
+            db.prepare('UPDATE sessions SET tmux_name = ?, pane_id = ? WHERE id = ?').run(expected, '', row.id)
+          }
+        }
+      }
+    }
+
+    // Re-read rows now that tmux_name may have been reset
+    const rowsForRestore = sessionRepo.listSessions()
+    for (const row of rowsForRestore) {
+      if (!liveNames.has(row.tmuxName) && row.cwd && existsSync(row.cwd) && !row.hidden) {
+        if (tryRestoreSession(row)) liveNames.add(row.tmuxName)
       }
     }
 

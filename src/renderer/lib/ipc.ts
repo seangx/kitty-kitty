@@ -37,8 +37,8 @@ export interface SessionDrift {
 export const checkSessionDrift = (id: string) =>
   api().invoke('session:check-drift', id) as Promise<SessionDrift | null>
 
-export const rebindExternal = (id: string, newExternalId: string) =>
-  api().invoke('session:rebind-external', id, newExternalId) as Promise<{ success: boolean }>
+export const rebindExternal = (id: string, newExternalId: string, keepTmux = false) =>
+  api().invoke('session:rebind-external', id, newExternalId, keepTmux) as Promise<{ success: boolean }>
 
 // Pet
 export const getPetState = () =>

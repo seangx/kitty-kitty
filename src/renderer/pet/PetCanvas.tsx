@@ -19,8 +19,8 @@ import type { ToolId } from '../store/config-store'
 interface DirPickResult {
   type: 'pick'
   dir: string
-  tool: ToolId
-  sessions: Array<{ id: string; summary: string; date: string }>
+  tool: ToolId  // user's last-tool — drives "新建" / "继续最近" buttons
+  sessions: Array<{ id: string; summary: string; date: string; tool?: string }>
   isGitRepo: boolean
 }
 
@@ -193,22 +193,20 @@ export default function PetCanvas() {
   }, [attachSession, sessions, machine, say])
 
   const handleAttach = useCallback(async (id: string) => {
-    // Drift check: if claude/codex has rolled over to a newer jsonl, prompt before attaching
+    // Drift check: if claude/codex has rolled over to a newer jsonl (e.g. after
+    // /clear), prompt before attaching. We check both detached AND running rows
+    // — the running case happens within the same pane (claude rolled the file
+    // mid-session), and we'll only update the DB record without touching tmux.
     try {
-      const session = sessions.find(s => s.id === id)
-      // Only check when we're going to restart the pane (not when it's already alive),
-      // otherwise switching the session id won't take effect until next restart.
-      if (session && session.status !== 'running') {
-        const { checkSessionDrift } = await import('../lib/ipc')
-        const drift = await checkSessionDrift(id)
-        if (drift) {
-          setDriftPrompt({ sessionId: id, drift })
-          return
-        }
+      const { checkSessionDrift } = await import('../lib/ipc')
+      const drift = await checkSessionDrift(id)
+      if (drift) {
+        setDriftPrompt({ sessionId: id, drift })
+        return
       }
     } catch { /* drift check failure shouldn't block attach */ }
     void performAttach(id)
-  }, [sessions, performAttach])
+  }, [performAttach])
 
   const handleOpenInDir = useCallback(async () => {
     try {
@@ -228,21 +226,29 @@ export default function PetCanvas() {
     }
   }, [machine, loadSessions, say, lastTool])
 
-  const handleDirConfirm = useCallback(async (resumeId: string | null) => {
+  const handleDirConfirm = useCallback(async (action: import('./SessionPicker').PickAction) => {
     if (!dirPick) return
     try {
       machine.forceState('dance', 15000)
       say('准备中喵~')
-      await window.api.invoke('session:create-in-dir-confirm', dirPick.tool, dirPick.dir, resumeId || undefined)
+      // create-in-dir-confirm signature: (tool, dir, resumeId?) where resumeId
+      // is the on-disk uuid for `resume`, '__new__' for fresh, undefined for `continue --last`.
+      const resumeArg =
+        action.type === 'new' ? '__new__'
+        : action.type === 'continue-latest' ? undefined
+        : action.id
+      await window.api.invoke('session:create-in-dir-confirm', action.tool, dirPick.dir, resumeArg)
+      // Remember the chosen tool so subsequent actions default to it.
+      if (action.tool === 'claude' || action.tool === 'codex') setLastTool(action.tool)
       machine.forceState('happy', 2000)
-      say(resumeId && resumeId !== '__new__' ? '继续之前的对话喵~' : '开始新对话喵~')
+      say(action.type === 'resume' ? '继续之前的对话喵~' : '开始新对话喵~')
       await loadSessions()
     } catch (err) {
       console.error('[kitty] dir confirm failed:', err)
       machine.forceState('sad', 1500); say('出错了喵...')
     }
     setDirPick(null)
-  }, [dirPick, machine, loadSessions, say])
+  }, [dirPick, machine, loadSessions, say, setLastTool])
 
   const menuItems = useMemo(() => [
     { label: '💬 新对话', onClick: () => setShowInput(true) },
@@ -382,7 +388,7 @@ export default function PetCanvas() {
       <DraggablePopup>
         <SessionPicker
           dir={dirPick.dir}
-          tool={dirPick.tool}
+          defaultTool={dirPick.tool}
           sessions={dirPick.sessions}
           onPick={handleDirConfirm}
           onClose={() => setDirPick(null)}
@@ -427,6 +433,7 @@ export default function PetCanvas() {
       <DraggablePopup>
         <SessionDriftPrompt
           sessionTitle={sessions.find(s => s.id === driftPrompt.sessionId)?.title || ''}
+          isRunning={(sessions.find(s => s.id === driftPrompt.sessionId)?.status === 'running')}
           drift={driftPrompt.drift}
           onKeepCurrent={() => {
             const id = driftPrompt.sessionId
@@ -435,12 +442,15 @@ export default function PetCanvas() {
           }}
           onUseLatest={async () => {
             const { sessionId, drift } = driftPrompt
+            const isRunning = sessions.find(s => s.id === sessionId)?.status === 'running'
             setDriftPrompt(null)
             try {
               const { rebindExternal } = await import('../lib/ipc')
-              await rebindExternal(sessionId, drift.latestId)
+              // running: soft rebind (DB only, keep pane running its current jsonl)
+              // detached: hard rebind (kill tmux + restore via new id)
+              await rebindExternal(sessionId, drift.latestId, isRunning)
               await loadSessions()
-              say('已切到新对话喵~')
+              say(isRunning ? '记录已对齐喵~' : '已切到新对话喵~')
             } catch (err) {
               console.error('[kitty] rebind failed:', err)
               say('切换失败了喵...')
@@ -459,29 +469,35 @@ export default function PetCanvas() {
       onMouseDown={handleMouseDown} onClick={handleClick} onContextMenu={handleContextMenu}
       onMouseMove={handleMouseMove} onMouseLeave={handleMouseLeave}
     >
-      <div style={{ flex: '1 1 auto', minHeight: 0, width: '100%', overflow: 'auto', display: 'flex', flexDirection: 'column', justifyContent: 'flex-end' }}>
-      <TagCloud
-        sessions={sessions}
-        onAttach={handleAttach}
-        onKill={killSession}
-        onRename={renameSession}
-        onRestart={async (id) => {
-          try {
-            machine.forceState('dance', 5000)
-            say('重启中喵~')
-            await window.api.invoke('session:restart-agent', id)
-            machine.forceState('happy', 2000)
-            say('重启完成喵~')
-          } catch (err: any) {
-            machine.forceState('sad', 1500)
-            say(err?.message || '重启失败喵...')
-          }
-        }}
-        onEditEnv={(id) => setEnvEditor(id)}
-        onOpenSkills={(id) => window.api.invoke('popup-open', 'skills', id)}
-      />
+      {/* Layout wrapper is pointer-events:none so empty space inside it
+          doesn't intercept mousemove (which would flip the window into
+          interactive mode and block click-through to underlying windows).
+          Children with real UI must opt back in via pointerEvents:auto. */}
+      <div style={{ flex: '1 1 auto', minHeight: 0, width: '100%', overflow: 'auto', display: 'flex', flexDirection: 'column', justifyContent: 'flex-end', pointerEvents: 'none' }}>
+        <div style={{ pointerEvents: 'auto' }}>
+          <TagCloud
+            sessions={sessions}
+            onAttach={handleAttach}
+            onKill={killSession}
+            onRename={renameSession}
+            onRestart={async (id) => {
+              try {
+                machine.forceState('dance', 5000)
+                say('重启中喵~')
+                await window.api.invoke('session:restart-agent', id)
+                machine.forceState('happy', 2000)
+                say('重启完成喵~')
+              } catch (err: any) {
+                machine.forceState('sad', 1500)
+                say(err?.message || '重启失败喵...')
+              }
+            }}
+            onEditEnv={(id) => setEnvEditor(id)}
+            onOpenSkills={(id) => window.api.invoke('popup-open', 'skills', id)}
+          />
+        </div>
       </div>
-      <div style={{ position: 'relative', flexShrink: 0, width: 96, height: 96 }}>
+      <div style={{ position: 'relative', flexShrink: 0, width: 96, height: 96, pointerEvents: 'auto' }}>
         {speech && <SpeechBubble text={speech} onDone={() => setSpeech(null)} />}
         <PetSprite state={animation} skin={bubble.skin} size={96} />
       </div>
@@ -702,12 +718,14 @@ function GroupNamePrompt({ onSubmit, onClose }: { onSubmit: (name: string) => vo
 
 function SessionDriftPrompt({
   sessionTitle,
+  isRunning,
   drift,
   onKeepCurrent,
   onUseLatest,
   onClose,
 }: {
   sessionTitle: string
+  isRunning: boolean
   drift: import('../lib/ipc').SessionDrift
   onKeepCurrent: () => void
   onUseLatest: () => void
@@ -737,6 +755,7 @@ function SessionDriftPrompt({
 
       <div style={{ fontSize: 11, color: C.textDim, marginBottom: 8, lineHeight: 1.5 }}>
         当前绑定的对话 <code style={{ color: C.primary }}>{currentLabel}</code> 不是该目录下最新的。
+        {isRunning && <span style={{ color: C.primary }}>{' '}（仅更新记录，不重启 pane）</span>}
       </div>
 
       <div style={{

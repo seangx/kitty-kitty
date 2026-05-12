@@ -327,7 +327,12 @@ export default function SkillsPanel({ sessionId, onClose, onSay, onDance }: Prop
         {!loading && native.length > 0 && (() => {
           const bySource: Record<string, NativeSkill[]> = {}
           for (const s of native) {
-            const key = s.source === 'plugin' ? 'plugins' : s.source === 'project-command' ? 'project commands' : 'commands'
+            const key =
+              s.source === 'plugin' ? 'plugins'
+              : s.source === 'skill' ? 'skills'
+              : s.source === 'project-skill' ? 'project skills'
+              : s.source === 'project-command' ? 'project commands'
+              : 'commands'
             ;(bySource[key] ||= []).push(s)
           }
           return Object.entries(bySource).map(([source, items]) => {

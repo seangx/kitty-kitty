@@ -16,7 +16,7 @@ export interface SearchResult {
 
 export interface NativeSkill {
   name: string
-  source: 'command' | 'plugin' | 'project-command'
+  source: 'command' | 'plugin' | 'project-command' | 'skill' | 'project-skill'
   path?: string
   enabled?: boolean
   children?: string[]   // sub-skills inside a plugin

@@ -741,7 +741,7 @@ export default function TagCloud({ sessions, onAttach, onKill, onRename, onResta
               { label: '✕ 退出', action: () => { onKill(ctxMenu.id); setCtxMenu(null) }, color: '#ff6e84' },
               { label: '🗑️ 退出并删除', action: async () => {
                 const s = alive.find(x => x.id === ctxMenu.id)
-                const ok = window.confirm(`确定删除「${s?.title || '会话'}」？\n会话目录和 claude 对话文件将被清除，不可恢复。`)
+                const ok = window.confirm(`确定删除「${s?.title || '会话'}」？\n会话目录和 ${s?.tool === 'codex' ? 'codex' : 'claude'} 对话文件将被清除，不可恢复。`)
                 if (ok) {
                   await window.api.invoke('session:kill-and-delete', ctxMenu.id)
                 }
