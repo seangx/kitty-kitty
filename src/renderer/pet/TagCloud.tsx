@@ -66,6 +66,10 @@ function injectAnimations() {
       from { opacity: 0; transform: translate(-50%, 2px); }
       to { opacity: 1; transform: translate(-50%, -4px); }
     }
+    @keyframes kitty-needs-input-pulse {
+      0%, 100% { transform: scale(1); opacity: 1; }
+      50% { transform: scale(1.35); opacity: 0.7; }
+    }
   `
   document.head.appendChild(style)
 }
@@ -82,6 +86,7 @@ interface DragState {
 }
 
 export default function TagCloud({ sessions, onAttach, onKill, onRename, onRestart, onEditEnv, onOpenSkills }: Props) {
+  const needsInput = useSessionStore((s) => s.needsInput)
   const [hoveredId, setHoveredId] = useState<string | null>(null)
   const hoverTimer = useRef<ReturnType<typeof setTimeout> | null>(null)
   const enterHover = useCallback((id: string) => {
@@ -399,6 +404,21 @@ export default function TagCloud({ sessions, onAttach, onKill, onRename, onResta
         }}
         title={`${session.tool}: ${session.title}\n📂 ${session.cwd || '未设置'}${metadataTooltip}\n点击 attach · 右键菜单 · 按住拖动`}
       >
+        {needsInput.has(session.id) && (
+          <span
+            title="该会话在等你输入"
+            style={{
+              position: 'absolute',
+              top: -3, right: -3,
+              width: 10, height: 10, borderRadius: 9999,
+              background: '#ff3b5c',
+              boxShadow: '0 0 6px #ff3b5c, 0 0 0 2px rgba(12,12,31,0.85)',
+              animation: 'kitty-needs-input-pulse 1.4s ease-in-out infinite',
+              pointerEvents: 'none',
+              zIndex: 2,
+            }}
+          />
+        )}
         <div style={{ overflow: 'hidden', minWidth: 0 }}>
           {isEditing ? (
             <input autoFocus value={editTitle}
@@ -661,9 +681,10 @@ export default function TagCloud({ sessions, onAttach, onKill, onRename, onResta
                 key={s.id}
                 onMouseDown={(e) => startDrag(e, s.id, s.title)}
                 onContextMenu={(e) => { e.preventDefault(); e.stopPropagation(); handleToggleHidden(s.id) }}
-                title="按住拖到分组/未分组区显示"
+                title={needsInput.has(s.id) ? '该会话在等你输入 · 按住拖到分组/未分组区显示' : '按住拖到分组/未分组区显示'}
                 style={{
                   display: 'inline-block',
+                  position: 'relative',
                   fontSize: Math.round(9 * scale), color: '#e5e3ff', background: '#23233fcc',
                   border: '1px solid #46465c55', borderRadius: 9999,
                   padding: `${Math.round(2 * scale)}px ${Math.round(8 * scale)}px`,
@@ -672,7 +693,21 @@ export default function TagCloud({ sessions, onAttach, onKill, onRename, onResta
                   opacity: dragState?.sessionId === s.id && dragState?.active ? 0.4 : 1,
                   userSelect: 'none',
                 }}
-              >{s.title}</div>
+              >
+                {needsInput.has(s.id) && (
+                  <span
+                    style={{
+                      position: 'absolute', top: -3, right: -3,
+                      width: 8, height: 8, borderRadius: 9999,
+                      background: '#ff3b5c',
+                      boxShadow: '0 0 5px #ff3b5c, 0 0 0 2px rgba(12,12,31,0.85)',
+                      animation: 'kitty-needs-input-pulse 1.4s ease-in-out infinite',
+                      pointerEvents: 'none',
+                    }}
+                  />
+                )}
+                {s.title}
+              </div>
             ))}
           </div>
         )

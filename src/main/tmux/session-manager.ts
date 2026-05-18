@@ -317,12 +317,24 @@ export function killSession(tmuxName: string): void {
  * Subsequent splits: vertical within the right side.
  * Returns the new pane's tmux pane ID (e.g., %5).
  */
-export function createPaneInSession(tmuxName: string, command: string, isFirstSplit: boolean, cwd?: string): string {
+export function createPaneInSession(
+  tmuxName: string,
+  command: string,
+  isFirstSplit: boolean,
+  cwd?: string,
+  hiveEnv?: { key: string; name: string }
+): string {
   const cwdFlag = cwd ? `-c ${shellQuote(cwd)}` : ''
+  // Inject hive identity env into the new pane so any in-pane channel client
+  // (e.g. claude's hive-channel plugin) can reuse the kitty agent row by key
+  // instead of registering a sibling.
+  const hiveFlags = hiveEnv
+    ? ` -e ${shellQuote(`HIVE_AGENT_KEY=${hiveEnv.key}`)} -e ${shellQuote(`HIVE_AGENT_NAME=${hiveEnv.name}`)}`
+    : ''
   let paneId: string
   if (isFirstSplit) {
     paneId = execSync(
-      `${TMUX} split-window -t ${shellQuote(tmuxName)} -h -p 65 ${cwdFlag} -P -F '#{pane_id}' ${shellQuote(command)}`,
+      `${TMUX} split-window -t ${shellQuote(tmuxName)} -h -p 65 ${cwdFlag}${hiveFlags} -P -F '#{pane_id}' ${shellQuote(command)}`,
       { encoding: 'utf-8', env: { ...process.env, TERM: 'xterm-256color' } }
     ).trim()
   } else {
@@ -332,7 +344,7 @@ export function createPaneInSession(tmuxName: string, command: string, isFirstSp
     ).trim().split('\n')
     const lastPane = panes[panes.length - 1]
     paneId = execSync(
-      `${TMUX} split-window -t ${lastPane} -v ${cwdFlag} -P -F '#{pane_id}' ${shellQuote(command)}`,
+      `${TMUX} split-window -t ${lastPane} -v ${cwdFlag}${hiveFlags} -P -F '#{pane_id}' ${shellQuote(command)}`,
       { encoding: 'utf-8', env: { ...process.env, TERM: 'xterm-256color' } }
     ).trim()
   }

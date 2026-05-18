@@ -7,6 +7,8 @@ import { initDB, closeDB } from './db/database'
 import { initLogger, log } from './logger'
 import { hasTmux, focusAnyAttachedSession } from './tmux/session-manager'
 import * as ntfy from './ntfy'
+import { startWakeupServer, stopWakeupServer } from './wakeup'
+import { ensureClaudeNotificationHook } from './hook-installer'
 
 app.whenReady().then(() => {
   initLogger()
@@ -34,6 +36,8 @@ app.whenReady().then(() => {
   try { createTray(); log('app', 'tray created') } catch (e) { log('app', 'tray error:', e) }
   try { createPetWindow(); log('app', 'pet window created') } catch (e) { log('app', 'window error:', e) }
   try { ntfy.start(); log('app', 'ntfy listener started') } catch (e) { log('app', 'ntfy error:', e) }
+  try { startWakeupServer(); log('app', 'wakeup server started') } catch (e) { log('app', 'wakeup error:', e) }
+  try { ensureClaudeNotificationHook(); log('app', 'claude hook ensured') } catch (e) { log('app', 'hook installer error:', e) }
 })
 
 app.on('window-all-closed', () => {
@@ -52,5 +56,6 @@ app.on('activate', () => {
 
 app.on('before-quit', () => {
   ntfy.stop()
+  stopWakeupServer()
   closeDB()
 })

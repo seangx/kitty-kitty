@@ -12,6 +12,7 @@ import * as sessionRepo from '../db/session-repo'
 import { getDB } from '../db/database'
 import * as ntfy from '../ntfy'
 import { getProvider } from '../sessions'
+import { clearNeedsInput, getPendingInput } from '../wakeup'
 import type { SessionInfo } from '@shared/types/session'
 
 /**
@@ -30,6 +31,34 @@ function hiveCli(args: string[]): void {
     child.on('error', () => { /* hive not installed / PATH miss — ignore */ })
     child.unref()
   } catch { /* ignore */ }
+}
+
+/**
+ * Tear down a session's tmux presence without harming its siblings.
+ * When a session shares its tmux_name with other rows (group pane host),
+ * killing the whole tmux session would take all siblings' panes down with it.
+ * In that case kill only this row's own pane; only fall back to kill-session
+ * when this is the last/only occupant of that tmux session.
+ */
+function killSessionTmux(session: sessionRepo.SessionRow): void {
+  const siblings = sessionRepo.listSessions().filter(
+    (s) => s.id !== session.id && s.tmuxName === session.tmuxName,
+  )
+  const hostAlive = tmux.isSessionAlive(session.tmuxName)
+  if (siblings.length > 0 && hostAlive && session.paneId) {
+    // Other rows live in this tmux session — only remove our pane.
+    try {
+      execSync(`${tmux.TMUX} kill-pane -t ${session.paneId}`, { stdio: 'ignore' })
+      if (tmux.getPaneCount(session.tmuxName) > 1) {
+        tmux.applyMainVerticalLayout(session.tmuxName)
+      }
+    } catch {
+      // pane id stale — last resort, but only if no sibling actually has a pane
+      try { tmux.killSession(session.tmuxName) } catch { /* ignore */ }
+    }
+    return
+  }
+  tmux.killSession(session.tmuxName)
 }
 
 /** List recent on-disk CLI sessions for the given tool, started from `projectDir`. */
@@ -126,6 +155,9 @@ export function registerSessionHandlers(): void {
 
   // Re-attach to existing session (skip if already attached via kitty)
   ipcMain.handle(IPC.SESSION_ATTACH, (_event, id: string) => {
+    // Whatever the outcome, the user took action on this session — the
+    // wakeup badge has done its job, clear it.
+    clearNeedsInput(id)
     const rows = sessionRepo.listSessions()
     const session = rows.find((s) => s.id === id)
     if (!session) throw new Error('Session not found')
@@ -222,7 +254,7 @@ export function registerSessionHandlers(): void {
     const rows = sessionRepo.listSessions()
     const session = rows.find((s) => s.id === id)
     if (session) {
-      tmux.killSession(session.tmuxName)
+      killSessionTmux(session)
       sessionRepo.deleteSession(id)
       hiveCli(['agent', 'remove', '--key', id, '--yes'])
     }
@@ -236,7 +268,7 @@ export function registerSessionHandlers(): void {
     const session = rows.find((s) => s.id === id)
     if (!session) return { success: true }
 
-    tmux.killSession(session.tmuxName)
+    killSessionTmux(session)
 
     // Delete session directory if under ~/.kitty-kitty/sessions/
     const kittySessionsDir = join(homedir(), '.kitty-kitty', 'sessions')
@@ -275,6 +307,15 @@ export function registerSessionHandlers(): void {
 
   ipcMain.handle('session:set-expertise', (_event, id: string, expertise: string) => {
     sessionRepo.updateSessionExpertise(id, expertise)
+    return { success: true }
+  })
+
+  // Wakeup state — list of session ids currently flagged "needs your input".
+  ipcMain.handle('session:list-needs-input', () => getPendingInput())
+  // Renderer notifies the main process that the user has handled a wakeup
+  // (typically when they attach the session). Removes the badge.
+  ipcMain.handle('session:clear-needs-input', (_event, id: string) => {
+    clearNeedsInput(id)
     return { success: true }
   })
 
@@ -636,12 +677,19 @@ export function registerSessionHandlers(): void {
       // Split into the group's tmux session
       const hostTmuxName = hostSession.tmuxName
       const isFirstSplit = tmux.getPaneCount(hostTmuxName) === 1
-      const paneId = tmux.createPaneInSession(hostTmuxName, script, isFirstSplit, freshCwd)
+      const title = `${group.name} agent`
+      const paneId = tmux.createPaneInSession(
+        hostTmuxName,
+        script,
+        isFirstSplit,
+        freshCwd,
+        { key: freshId, name: title },
+      )
 
       const session: tmux.TmuxSession = {
         id: freshId,
         tmuxName: hostTmuxName,
-        title: `${group.name} agent`,
+        title,
         tool: 'claude',
         cwd: freshCwd,
         status: 'running',

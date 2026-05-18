@@ -39,7 +39,7 @@ export default function PetCanvas() {
   const clickTimer = useRef<ReturnType<typeof setTimeout> | null>(null)
   const dragOffset = useRef({ x: 0, y: 0 })
 
-  const { sessions, loadSessions, createSession, attachSession, killSession, renameSession } = useSessionStore()
+  const { sessions, loadSessions, createSession, attachSession, killSession, renameSession, needsInput, loadNeedsInput, markNeedsInput, clearNeedsInput } = useSessionStore()
   const { bubble, setBubble, lastTool, setLastTool } = useConfigStore()
 
   const machine = useMemo(() => new PetStateMachine(setAnimation), [])
@@ -70,6 +70,27 @@ export default function PetCanvas() {
     const unsub = window.api.on('window-blur', closeAll)
     return () => { scheduler.stop(); machine.destroy(); clearInterval(poll); unsub() }
   }, [scheduler, machine, loadSessions, closeAll])
+
+  // Wakeup ("xxx 在等你") IPC — bound ONCE, never re-binds on session updates,
+  // otherwise the 10s sessions poll would tear down + re-bind every cycle and
+  // make TagCloud re-render via loadNeedsInput's fresh Set, stuttering drags.
+  const sessionsRef = useRef(sessions)
+  useEffect(() => { sessionsRef.current = sessions }, [sessions])
+  useEffect(() => {
+    loadNeedsInput()
+    const unsubNeed = window.api.on('session:needs-input', (msg: any) => {
+      if (!msg?.sessionId) return
+      markNeedsInput(msg.sessionId)
+      const session = sessionsRef.current.find((s) => s.id === msg.sessionId)
+      const title = session?.title || String(msg.sessionId).slice(0, 6)
+      machine.forceState('happy', 1500)
+      say(`${title} 在等你喵~`, 4000)
+    })
+    const unsubClear = window.api.on('session:needs-input-clear', (msg: any) => {
+      if (msg?.sessionId) clearNeedsInput(msg.sessionId)
+    })
+    return () => { unsubNeed(); unsubClear() }
+  }, [loadNeedsInput, markNeedsInput, clearNeedsInput, machine, say])
 
   // Ntfy push notifications — keep last 3
   const [ntfyMessages, setNtfyMessages] = useState<Array<{ id: number; text: string; url?: string; color: string; time: string }>>([])
