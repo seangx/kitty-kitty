@@ -81,6 +81,9 @@ function runMigrations(database: Database.Database): void {
     try {
       database.exec("ALTER TABLE sessions ADD COLUMN env TEXT DEFAULT ''")
     } catch { /* column already exists */ }
+    try {
+      database.exec("ALTER TABLE sessions ADD COLUMN hive_agent_id TEXT DEFAULT ''")
+    } catch { /* column already exists */ }
 
     // Remove UNIQUE constraint on tmux_name (pane mode allows shared tmux sessions)
     try {

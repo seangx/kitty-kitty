@@ -25,6 +25,26 @@ function findTmux(): string {
 
 export const TMUX = findTmux()
 
+/**
+ * Build the env we pass to `child_process.execSync` when spawning tmux.
+ * Critical: scrub HIVE_AGENT_* off `process.env`. If kitty itself was
+ * launched (e.g. via `open Kitty Kitty.app`) from a shell that already had
+ * HIVE_AGENT_ID / KEY / NAME, those values would otherwise leak into the
+ * tmux SERVER's env (tmux server inherits its parent's env at first spawn),
+ * making every pane subsequently inherit the wrong identity regardless of
+ * the per-row `-e HIVE_AGENT_KEY=...` overrides — the hive plugin's
+ * priority is `id > key > name`, so a polluted ID wins. Only inject identity
+ * via the explicit `-e` flags on `tmux new-session` / `split-window` /
+ * `respawn-pane`.
+ */
+export function tmuxSpawnEnv(): NodeJS.ProcessEnv {
+  const env = { ...process.env, TERM: 'xterm-256color' }
+  delete env.HIVE_AGENT_ID
+  delete env.HIVE_AGENT_KEY
+  delete env.HIVE_AGENT_NAME
+  return env
+}
+
 /** Shell-safe quoting: wraps in single quotes, escapes embedded single quotes */
 function shellQuote(s: string): string {
   return "'" + s.replace(/'/g, "'\\''") + "'"
@@ -72,8 +92,11 @@ export function hasTmux(): boolean {
 /**
  * Create a new tmux session running the specified tool
  */
-export function createTmuxSession(tool: string, firstMessage?: string, cwd?: string, launchScript?: string): TmuxSession {
-  const id = uuid().slice(0, 8)
+export function createTmuxSession(tool: string, firstMessage?: string, cwd?: string, launchScript?: string, presetId?: string): TmuxSession {
+  // Callers can pass a pre-allocated id (e.g. when registering with hive
+  // BEFORE the pane spawns, to use the same key end-to-end). Otherwise
+  // generate fresh.
+  const id = presetId || uuid().slice(0, 8)
   const tmuxName = `${SESSION_PREFIX}${id}`
 
   // Default cwd: ~/.kitty-kitty/sessions/<id>/, auto-created
@@ -95,7 +118,7 @@ export function createTmuxSession(tool: string, firstMessage?: string, cwd?: str
     ` -e ${shellQuote(`HIVE_AGENT_NAME=${title}`)}`
   execSync(`${TMUX} new-session -d -s ${shellQuote(tmuxName)} -c ${shellQuote(cwd)}${hiveEnv} ${shellQuote(command)}`, {
     stdio: 'ignore',
-    env: { ...process.env, TERM: 'xterm-256color' }
+    env: tmuxSpawnEnv()
   })
 
   // If there's a first message, wait a moment then send it
@@ -153,7 +176,7 @@ export function attachSession(tmuxName: string): void {
     }
     // No existing terminal window — open one
     exec(`/Applications/Ghostty.app/Contents/MacOS/ghostty --window-save-state=never --confirm-close-surface=false --macos-option-as-alt=true --command=${shellQuote(TMUX + ' attach-session -t ' + shellQuote(tmuxName))}`, {
-      env: { ...process.env, TERM: 'xterm-256color' }
+      env: tmuxSpawnEnv()
     })
   } else if (platform === 'linux') {
     if (hasAnyAttachedClient()) {
@@ -335,7 +358,7 @@ export function createPaneInSession(
   if (isFirstSplit) {
     paneId = execSync(
       `${TMUX} split-window -t ${shellQuote(tmuxName)} -h -p 65 ${cwdFlag}${hiveFlags} -P -F '#{pane_id}' ${shellQuote(command)}`,
-      { encoding: 'utf-8', env: { ...process.env, TERM: 'xterm-256color' } }
+      { encoding: 'utf-8', env: tmuxSpawnEnv() }
     ).trim()
   } else {
     const panes = execSync(
@@ -345,7 +368,7 @@ export function createPaneInSession(
     const lastPane = panes[panes.length - 1]
     paneId = execSync(
       `${TMUX} split-window -t ${lastPane} -v ${cwdFlag}${hiveFlags} -P -F '#{pane_id}' ${shellQuote(command)}`,
-      { encoding: 'utf-8', env: { ...process.env, TERM: 'xterm-256color' } }
+      { encoding: 'utf-8', env: tmuxSpawnEnv() }
     ).trim()
   }
   return paneId

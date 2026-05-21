@@ -7,12 +7,13 @@ import { execSync, spawn } from 'child_process'
 import { v4 as uuid } from 'uuid'
 import { log } from '../logger'
 import * as tmux from '../tmux/session-manager'
-import { generateLaunchScript, isToolInstalled, getInstallHint, getNtfyTopic, setNtfyTopic, needsDevChannelAutoAccept } from '../tmux/cli-wrapper'
+import { generateLaunchScript, isToolInstalled, getInstallHint, getNtfyTopic, setNtfyTopic, getCodexHiveBridge, setCodexHiveBridge, needsDevChannelAutoAccept, generateCodexRemoteScript } from '../tmux/cli-wrapper'
+import { registerCodexAgent, codexPaneWs, renameAgent } from '../hive-codex'
 import * as sessionRepo from '../db/session-repo'
 import { getDB } from '../db/database'
 import * as ntfy from '../ntfy'
 import { getProvider } from '../sessions'
-import { clearNeedsInput, getPendingInput } from '../wakeup'
+import { clearNeedsInput, getPendingInput, isJsonlInCwd } from '../wakeup'
 import type { SessionInfo } from '@shared/types/session'
 
 /**
@@ -31,6 +32,44 @@ function hiveCli(args: string[]): void {
     child.on('error', () => { /* hive not installed / PATH miss — ignore */ })
     child.unref()
   } catch { /* ignore */ }
+}
+
+/**
+ * Path B preparation for a fresh codex session. If the codex hive bridge is
+ * enabled, register the agent with hive (so the supervisor spawns a codex
+ * app-server daemon), then poll `codex-pane ws --key` until ready and return
+ * a launch script that runs `codex --remote <ws>` inside the pane.
+ *
+ * Returns null when the bridge is off, hive isn't reachable, or any step
+ * fails — callers fall back to a normal launch script. We log every failure
+ * so the user can correlate "bridge toggle on but pane is bare codex".
+ */
+async function tryPrepareCodexRemoteScript(args: {
+  kittyId: string
+  title: string
+  projectDir?: string
+}): Promise<{ script: string; hiveAgentId: string } | null> {
+  if (!getCodexHiveBridge()) return null
+  try {
+    const reg = await registerCodexAgent({
+      key: args.kittyId,
+      displayName: args.title,
+      projectDir: args.projectDir,
+    })
+    if (!reg.success || !reg.agentId) {
+      log('codex-bridge', `register failed: ${reg.error}`)
+      return null
+    }
+    const ws = await codexPaneWs({ key: args.kittyId, timeoutMs: 10000 })
+    if (ws.status !== 'ready' || !ws.ws_url) {
+      log('codex-bridge', `ws not ready (status=${ws.status}): ${ws.error || ''}`)
+      return null
+    }
+    return { script: generateCodexRemoteScript(ws.ws_url, ws.thread_id, args.projectDir), hiveAgentId: reg.agentId }
+  } catch (err) {
+    log('codex-bridge', 'unexpected:', err)
+    return null
+  }
 }
 
 /**
@@ -95,11 +134,30 @@ export function registerSessionHandlers(): void {
   ipcMain.handle('shell:open-path', (_event, p: string) => shell.openPath(p))
 
   // Create new tmux session and open terminal
-  ipcMain.handle(IPC.SESSION_CREATE, (_event, tool: string, firstMessage?: string) => {
-    ensureReady(tool || 'claude')
+  ipcMain.handle(IPC.SESSION_CREATE, async (_event, tool: string, firstMessage?: string) => {
+    const t = tool || 'claude'
+    ensureReady(t)
 
-    const script = generateLaunchScript(tool || 'claude', 'new')
-    const session = tmux.createTmuxSession(tool || 'claude', firstMessage, undefined, script)
+    let script: string
+    let hiveAgentId = ''
+    if (t === 'codex') {
+      // We don't yet have a stable kitty id — generate one first so hive can
+      // map back to it. tmux.createTmuxSession will reuse the id we pass via
+      // the script env injection below.
+      const provisional = uuid().slice(0, 8)
+      const bridged = await tryPrepareCodexRemoteScript({ kittyId: provisional, title: firstMessage?.slice(0, 40) || provisional })
+      if (bridged) {
+        script = bridged.script
+        hiveAgentId = bridged.hiveAgentId
+        const session = tmux.createTmuxSession(t, firstMessage, undefined, script, provisional)
+        sessionRepo.saveSession(session)
+        if (hiveAgentId) sessionRepo.updateSessionHiveAgentId(session.id, hiveAgentId)
+        tmux.attachSession(session.tmuxName)
+        return toSessionInfo(session)
+      }
+    }
+    script = generateLaunchScript(t, 'new')
+    const session = tmux.createTmuxSession(t, firstMessage, undefined, script)
     sessionRepo.saveSession(session)
     tmux.attachSession(session.tmuxName)
     return toSessionInfo(session)
@@ -126,24 +184,61 @@ export function registerSessionHandlers(): void {
       return { type: 'pick' as const, dir, sessions: existingSessions, isGitRepo }
     }
 
-    // No existing sessions — create new directly
-    const script = generateLaunchScript(tool || 'claude', 'new')
-    const session = tmux.createTmuxSession(tool || 'claude', undefined, dir, script)
+    // No existing sessions — create new directly.
+    // For codex with bridge on, try path B (codex --remote ws).
+    const t = tool || 'claude'
+    let script: string
+    let hiveAgentId = ''
+    let presetId: string | undefined
+    if (t === 'codex') {
+      const provisional = uuid().slice(0, 8)
+      const bridged = await tryPrepareCodexRemoteScript({ kittyId: provisional, title: basename(dir), projectDir: dir })
+      if (bridged) {
+        script = bridged.script
+        hiveAgentId = bridged.hiveAgentId
+        presetId = provisional
+      } else {
+        script = generateLaunchScript(t, 'new')
+      }
+    } else {
+      script = generateLaunchScript(t, 'new')
+    }
+    const session = tmux.createTmuxSession(t, undefined, dir, script, presetId)
     sessionRepo.saveSession(session)
+    if (hiveAgentId) sessionRepo.updateSessionHiveAgentId(session.id, hiveAgentId)
     tmux.attachSession(session.tmuxName)
     return { type: 'created' as const, session: toSessionInfo(session) }
   })
 
   // Step 2: Start session in dir with optional resume
-  ipcMain.handle('session:create-in-dir-confirm', (_event, tool: string, dir: string, resumeId?: string) => {
+  ipcMain.handle('session:create-in-dir-confirm', async (_event, tool: string, dir: string, resumeId?: string) => {
     let mode: 'new' | 'continue' | 'resume'
     if (resumeId === '__new__') mode = 'new'
     else if (resumeId) mode = 'resume'
     else mode = 'continue'
 
-    const script = generateLaunchScript(tool || 'claude', mode, resumeId === '__new__' ? undefined : resumeId || undefined)
-    const session = tmux.createTmuxSession(tool || 'claude', undefined, dir, script)
+    const t = tool || 'claude'
+    let script: string
+    let hiveAgentId = ''
+    let presetId: string | undefined
+    // Path B applies only to NEW codex sessions — we can't `codex --remote`
+    // into an arbitrary pre-existing thread, hive's daemon thread is fresh.
+    if (t === 'codex' && mode === 'new') {
+      const provisional = uuid().slice(0, 8)
+      const bridged = await tryPrepareCodexRemoteScript({ kittyId: provisional, title: basename(dir), projectDir: dir })
+      if (bridged) {
+        script = bridged.script
+        hiveAgentId = bridged.hiveAgentId
+        presetId = provisional
+      } else {
+        script = generateLaunchScript(t, mode)
+      }
+    } else {
+      script = generateLaunchScript(t, mode, resumeId === '__new__' ? undefined : resumeId || undefined)
+    }
+    const session = tmux.createTmuxSession(t, undefined, dir, script, presetId)
     sessionRepo.saveSession(session)
+    if (hiveAgentId) sessionRepo.updateSessionHiveAgentId(session.id, hiveAgentId)
     tmux.attachSession(session.tmuxName)
     return toSessionInfo(session)
   })
@@ -241,6 +336,12 @@ export function registerSessionHandlers(): void {
     const rows = sessionRepo.listSessions()
     const session = rows.find((s) => s.id === id)
     if (!session) return { success: false }
+    // Reject cross-cwd rebind (claude tool only — codex has no jsonl-in-cwd
+    // contract). The jsonl must physically live under the row's claimed cwd.
+    if (session.tool === 'claude' && newExternalId && !isJsonlInCwd(newExternalId, session.cwd)) {
+      log('session', `rebind REJECT cross-cwd: ${session.title} cwd=${session.cwd} jsonl=${newExternalId.slice(0, 8)}`)
+      return { success: false, error: 'jsonl-not-in-cwd' }
+    }
     if (!keepTmux) {
       try { tmux.killSession(session.tmuxName) } catch { /* ignore */ }
       sessionRepo.updateSessionStatus(id, 'detached')
@@ -352,7 +453,7 @@ export function registerSessionHandlers(): void {
   })
 
   // Restart current session agent process in-place.
-  ipcMain.handle('session:restart-agent', (_event, id: string) => {
+  ipcMain.handle('session:restart-agent', async (_event, id: string) => {
     const rows = sessionRepo.listSessions()
     const session = rows.find((s) => s.id === id)
     if (!session) throw new Error('Session not found')
@@ -360,19 +461,19 @@ export function registerSessionHandlers(): void {
       sessionRepo.updateSessionStatus(id, 'dead')
       throw new Error('Session is not running')
     }
-    restartSessionPane(session)
+    await restartSessionPane(session)
     return { success: true }
   })
 
   // Restart all alive sessions in one go
-  ipcMain.handle('session:restart-all', () => {
+  ipcMain.handle('session:restart-all', async () => {
     const rows = sessionRepo.listSessions()
     let ok = 0, fail = 0
     for (const session of rows) {
       if (session.hidden) continue
       if (!tmux.isSessionAlive(session.tmuxName)) continue
       try {
-        restartSessionPane(session)
+        await restartSessionPane(session)
         ok++
       } catch (err) {
         log('session', `restart-all: failed for ${session.title}:`, err)
@@ -384,14 +485,14 @@ export function registerSessionHandlers(): void {
   })
 
   // Restart all sessions in a given group
-  ipcMain.handle('group:restart-sessions', (_event, groupId: string) => {
+  ipcMain.handle('group:restart-sessions', async (_event, groupId: string) => {
     const rows = sessionRepo.listSessions().filter(s => s.groupId === groupId)
     let ok = 0, fail = 0
     for (const session of rows) {
       if (session.hidden) continue
       if (!tmux.isSessionAlive(session.tmuxName)) continue
       try {
-        restartSessionPane(session)
+        await restartSessionPane(session)
         ok++
       } catch (err) {
         log('session', `group-restart: failed for ${session.title}:`, err)
@@ -608,7 +709,7 @@ export function registerSessionHandlers(): void {
                 const script = generateLaunchScript(sTool || 'claude', 'restore')
                 execSync(
                   `${tmux.TMUX} new-session -d -s "${tempName}" -c "${sCwd}" "${script}"`,
-                  { stdio: 'ignore', env: { ...process.env, TERM: 'xterm-256color' } }
+                  { stdio: 'ignore', env: tmux.tmuxSpawnEnv() }
                 )
                 tmux.joinSessionAsPane(tempName, hostTmux)
                 const newPanes = execSync(
@@ -626,7 +727,7 @@ export function registerSessionHandlers(): void {
                 const script = generateLaunchScript(sTool || 'claude', 'restore')
                 execSync(
                   `${tmux.TMUX} new-session -d -s "${sTmuxName}" -c "${sCwd}" "${script}"`,
-                  { stdio: 'ignore', env: { ...process.env, TERM: 'xterm-256color' } }
+                  { stdio: 'ignore', env: tmux.tmuxSpawnEnv() }
                 )
                 tmux.applyKittyStatusBar(sTmuxName)
                 sessionRepo.updateSessionStatus(sid, 'detached')
@@ -652,6 +753,13 @@ export function registerSessionHandlers(): void {
   ipcMain.handle(IPC.NTFY_TOPIC_SET, (_event, topic: string) => {
     setNtfyTopic(topic)
     ntfy.updateTopic(topic)
+  })
+
+  // --- Codex hive bridge (path B) toggle ---
+  ipcMain.handle('config:codex-hive-bridge:get', () => getCodexHiveBridge())
+  ipcMain.handle('config:codex-hive-bridge:set', (_event, enabled: boolean) => {
+    setCodexHiveBridge(!!enabled)
+    return { success: true }
   })
 
   ipcMain.handle(IPC.SESSION_CREATE_IN_GROUP, (_event, groupId: string) => {
@@ -872,11 +980,11 @@ function tryRestoreSession(row: sessionRepo.SessionRow): boolean {
   if (!row.cwd || !existsSync(row.cwd)) return false
   try {
     const script = row.externalSessionId
-      ? generateLaunchScript(row.tool, 'resume', row.externalSessionId)
-      : generateLaunchScript(row.tool, 'restore')
+      ? generateLaunchScript(row.tool, 'resume', row.externalSessionId, row.cwd)
+      : generateLaunchScript(row.tool, 'restore', undefined, row.cwd)
     execSync(
       `${tmux.TMUX} new-session -d -s "${row.tmuxName}" -c "${row.cwd}" "${script}"`,
-      { stdio: ['ignore', 'ignore', 'pipe'], env: { ...process.env, TERM: 'xterm-256color' } }
+      { stdio: ['ignore', 'ignore', 'pipe'], env: tmux.tmuxSpawnEnv() }
     )
     tmux.applyKittyStatusBar(row.tmuxName)
     sessionRepo.updateSessionStatus(row.id, 'detached')
@@ -1066,13 +1174,41 @@ function toSessionInfo(s: tmux.TmuxSession): SessionInfo {
   }
 }
 
-function restartSessionPane(session: sessionRepo.SessionRow): void {
+async function restartSessionPane(session: sessionRepo.SessionRow): Promise<void> {
   // In pane mode, use paneId (%N) to target the exact pane; otherwise use mainPane
   const target = session.paneId
     ? session.paneId
     : resolvePaneTarget(session.tmuxName, session.mainPane || '0.0')
-  const mode = session.externalSessionId ? 'resume' : 'continue'
-  const launch = generateLaunchScript(session.tool, mode, session.externalSessionId || undefined)
+
+  // Codex with hive bridge: instead of `codex resume`, re-attach the pane to
+  // the still-alive daemon thread via `codex --remote <ws>`. If the daemon is
+  // gone or bridge is off, fall back to the normal resume/continue script.
+  let launch: string
+  let bridgedHiveAgentId = ''
+  if (session.tool === 'codex' && getCodexHiveBridge()) {
+    // ALWAYS register on restart, not just when hiveAgentId is empty.
+    // The stored hiveAgentId may point to a deleted/orphaned hive row
+    // (e.g. user / admin removed it). register is idempotent — same key
+    // either reuses the row or creates a fresh one — so calling every
+    // restart is safe and keeps DB ↔ hive in sync.
+    const reg = await registerCodexAgent({
+      key: session.id,
+      displayName: session.title,
+      projectDir: session.cwd || undefined,
+    })
+    if (reg.success && reg.agentId) bridgedHiveAgentId = reg.agentId
+    const ws = await codexPaneWs({ key: session.id, timeoutMs: 10000 })
+    if (ws.status === 'ready' && ws.ws_url) {
+      launch = generateCodexRemoteScript(ws.ws_url, ws.thread_id, session.cwd || undefined)
+    } else {
+      log('codex-bridge', `restart fallback (ws status=${ws.status}): ${ws.error || ''}`)
+      const mode = session.externalSessionId ? 'resume' : 'continue'
+      launch = generateLaunchScript(session.tool, mode, session.externalSessionId || undefined, session.cwd || undefined)
+    }
+  } else {
+    const mode = session.externalSessionId ? 'resume' : 'continue'
+    launch = generateLaunchScript(session.tool, mode, session.externalSessionId || undefined, session.cwd || undefined)
+  }
 
   // Parse per-session env and pass via respawn-pane -e KEY=VALUE
   let envFlags = ''
@@ -1089,7 +1225,10 @@ function restartSessionPane(session: sessionRepo.SessionRow): void {
   envFlags += ` -e "HIVE_AGENT_NAME=${String(session.title || '').replace(/"/g, '\\"')}"`
 
   execSync(`${tmux.TMUX} respawn-pane -k${envFlags} -t "${target}" "${launch}"`, { stdio: 'ignore' })
-  log('session', `restart: ${session.title} (mode=${mode})`)
+  if (bridgedHiveAgentId && bridgedHiveAgentId !== session.hiveAgentId) {
+    sessionRepo.updateSessionHiveAgentId(session.id, bridgedHiveAgentId)
+  }
+  log('session', `restart: ${session.title}`)
 
   // For claude --dangerously-load-development-channels: auto-accept the prompt
   if (needsDevChannelAutoAccept(session.tool)) {

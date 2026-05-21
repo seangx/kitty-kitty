@@ -101,9 +101,10 @@ export default function SkillsPanel({ sessionId, onClose, onSay, onDance }: Prop
     onDance()
     notify(`安装 ${name} 中…`, 'info', 15000)
     try {
-      const res = await ipc.installSkill(name)
+      // `add` = 从 registry 拉取 + 部署到当前会话（install 只下载到仓库不部署）。
+      const res = await ipc.addSkill(sessionId, name)
       if (!res) { notify('安装失败', 'error'); return }
-      notify(res.success ? `${name} 已安装` : (res.message || '安装失败'), res.success ? 'success' : 'error', 5000)
+      notify(res.success ? `${name} 已安装并部署` : (res.message || '安装失败'), res.success ? 'success' : 'error', 5000)
       if (res.success) await refresh()
     } catch (err: any) {
       notify(err?.message || '安装失败', 'error')

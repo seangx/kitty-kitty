@@ -33,6 +33,25 @@ import { getPetWindow } from './windows/pet-window'
 import * as sessionRepo from './db/session-repo'
 
 const SOCK_DIR = join(homedir(), '.kitty-kitty')
+const CLAUDE_PROJECTS = join(homedir(), '.claude', 'projects')
+
+/**
+ * Verify that `<session_id>.jsonl` for claude lives under the encoded cwd
+ * directory — proves the running claude is in that project, not somewhere
+ * else the user manually cd'd into. Tries both the legacy `/` → `-` and
+ * the current `[/.]` → `-` encodings so older jsonl layouts still match.
+ */
+export function isJsonlInCwd(sessionId: string, cwd: string): boolean {
+  if (!sessionId || !cwd) return false
+  const candidates = [
+    cwd.replace(/[/.]/g, '-'),
+    cwd.replace(/\//g, '-'),
+  ]
+  for (const enc of candidates) {
+    if (existsSync(join(CLAUDE_PROJECTS, enc, `${sessionId}.jsonl`))) return true
+  }
+  return false
+}
 const SOCK_PATH = join(SOCK_DIR, 'wakeup.sock')
 
 let server: Server | null = null
@@ -100,6 +119,7 @@ async function handleRequest(req: IncomingMessage, res: ServerResponse): Promise
   const kittyHeader = (req.headers['x-kitty-session'] as string | undefined)?.trim()
   const claudeSessionId = typeof payload?.session_id === 'string' ? payload.session_id : undefined
   const message: string = typeof payload?.message === 'string' ? payload.message : ''
+  const hookEvent: string = typeof payload?.hook_event_name === 'string' ? payload.hook_event_name : ''
   // claude-code Notification payload doesn't include `notification_type` (issue #11964),
   // so we keep this as a best-effort tag derived from the message.
   const type: string =
@@ -109,23 +129,53 @@ async function handleRequest(req: IncomingMessage, res: ServerResponse): Promise
 
   const kittyId = resolveKittySessionId(kittyHeader, claudeSessionId)
   if (!kittyId) {
-    log('wakeup', `no matching session (header=${kittyHeader || ''} claudeId=${claudeSessionId || ''})`)
+    log('wakeup', `no matching session (header=${kittyHeader || ''} claudeId=${claudeSessionId || ''} event=${hookEvent})`)
     res.statusCode = 200
     res.end(JSON.stringify({ ok: false, reason: 'no-match' }))
     return
   }
 
-  pending.set(kittyId, { type, message, ts: new Date().toISOString() })
-  log('wakeup', `${kittyId} needs input (${type}): ${message.slice(0, 80)}`)
+  // Opportunistically keep DB's externalSessionId in sync with claude's
+  // actual active jsonl. /clear silently rolls to a new session_id; without
+  // this sync, kitty's first-launch restore on next startup would resume the
+  // stale id and the post-/clear conversation would appear "gone".
+  //
+  // SAFETY: only sync when the jsonl file for `session_id` actually lives in
+  // the row's claimed cwd. claude stores jsonls under
+  //   ~/.claude/projects/<encoded(cwd)>/<session_id>.jsonl
+  // so a present file at that exact path proves the running claude is in this
+  // row's project — not a different project the user manually cd'd into.
+  // Without this check, a user (or stray script) running claude from a
+  // different cwd while carrying our HIVE_AGENT_KEY would silently rebind the
+  // row to the wrong jsonl (see kitty issue: 两个 pane 都变成 kitty-hive).
+  if (claudeSessionId) {
+    try {
+      const row = sessionRepo.listSessions().find((s) => s.id === kittyId)
+      if (row && row.externalSessionId !== claudeSessionId) {
+        if (isJsonlInCwd(claudeSessionId, row.cwd)) {
+          sessionRepo.updateSessionExternalId(kittyId, claudeSessionId)
+          log('wakeup', `${kittyId} externalSessionId synced: ${(row.externalSessionId || '(none)').slice(0, 8)} → ${claudeSessionId.slice(0, 8)} (event=${hookEvent})`)
+        } else {
+          log('wakeup', `${kittyId} REJECT cross-cwd sync: jsonl ${claudeSessionId.slice(0, 8)} not in ${row.cwd} (event=${hookEvent})`)
+        }
+      }
+    } catch (err) { log('wakeup', 'updateSessionExternalId failed:', err) }
+  }
 
-  const win = getPetWindow()
-  if (win && !win.isDestroyed()) {
-    win.webContents.send('session:needs-input', { sessionId: kittyId, type, message })
+  // Only Notification events surface the "needs your input" badge. Stop
+  // events are purely for the externalSessionId sync above.
+  if (hookEvent === 'Notification' || (!hookEvent && message)) {
+    pending.set(kittyId, { type, message, ts: new Date().toISOString() })
+    log('wakeup', `${kittyId} needs input (${type}): ${message.slice(0, 80)}`)
+    const win = getPetWindow()
+    if (win && !win.isDestroyed()) {
+      win.webContents.send('session:needs-input', { sessionId: kittyId, type, message })
+    }
   }
 
   res.statusCode = 200
   res.setHeader('content-type', 'application/json')
-  res.end(JSON.stringify({ ok: true, sessionId: kittyId }))
+  res.end(JSON.stringify({ ok: true, sessionId: kittyId, event: hookEvent }))
 }
 
 export function startWakeupServer(): void {

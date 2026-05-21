@@ -19,6 +19,7 @@ export interface SessionRow {
   paneId: string
   externalSessionId: string
   env: string
+  hiveAgentId: string
   hidden?: number
 }
 
@@ -46,6 +47,7 @@ export function listSessions(): SessionRow[] {
            s.main_pane as mainPane, s.hidden,
            s.roles, s.expertise, s.pane_id as paneId,
            COALESCE(s.claude_session_id, '') as externalSessionId,
+           COALESCE(s.hive_agent_id, '') as hiveAgentId,
            COALESCE(s.env, '') as env,
            s.created_at as createdAt, s.updated_at as updatedAt,
            s.group_id as groupId, g.name as groupName, g.color as groupColor
@@ -105,6 +107,11 @@ export function updateSessionPaneId(id: string, paneId: string): void {
   db.prepare("UPDATE sessions SET pane_id = ?, updated_at = datetime('now') WHERE id = ?").run(paneId, id)
 }
 
+export function updateSessionHiveAgentId(id: string, hiveAgentId: string): void {
+  const db = getDB()
+  db.prepare("UPDATE sessions SET hive_agent_id = ?, updated_at = datetime('now') WHERE id = ?").run(hiveAgentId, id)
+}
+
 export function updateSessionExternalId(id: string, externalSessionId: string): void {
   const db = getDB()
   // DB column stays `claude_session_id` for backward compat (no migration needed);
@@ -128,6 +135,7 @@ export function getSessionByTmuxName(tmuxName: string): SessionRow | undefined {
     SELECT s.id, s.tmux_name as tmuxName, s.title, s.tool, s.cwd, s.status,
            s.main_pane as mainPane, s.pane_id as paneId,
            COALESCE(s.claude_session_id, '') as externalSessionId,
+           COALESCE(s.hive_agent_id, '') as hiveAgentId,
            COALESCE(s.env, '') as env,
            s.created_at as createdAt, s.updated_at as updatedAt,
            s.group_id as groupId, g.name as groupName, g.color as groupColor
@@ -173,6 +181,7 @@ export function listSessionsByGroup(groupId: string): (SessionRow & { hidden?: n
     SELECT s.id, s.tmux_name as tmuxName, s.title, s.tool, s.cwd, s.status,
            s.main_pane as mainPane, s.hidden, s.pane_id as paneId,
            COALESCE(s.claude_session_id, '') as externalSessionId,
+           COALESCE(s.hive_agent_id, '') as hiveAgentId,
            COALESCE(s.env, '') as env,
            s.created_at as createdAt, s.updated_at as updatedAt,
            s.group_id as groupId, g.name as groupName, g.color as groupColor

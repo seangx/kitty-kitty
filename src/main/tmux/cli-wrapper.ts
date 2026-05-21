@@ -64,6 +64,8 @@ const CONFIG_PATH = join(homedir(), '.kitty-kitty', 'config.json')
 interface KittyConfig {
   toolArgs?: Record<string, string>
   ntfyTopic?: string
+  /** Path B: route codex pane spawn through hive supervisor (codex --remote ws). */
+  codexHiveBridge?: boolean
 }
 
 function loadConfig(): KittyConfig {
@@ -94,6 +96,17 @@ export function getNtfyTopic(): string {
 export function setNtfyTopic(topic: string): void {
   const config = loadConfig()
   config.ntfyTopic = topic
+  writeFileSync(CONFIG_PATH, JSON.stringify(config, null, 2))
+}
+
+export function getCodexHiveBridge(): boolean {
+  const config = loadConfig()
+  return Boolean(config.codexHiveBridge)
+}
+
+export function setCodexHiveBridge(enabled: boolean): void {
+  const config = loadConfig()
+  config.codexHiveBridge = enabled
   writeFileSync(CONFIG_PATH, JSON.stringify(config, null, 2))
 }
 
@@ -141,7 +154,8 @@ export function getInstallHint(tool: string): string {
 export function generateLaunchScript(
   tool: string,
   mode: LaunchMode,
-  resumeId?: string
+  resumeId?: string,
+  cwd?: string,
 ): string {
   const config = TOOLS[tool] || { cmd: tool }
   const scriptPath = join(tmpdir(), `kitty_launch_${Date.now()}.sh`)
@@ -163,9 +177,25 @@ export function generateLaunchScript(
       break
   }
 
+  if (cwd) script = prefixCwd(script, cwd)
+
   writeFileSync(scriptPath, script)
   chmodSync(scriptPath, '755')
   return scriptPath
+}
+
+/**
+ * Force the script to cd into the row's intended cwd before running anything.
+ * `tmux respawn-pane` inherits the pane's current working directory, which can
+ * drift away from the row's cwd if the user manually cd'd inside the pane or
+ * if a prior corruption put it elsewhere. Without this guard, `claude -c`
+ * would pick up the WRONG project's most-recent jsonl.
+ */
+function prefixCwd(script: string, cwd: string): string {
+  return script.replace(
+    /^#!\/bin\/bash\n/,
+    `#!/bin/bash\ncd ${shellQuoteForSh(cwd)} 2>/dev/null || true\n`,
+  )
 }
 
 /**
@@ -173,6 +203,38 @@ export function generateLaunchScript(
  */
 export function getToolCommand(tool: string): string {
   return TOOLS[tool]?.cmd || tool
+}
+
+/**
+ * Path B: codex TUI client attached to a hive-managed ws app-server.
+ * No fallback to bare `codex` — caller decides whether to retry / fallback
+ * before spawning the pane.
+ *
+ * IMPORTANT: pass `threadId` from `hive_codex_pane_ws` — without it, the TUI
+ * defaults to `thread/start` and opens a brand-new thread, missing all DMs
+ * the daemon has already pushed into its own thread. With `resume <threadId>
+ * --remote <ws>` the TUI binds to the daemon's actual thread.
+ */
+export function generateCodexRemoteScript(wsUrl: string, threadId?: string, cwd?: string): string {
+  const scriptPath = join(tmpdir(), `kitty_launch_${Date.now()}.sh`)
+  const cmd = threadId
+    ? `codex resume ${shellQuoteForSh(threadId)} --remote ${shellQuoteForSh(wsUrl)}`
+    : `codex --remote ${shellQuoteForSh(wsUrl)}`
+  let script = `#!/bin/bash
+${PATH_PREAMBLE}
+${cmd}
+# Keep shell alive when TUI exits so the pane doesn't vanish silently
+exec $SHELL
+`
+  if (cwd) script = prefixCwd(script, cwd)
+  writeFileSync(scriptPath, script)
+  chmodSync(scriptPath, '755')
+  return scriptPath
+}
+
+function shellQuoteForSh(s: string): string {
+  // Single-quote escape: ' → '\''
+  return `'${s.replace(/'/g, "'\\''")}'`
 }
 
 // --- Script builders ---

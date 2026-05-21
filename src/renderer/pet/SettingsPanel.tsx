@@ -14,10 +14,12 @@ const C = {
 export default function SettingsPanel({ onClose }: Props) {
   const { bubble, setBubble, resetBubble } = useConfigStore()
   const [ntfyTopic, setNtfyTopic] = useState('')
+  const [codexHiveBridge, setCodexHiveBridgeState] = useState(false)
   const ntfyTimer = useRef<ReturnType<typeof setTimeout> | null>(null)
 
   useEffect(() => {
     window.api.invoke('ntfy:topic:get').then((t: any) => setNtfyTopic(t || '')).catch(() => {})
+    window.api.invoke('config:codex-hive-bridge:get').then((v: any) => setCodexHiveBridgeState(!!v)).catch(() => {})
   }, [])
 
   return (
@@ -58,6 +60,27 @@ export default function SettingsPanel({ onClose }: Props) {
         />
         <div style={{ fontSize: 10, color: C.textDim, marginTop: 3 }}>
           ntfy.sh 推送主题，留空关闭
+        </div>
+      </div>
+
+      {/* Codex hive bridge (path B) */}
+      <div style={{ marginBottom: 14 }}>
+        <label style={{ display: 'flex', alignItems: 'center', gap: 8, cursor: 'pointer' }}>
+          <input
+            type="checkbox"
+            checked={codexHiveBridge}
+            onChange={(e) => {
+              const v = e.target.checked
+              setCodexHiveBridgeState(v)
+              window.api.invoke('config:codex-hive-bridge:set', v).catch(() => {})
+            }}
+            style={{ accentColor: C.primaryDim }}
+          />
+          <span style={{ fontSize: 12, color: C.text }}>Codex 走 hive 联动</span>
+          <span style={{ fontSize: 9, color: '#fcd34d', border: '1px solid #fcd34d55', borderRadius: 4, padding: '0 4px' }}>实验</span>
+        </label>
+        <div style={{ fontSize: 10, color: C.textDim, marginTop: 3, marginLeft: 22 }}>
+          codex 新建会话用 <code>codex --remote</code> 接到 kitty-hive 的 daemon，可接收 hive 推送
         </div>
       </div>
 
