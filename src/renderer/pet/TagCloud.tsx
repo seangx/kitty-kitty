@@ -12,6 +12,7 @@ interface Props {
   onKill: (id: string) => void
   onRename: (id: string, title: string) => void
   onRestart: (id: string) => void
+  onClearConversation: (id: string) => void
   onEditEnv: (id: string) => void
   onOpenSkills: (sessionId: string) => void
 }
@@ -85,7 +86,7 @@ interface DragState {
   target: string | null // data-drop value: "group:<id>" | "ungrouped" | "hide" | null
 }
 
-export default function TagCloud({ sessions, onAttach, onKill, onRename, onRestart, onEditEnv, onOpenSkills }: Props) {
+export default function TagCloud({ sessions, onAttach, onKill, onRename, onRestart, onClearConversation, onEditEnv, onOpenSkills }: Props) {
   const needsInput = useSessionStore((s) => s.needsInput)
   const [hoveredId, setHoveredId] = useState<string | null>(null)
   const hoverTimer = useRef<ReturnType<typeof setTimeout> | null>(null)
@@ -759,6 +760,7 @@ export default function TagCloud({ sessions, onAttach, onKill, onRename, onResta
             {[
               { label: '✏️ 重命名', action: () => { const s = alive.find(x => x.id === ctxMenu.id); if (s) startRename(s) } },
               { label: '♻️ 重启会话', action: () => { onRestart(ctxMenu.id); setCtxMenu(null) } },
+              { label: '🧹 清空对话 (Alt+C)', action: () => { onClearConversation(ctxMenu.id); setCtxMenu(null) } },
               { label: '📂 打开目录', action: () => { const s = alive.find(x => x.id === ctxMenu.id); if (s?.cwd) window.api.invoke('shell:open-path', s.cwd); setCtxMenu(null) } },
               { label: '📦 技能', action: () => { onOpenSkills(ctxMenu.id); setCtxMenu(null) } },
               { label: '🌱 环境变量', action: () => { onEditEnv(ctxMenu.id); setCtxMenu(null) } },

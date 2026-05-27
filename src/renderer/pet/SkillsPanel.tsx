@@ -1,6 +1,7 @@
 import { useState, useEffect, useCallback, useRef } from 'react'
 import * as ipc from '../lib/ipc'
 import type { SkillCategory, GroupInfo, SearchResult, NativeSkill } from '@shared/types/skills'
+import type { McpServerInfo } from '@shared/types/mcps'
 
 interface Props {
   sessionId: string
@@ -22,7 +23,10 @@ const C = {
   outline: '#46465c', green: '#10b981', red: '#e11d48',
 }
 
+type Tab = 'skills' | 'mcps'
+
 export default function SkillsPanel({ sessionId, onClose, onSay, onDance }: Props) {
+  const [tab, setTab] = useState<Tab>('skills')
   const [categories, setCategories] = useState<SkillCategory[]>([])
   const [groups, setGroups] = useState<GroupInfo[]>([])
   const [deployed, setDeployed] = useState<Set<string>>(new Set())
@@ -146,6 +150,82 @@ export default function SkillsPanel({ sessionId, onClose, onSay, onDance }: Prop
     for (const s of cat.skills) installedNames.add(s)
   }
 
+  // ─── MCP tab state ─────────────────────────────────
+  const [mcpAvailable, setMcpAvailable] = useState(true)
+  const [mcpLoading, setMcpLoading] = useState(false)
+  const [mcpCentral, setMcpCentral] = useState<McpServerInfo[]>([])
+  const [mcpDeployed, setMcpDeployed] = useState<Set<string>>(new Set())
+  const [mcpOperating, setMcpOperating] = useState<string | null>(null)
+  const [mcpInput, setMcpInput] = useState('')
+  const [mcpManualOpen, setMcpManualOpen] = useState(false)
+  const [mcpManualText, setMcpManualText] = useState('')
+
+  const refreshMcps = useCallback(async () => {
+    setMcpLoading(true)
+    try {
+      const data = await ipc.listMcps(sessionId)
+      setMcpAvailable(data.available)
+      setMcpCentral(data.central || [])
+      setMcpDeployed(new Set(data.deployed || []))
+    } catch { /* ignore */ }
+    setMcpLoading(false)
+  }, [sessionId])
+
+  useEffect(() => { if (tab === 'mcps') refreshMcps() }, [tab, refreshMcps])
+
+  const toggleMcp = async (name: string) => {
+    setMcpOperating(name)
+    onDance()
+    try {
+      const res = mcpDeployed.has(name)
+        ? await ipc.removeMcp(sessionId, name)
+        : await ipc.addMcp(sessionId, name)
+      notify(res?.message || (res?.success ? '完成' : '失败'), res?.success ? 'success' : 'error')
+      await refreshMcps()
+    } catch (err: any) {
+      notify(err?.message || '操作失败', 'error')
+    }
+    setMcpOperating(null)
+  }
+
+  const submitMcpManual = async () => {
+    const txt = mcpManualText.trim()
+    if (!txt) return
+    setMcpOperating('__manual__')
+    onDance()
+    try {
+      const res = await ipc.writeManualMcp(sessionId, txt)
+      notify(res?.message || (res?.success ? '已写入' : '写入失败'), res?.success ? 'success' : 'error', 5000)
+      if (res?.success) {
+        setMcpManualText('')
+        setMcpManualOpen(false)
+        await refreshMcps()
+      }
+    } catch (err: any) {
+      notify(err?.message || '写入失败', 'error')
+    }
+    setMcpOperating(null)
+  }
+
+  const addMcpFromInput = async () => {
+    const src = mcpInput.trim()
+    if (!src) return
+    setMcpOperating(src)
+    onDance()
+    notify(`安装 ${src} 中…`, 'info', 15000)
+    try {
+      const res = await ipc.addMcp(sessionId, src)
+      notify(res?.message || (res?.success ? '已添加' : '添加失败'), res?.success ? 'success' : 'error', 5000)
+      if (res?.success) {
+        setMcpInput('')
+        await refreshMcps()
+      }
+    } catch (err: any) {
+      notify(err?.message || '添加失败', 'error')
+    }
+    setMcpOperating(null)
+  }
+
   return (
     <div style={{
       background: `${C.variant}f5`, backdropFilter: 'blur(32px)', WebkitBackdropFilter: 'blur(32px)',
@@ -156,8 +236,25 @@ export default function SkillsPanel({ sessionId, onClose, onSay, onDance }: Prop
     }}>
       {/* Header */}
       <div data-drag-handle style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 10, cursor: 'grab', flexShrink: 0 }}>
-        <span style={{ fontSize: 18, fontWeight: 600 }}>📦 技能管理</span>
+        <span style={{ fontSize: 18, fontWeight: 600 }}>📦 {tab === 'skills' ? '技能管理' : 'MCP 管理'}</span>
         <button onClick={onClose} style={{ background: 'none', border: 'none', color: C.textDim, cursor: 'pointer', fontSize: 20 }}>✕</button>
+      </div>
+
+      {/* Tabs */}
+      <div style={{ display: 'flex', gap: 6, marginBottom: 10, flexShrink: 0 }}>
+        {(['skills', 'mcps'] as Tab[]).map((t) => (
+          <button
+            key={t}
+            onClick={() => setTab(t)}
+            style={{
+              flex: 1, padding: '6px 10px', borderRadius: 8,
+              border: `1px solid ${tab === t ? C.primaryDim : C.outline}66`,
+              background: tab === t ? `${C.primaryDim}33` : 'transparent',
+              color: tab === t ? C.primary : C.textDim,
+              fontSize: 13, cursor: 'pointer', fontFamily: 'inherit',
+            }}
+          >{t === 'skills' ? '技能 (skillsmgr)' : 'MCP (mcpsmgr)'}</button>
+        ))}
       </div>
 
       {/* Inline toast (survives in popup window where cat bubble isn't reachable) */}
@@ -177,6 +274,7 @@ export default function SkillsPanel({ sessionId, onClose, onSay, onDance }: Prop
         >{toast.text}</div>
       )}
 
+      {tab === 'skills' && <>
       {/* Search */}
       <div style={{ display: 'flex', gap: 4, marginBottom: 10, flexShrink: 0 }}>
         <input
@@ -390,6 +488,153 @@ export default function SkillsPanel({ sessionId, onClose, onSay, onDance }: Prop
             没有已安装的技能<br />
             <span style={{ fontSize: 13 }}>试试搜索 registry 安装</span>
           </div>
+        )}
+      </div>
+      </>}
+
+      {tab === 'mcps' && <>
+        {/* MCP add input */}
+        <div style={{ display: 'flex', gap: 4, marginBottom: 10, flexShrink: 0 }}>
+          <input
+            value={mcpInput}
+            onChange={(e) => setMcpInput(e.target.value)}
+            onKeyDown={(e) => { if (e.key === 'Enter') addMcpFromInput() }}
+            placeholder="central 名 / owner/repo / GitHub URL"
+            style={{
+              flex: 1, padding: '5px 10px', borderRadius: 8,
+              border: `1px solid ${C.outline}33`, background: `${C.container}cc`,
+              color: C.text, fontSize: 14, outline: 'none', fontFamily: 'inherit',
+            }}
+          />
+          <button
+            onClick={addMcpFromInput}
+            disabled={!!mcpOperating || !mcpInput.trim()}
+            style={{
+              padding: '5px 12px', borderRadius: 8, border: 'none',
+              background: C.green, color: '#fff', fontSize: 14,
+              cursor: 'pointer', fontFamily: 'inherit',
+              opacity: !!mcpOperating || !mcpInput.trim() ? 0.5 : 1,
+            }}
+          >添加</button>
+        </div>
+
+        {/* Manual paste JSON */}
+        <div style={{ marginBottom: 10, flexShrink: 0 }}>
+          <div
+            onClick={() => setMcpManualOpen((v) => !v)}
+            style={{ fontSize: 12, color: C.textDim, cursor: 'pointer', userSelect: 'none', padding: '2px 0' }}
+          >
+            {mcpManualOpen ? '▾' : '▸'} ✏️ 手动粘贴 JSON 写入项目配置
+          </div>
+          {mcpManualOpen && (
+            <div style={{ marginTop: 6 }}>
+              <textarea
+                value={mcpManualText}
+                onChange={(e) => setMcpManualText(e.target.value)}
+                placeholder={'粘贴一段 mcpServers JSON，例如:\n{\n  "my-server": {\n    "command": "npx",\n    "args": ["-y", "..."]\n  }\n}\n\n也接受外层包 "mcpServers": { ... }'}
+                spellCheck={false}
+                style={{
+                  width: '100%', minHeight: 140, padding: 8, borderRadius: 6,
+                  border: `1px solid ${C.outline}55`, background: `${C.container}cc`,
+                  color: C.text, fontSize: 12, fontFamily: 'ui-monospace, Menlo, monospace',
+                  outline: 'none', resize: 'vertical', boxSizing: 'border-box',
+                }}
+              />
+              <div style={{ display: 'flex', gap: 6, marginTop: 6, alignItems: 'center' }}>
+                <button
+                  onClick={submitMcpManual}
+                  disabled={!!mcpOperating || !mcpManualText.trim()}
+                  style={{
+                    padding: '4px 12px', borderRadius: 6, border: 'none',
+                    background: C.primaryDim, color: '#fff', fontSize: 13,
+                    cursor: 'pointer', fontFamily: 'inherit',
+                    opacity: !!mcpOperating || !mcpManualText.trim() ? 0.5 : 1,
+                  }}
+                >{mcpOperating === '__manual__' ? '写入中…' : '写入'}</button>
+                <span style={{ fontSize: 11, color: C.textDim }}>
+                  目标: {/* hint only — actual file decided by session.tool in main */}
+                  写入项目根目录的 .mcp.json (Claude) 或 .codex/config.toml (Codex)，不存在自动新建
+                </span>
+              </div>
+            </div>
+          )}
+        </div>
+
+        <div style={{ overflowY: 'auto', flex: 1, minHeight: 0 }}>
+          {!mcpAvailable && (
+            <div style={{ padding: 12, borderRadius: 8, background: `${C.red}22`, fontSize: 14, color: C.red, marginBottom: 8 }}>
+              ⚠ mcpsmgr 未安装<br />
+              <span style={{ color: C.textDim }}>npm install -g mcpsmgr</span>
+            </div>
+          )}
+
+          {mcpLoading && mcpAvailable && (
+            <div style={{ fontSize: 14, color: C.textDim, textAlign: 'center', padding: 20 }}>加载中...</div>
+          )}
+
+          {!mcpLoading && mcpDeployed.size > 0 && (
+            <div style={{ marginBottom: 10 }}>
+              <div style={{ fontSize: 13, color: C.textDim, marginBottom: 6 }}>── 当前项目已部署 ──</div>
+              {[...mcpDeployed].map((name) => (
+                <McpRow
+                  key={`d:${name}`}
+                  name={name}
+                  deployed
+                  operating={mcpOperating === name}
+                  onClick={() => toggleMcp(name)}
+                />
+              ))}
+            </div>
+          )}
+
+          {!mcpLoading && mcpCentral.length > 0 && (
+            <div>
+              <div style={{ fontSize: 13, color: C.textDim, marginBottom: 6 }}>── 中央仓库 ({mcpCentral.length}) ──</div>
+              {mcpCentral.map((s) => (
+                <McpRow
+                  key={`c:${s.name}`}
+                  name={s.name}
+                  description={s.description}
+                  deployed={mcpDeployed.has(s.name)}
+                  operating={mcpOperating === s.name}
+                  onClick={() => toggleMcp(s.name)}
+                />
+              ))}
+            </div>
+          )}
+
+          {!mcpLoading && mcpAvailable && mcpCentral.length === 0 && mcpDeployed.size === 0 && (
+            <div style={{ fontSize: 14, color: C.textDim, textAlign: 'center', padding: 20 }}>
+              还没有任何 MCP server<br />
+              <span style={{ fontSize: 13 }}>用上面的输入框添加 owner/repo</span>
+            </div>
+          )}
+        </div>
+      </>}
+    </div>
+  )
+}
+
+function McpRow({ name, description, deployed, operating, onClick }: {
+  name: string; description?: string; deployed: boolean; operating: boolean; onClick: () => void
+}) {
+  return (
+    <div
+      onClick={(e) => { e.stopPropagation(); if (!operating) onClick() }}
+      style={{
+        display: 'flex', alignItems: 'center', gap: 8,
+        padding: '6px 10px', cursor: operating ? 'wait' : 'pointer',
+        borderRadius: 6, fontSize: 14, color: C.text,
+        opacity: operating ? 0.5 : 1,
+      }}
+      onMouseEnter={(e) => { (e.currentTarget as HTMLElement).style.background = `${C.primaryDim}22` }}
+      onMouseLeave={(e) => { (e.currentTarget as HTMLElement).style.background = 'none' }}
+    >
+      <span style={{ color: deployed ? C.green : C.textDim, fontSize: 14, flexShrink: 0 }}>{deployed ? '●' : '○'}</span>
+      <div style={{ flex: 1, minWidth: 0 }}>
+        <div style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{name}</div>
+        {description && (
+          <div style={{ fontSize: 12, color: C.textDim, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{description}</div>
         )}
       </div>
     </div>

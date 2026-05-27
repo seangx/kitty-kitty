@@ -505,6 +505,46 @@ function bindGroupKeys(): void {
 }
 
 /**
+ * Pane-action helper: a tiny POSIX shell script that tmux's M-c binding calls.
+ * Reads the current pane_id from tmux env via `display-message`, then POSTs
+ * to kitty's wakeup unix socket (/pane-action). kitty looks the pane up in
+ * its DB, sends the renderer a synthetic 'pane:action' event, and the same
+ * code path that powers the right-click "clear-conversation" runs.
+ *
+ * Kept dependency-free (curl + tmux only) so it works in every shell.
+ */
+function ensurePaneActionScript(): string {
+  const sockPath = join(homedir(), '.kitty-kitty', 'wakeup.sock')
+  const scriptPath = join(tmpdir(), 'kitty_pane_action.sh')
+  writeFileSync(scriptPath, `#!/bin/bash
+# usage: kitty_pane_action.sh <action>
+ACTION="\$1"
+[ -z "\$ACTION" ] && exit 0
+PANE_ID="\$(${TMUX} display-message -p '#{pane_id}' 2>/dev/null)"
+[ -z "\$PANE_ID" ] && exit 0
+curl -s --max-time 2 --unix-socket "${sockPath}" \\
+  -H 'content-type: application/json' \\
+  -X POST 'http://_/pane-action' \\
+  --data-binary "{\\"pane_id\\":\\"\$PANE_ID\\",\\"action\\":\\"\$ACTION\\"}" \\
+  >/dev/null 2>&1 || true
+`)
+  chmodSync(scriptPath, '755')
+  return scriptPath
+}
+
+/**
+ * Bind Alt+C globally in tmux to trigger the kitty "clear-conversation"
+ * action against the focused pane. Mirrors the right-click context menu so
+ * users with both UIs end up in the same place.
+ */
+function bindPaneActionKeys(): void {
+  const script = ensurePaneActionScript()
+  try {
+    execSync(`${TMUX} bind-key -n M-c run-shell -b '${script} clear-conversation'`, { stdio: 'ignore' })
+  } catch { /* ignore */ }
+}
+
+/**
  * Bind Alt+1~9 to switch between groups. Panes handle session navigation inside a group.
  */
 function bindAltGroupKeys(): void {
@@ -533,6 +573,7 @@ export function refreshAllStatusBars(): void {
   } catch { /* ignore */ }
   bindGroupKeys()
   bindAltGroupKeys()
+  bindPaneActionKeys()
 }
 
 /**

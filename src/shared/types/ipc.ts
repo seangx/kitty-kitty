@@ -14,6 +14,14 @@ export const IPC = {
   SKILLS_SEARCH: 'skills:search',
   SKILLS_INSTALL: 'skills:install',
 
+  // MCPs (mcpsmgr integration)
+  MCPS_LIST: 'mcps:list',
+  MCPS_ADD: 'mcps:add',
+  MCPS_REMOVE: 'mcps:remove',
+  MCPS_INSTALL: 'mcps:install',
+  MCPS_UNINSTALL: 'mcps:uninstall',
+  MCPS_WRITE_MANUAL: 'mcps:write-manual',
+
   // Pet
   PET_STATE_GET: 'pet:state:get',
   PET_STATE_UPDATE: 'pet:state:update',

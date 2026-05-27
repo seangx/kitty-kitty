@@ -8,7 +8,7 @@ import { v4 as uuid } from 'uuid'
 import { log } from '../logger'
 import * as tmux from '../tmux/session-manager'
 import { generateLaunchScript, isToolInstalled, getInstallHint, getNtfyTopic, setNtfyTopic, getCodexHiveBridge, setCodexHiveBridge, needsDevChannelAutoAccept, generateCodexRemoteScript } from '../tmux/cli-wrapper'
-import { registerCodexAgent, codexPaneWs, renameAgent } from '../hive-codex'
+import { registerCodexAgent, codexPaneWs, codexSetThread, renameAgent } from '../hive-codex'
 import * as sessionRepo from '../db/session-repo'
 import { getDB } from '../db/database'
 import * as ntfy from '../ntfy'
@@ -295,36 +295,18 @@ export function registerSessionHandlers(): void {
     return true
   })
 
-  // Kill a session
-  // Detect if claude/codex has rolled over to a newer on-disk session id than the
-  // one kitty has stored. Returns drift info or null. Used by attach flow to
-  // prompt the user before reattaching to a stale session.
-  ipcMain.handle('session:check-drift', (_event, id: string) => {
-    const rows = sessionRepo.listSessions()
-    const session = rows.find((s) => s.id === id)
-    if (!session || !session.cwd) return null
-
-    const provider = getProvider(session.tool)
-    if (!provider) return null
-
-    let entries: Array<{ id: string; summary: string; date: string }> = []
-    try { entries = provider.findSessions(session.cwd) } catch { return null }
-    if (entries.length === 0) return null
-
-    // Exclude the currently-bound jsonl: when claude has resumed it, its mtime
-    // is always the freshest, which would mask any real drift. We want to know
-    // about other jsonls newer than what kitty's record points at.
-    const others = entries.filter((e) => e.id !== session.externalSessionId)
-    if (others.length === 0) return null
-
-    const latest = others[0]
-    return {
-      currentId: session.externalSessionId || null,
-      latestId: latest.id,
-      latestSummary: latest.summary,
-      latestDate: latest.date,
-    }
-  })
+  // Drift detection is disabled.
+  // - Claude has the wakeup Stop/Notification hook that auto-syncs
+  //   externalSessionId with cwd validation; drift was redundant.
+  // - Codex's cwd-fallback path produced false positives (the cwd recorded in
+  //   a codex rollout header is where codex was launched from, not the kitty
+  //   session's project dir — so strict cwd match almost always missed, and
+  //   the fallback picked unrelated rollouts from other agents).
+  // The real "thread changed" signal should come from hive (push-based) once
+  // the planned /admin/codex-set-thread API and a paired notification arrive.
+  // Until then, restartSessionPane's bridge/bypass branches handle thread
+  // alignment without any UI prompt.
+  ipcMain.handle('session:check-drift', () => null)
 
   // Rebind a session row to a different external session id.
   //   keepTmux=false (default): kill the tmux session so next attach goes
@@ -463,6 +445,83 @@ export function registerSessionHandlers(): void {
     }
     await restartSessionPane(session)
     return { success: true }
+  })
+
+  // Clear conversation = start a fresh thread/jsonl in the same cwd.
+  // Semantics (per tool):
+  //   claude  : send `/clear` to the pane; wakeup Stop hook will sync the new
+  //             jsonl id back to DB after the user's next message. We also
+  //             eagerly clear externalSessionId so any restart before the hook
+  //             fires won't resume the old jsonl.
+  //   codex   : (short term) just send `/clear`. The codex TUI rolls to a new
+  //             thread, but the hive daemon is unaware — so under bridge mode
+  //             daemon still writes hive pushes into the OLD thread that the
+  //             TUI no longer shows. This trade-off is the reason the
+  //             /admin/codex-set-thread API is being added (kitty-hive side).
+  //             Once it lands, this branch becomes:
+  //               POST /admin/codex-set-thread {agent_id, thread_id: null}
+  //               → daemon resets thread → update DB ext → respawn pane
+  //             For now the short-term send-keys is documented to the user.
+  ipcMain.handle('session:clear-conversation', async (_event, id: string) => {
+    const session = sessionRepo.listSessions().find((s) => s.id === id)
+    if (!session) return { success: false, message: '会话不存在' }
+    if (!tmux.isSessionAlive(session.tmuxName)) {
+      return { success: false, message: '会话未运行，无法清空' }
+    }
+    const target = session.paneId || resolvePaneTarget(session.tmuxName, session.mainPane || '0.0')
+
+    if (session.tool === 'claude') {
+      try {
+        execSync(`${tmux.TMUX} send-keys -t "${target}" "/clear" Enter`, { stdio: 'ignore' })
+      } catch (err: any) {
+        return { success: false, message: err?.message || '发送 /clear 失败' }
+      }
+      // Eager-clear cache so a pre-hook restart doesn't resume the old jsonl.
+      sessionRepo.updateSessionExternalId(session.id, '')
+      log('session', `clear-conversation (claude): ${session.title}`)
+      return { success: true, message: '已清空对话，新 jsonl 由 hook 同步' }
+    }
+
+    if (session.tool === 'codex') {
+      // Codex + bridge: call hive /admin/codex-set-thread {thread_id: null} →
+      // daemon resets to a fresh thread atomically, returns new ws_url. Then
+      // respawn the pane bound to the new thread via --remote. This keeps the
+      // hive agent identity (agent_id, display_name, team) unchanged.
+      if (getCodexHiveBridge() && session.hiveAgentId) {
+        const r = await codexSetThread(session.hiveAgentId, null)
+        if (r.kind === 'ok' || r.kind === 'resumed_as_new') {
+          sessionRepo.updateSessionExternalId(session.id, r.threadId)
+          const launch = generateCodexRemoteScript(r.wsUrl, r.threadId, session.cwd || undefined, '🔄 重置对话中…')
+          let envFlags = ` -e "HIVE_AGENT_KEY=${session.id}"`
+          envFlags += ` -e "HIVE_AGENT_NAME=${String(session.title || '').replace(/"/g, '\\"')}"`
+          try {
+            execSync(`${tmux.TMUX} respawn-pane -k${envFlags} -t "${target}" "${launch}"`, { stdio: 'ignore' })
+          } catch (err: any) {
+            return { success: false, message: `respawn-pane 失败: ${err?.message || err}` }
+          }
+          log('session', `clear-conversation (codex bridge): ${session.title} → ${r.threadId.slice(0, 8)}`)
+          return { success: true, message: '已开新对话，daemon 已同步' }
+        }
+        if (r.kind === 'timeout') {
+          log('session', `clear-conversation (codex): daemon timeout, fallback to send-keys`)
+        } else {
+          // 'error' — hive API likely not deployed yet (v0.7.2 pending). Fall back.
+          log('session', `clear-conversation (codex): hive API error: ${r.message}, fallback to send-keys`)
+        }
+      }
+      // Fallback: just send /clear to the TUI. Documented limitation pre-API:
+      // daemon stays on old thread, hive pushes land there until next bridge
+      // restart picks up daemon's actual thread_id.
+      try {
+        execSync(`${tmux.TMUX} send-keys -t "${target}" "/clear" Enter`, { stdio: 'ignore' })
+      } catch (err: any) {
+        return { success: false, message: err?.message || '发送 /clear 失败' }
+      }
+      log('session', `clear-conversation (codex, soft): ${session.title}`)
+      return { success: true, message: '已清空（hive 端未同步，可能丢推送）' }
+    }
+
+    return { success: true, message: '已清空对话' }
   })
 
   // Restart all alive sessions in one go
@@ -1198,7 +1257,25 @@ async function restartSessionPane(session: sessionRepo.SessionRow): Promise<void
     })
     if (reg.success && reg.agentId) bridgedHiveAgentId = reg.agentId
     const ws = await codexPaneWs({ key: session.id, timeoutMs: 10000 })
-    if (ws.status === 'ready' && ws.ws_url) {
+    // If DB has a thread pinned (via drift "切到最新" or manual rebind) that's
+    // different from what hive's daemon is currently hosting, honor the user's
+    // pin: bypass bridge and bare resume that thread. Without this, users who
+    // deliberately rebound to an older thread would silently see daemon's
+    // thread again (bridge would overwrite their choice).
+    //
+    // The trade-off (documented for future readers): pinning means this pane
+    // loses hive push from daemon (daemon writes a different thread). To rejoin
+    // daemon, the user must drift-rebind back to the daemon's current thread,
+    // or clear DB externalSessionId.
+    const userPinnedDifferentThread =
+      ws.status === 'ready' &&
+      !!session.externalSessionId &&
+      !!ws.thread_id &&
+      session.externalSessionId !== ws.thread_id
+    if (userPinnedDifferentThread) {
+      log('codex-bridge', `bypass bridge: DB pinned to ${session.externalSessionId.slice(0, 8)} ≠ daemon thread ${(ws.thread_id || '').slice(0, 8)}`)
+      launch = generateLaunchScript(session.tool, 'resume', session.externalSessionId, session.cwd || undefined)
+    } else if (ws.status === 'ready' && ws.ws_url) {
       launch = generateCodexRemoteScript(ws.ws_url, ws.thread_id, session.cwd || undefined)
     } else {
       log('codex-bridge', `restart fallback (ws status=${ws.status}): ${ws.error || ''}`)

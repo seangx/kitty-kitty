@@ -101,6 +101,9 @@ function resolveKittySessionId(kittyHeader: string | undefined, claudeSessionId:
 }
 
 async function handleRequest(req: IncomingMessage, res: ServerResponse): Promise<void> {
+  if (req.method === 'POST' && req.url === '/pane-action') {
+    return handlePaneAction(req, res)
+  }
   if (req.method !== 'POST' || req.url !== '/wakeup') {
     res.statusCode = 404
     res.end('not found')
@@ -176,6 +179,52 @@ async function handleRequest(req: IncomingMessage, res: ServerResponse): Promise
   res.statusCode = 200
   res.setHeader('content-type', 'application/json')
   res.end(JSON.stringify({ ok: true, sessionId: kittyId, event: hookEvent }))
+}
+
+/**
+ * `/pane-action` — tmux-side trigger for kitty UI actions (Alt+C "clear",
+ * future Alt+R "restart", etc.). The shell helper invoked by tmux's
+ * `bind-key -n M-c` POSTs:
+ *   { pane_id: "%42", action: "clear-conversation" }
+ * We reverse-lookup the kitty session row whose `pane_id` matches, then
+ * dispatch the same IPC handler the right-click context menu uses, so both
+ * entry points produce identical effects.
+ */
+async function handlePaneAction(req: IncomingMessage, res: ServerResponse): Promise<void> {
+  let body = ''
+  try { body = await readBody(req) } catch (err) {
+    res.statusCode = 400
+    res.end(String(err))
+    return
+  }
+  let payload: any = {}
+  try { payload = JSON.parse(body) } catch { /* ignore */ }
+  const paneId: string = typeof payload?.pane_id === 'string' ? payload.pane_id : ''
+  const action: string = typeof payload?.action === 'string' ? payload.action : ''
+  if (!paneId || !action) {
+    res.statusCode = 400
+    res.end(JSON.stringify({ ok: false, reason: 'pane_id+action required' }))
+    return
+  }
+  const row = sessionRepo.listSessions().find((s) => s.paneId === paneId)
+  if (!row) {
+    log('pane-action', `no row for pane_id=${paneId} action=${action}`)
+    res.statusCode = 200
+    res.end(JSON.stringify({ ok: false, reason: 'no matching session' }))
+    return
+  }
+  const win = getPetWindow()
+  if (!win || win.isDestroyed()) {
+    res.statusCode = 500
+    res.end(JSON.stringify({ ok: false, reason: 'pet window gone' }))
+    return
+  }
+  // Fan out to renderer via a synthetic event the same way wakeup does.
+  // The renderer subscribes once at startup and dispatches to the right handler.
+  win.webContents.send('pane:action', { sessionId: row.id, action })
+  log('pane-action', `${row.title} ← ${action} (pane ${paneId})`)
+  res.statusCode = 200
+  res.end(JSON.stringify({ ok: true, sessionId: row.id, action }))
 }
 
 export function startWakeupServer(): void {

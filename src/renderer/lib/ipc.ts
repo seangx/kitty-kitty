@@ -2,6 +2,7 @@ import { IPC } from '@shared/types/ipc'
 import type { SessionInfo } from '@shared/types/session'
 import type { PetState, InteractionType } from '@shared/types/pet'
 import type { SkillsListResult, SkillOpResult, SearchResult } from '@shared/types/skills'
+import type { McpsListResult, McpOpResult } from '@shared/types/mcps'
 
 const api = () => window.api
 
@@ -29,9 +30,13 @@ export const setAgentMetadata = (id: string, roles: string, expertise: string) =
 
 export interface SessionDrift {
   currentId: string | null
+  currentSummary?: string
+  currentDate?: string
   latestId: string
   latestSummary: string
   latestDate: string
+  latestCwd?: string
+  latestCwdMatch?: boolean
 }
 
 export const checkSessionDrift = (id: string) =>
@@ -39,6 +44,9 @@ export const checkSessionDrift = (id: string) =>
 
 export const rebindExternal = (id: string, newExternalId: string, keepTmux = false) =>
   api().invoke('session:rebind-external', id, newExternalId, keepTmux) as Promise<{ success: boolean }>
+
+export const clearConversation = (id: string) =>
+  api().invoke('session:clear-conversation', id) as Promise<{ success: boolean; message: string }>
 
 // Pet
 export const getPetState = () =>
@@ -62,3 +70,22 @@ export const searchSkills = (query: string) =>
 
 export const installSkill = (skillName: string) =>
   api().invoke(IPC.SKILLS_INSTALL, skillName) as Promise<SkillOpResult>
+
+// MCPs
+export const listMcps = (sessionId: string) =>
+  api().invoke(IPC.MCPS_LIST, sessionId) as Promise<McpsListResult>
+
+export const addMcp = (sessionId: string, source: string) =>
+  api().invoke(IPC.MCPS_ADD, sessionId, source) as Promise<McpOpResult>
+
+export const removeMcp = (sessionId: string, name: string) =>
+  api().invoke(IPC.MCPS_REMOVE, sessionId, name) as Promise<McpOpResult>
+
+export const installMcp = (source: string) =>
+  api().invoke(IPC.MCPS_INSTALL, source) as Promise<McpOpResult>
+
+export const uninstallMcp = (name: string) =>
+  api().invoke(IPC.MCPS_UNINSTALL, name) as Promise<McpOpResult>
+
+export const writeManualMcp = (sessionId: string, jsonText: string) =>
+  api().invoke(IPC.MCPS_WRITE_MANUAL, sessionId, jsonText) as Promise<McpOpResult>

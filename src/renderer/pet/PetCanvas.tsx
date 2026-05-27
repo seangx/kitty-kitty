@@ -34,7 +34,7 @@ export default function PetCanvas() {
   const [showSkinPicker, setShowSkinPicker] = useState(false)
   const [envEditor, setEnvEditor] = useState<string | null>(null)
   const [groupPrompt, setGroupPrompt] = useState(false)
-  const [driftPrompt, setDriftPrompt] = useState<{ sessionId: string; drift: import('../lib/ipc').SessionDrift } | null>(null)
+  const [driftPrompt, setDriftPrompt] = useState<{ sessionId: string; drift: import('../lib/ipc').SessionDrift; kind: 'attach' | 'restart' } | null>(null)
   const isDragging = useRef(false)
   const clickTimer = useRef<ReturnType<typeof setTimeout> | null>(null)
   const dragOffset = useRef({ x: 0, y: 0 })
@@ -89,8 +89,22 @@ export default function PetCanvas() {
     const unsubClear = window.api.on('session:needs-input-clear', (msg: any) => {
       if (msg?.sessionId) clearNeedsInput(msg.sessionId)
     })
-    return () => { unsubNeed(); unsubClear() }
-  }, [loadNeedsInput, markNeedsInput, clearNeedsInput, machine, say])
+    // Pane-side triggers (e.g. tmux Alt+C) route here via unix socket.
+    const unsubPaneAction = window.api.on('pane:action', async (msg: any) => {
+      if (!msg?.sessionId || !msg?.action) return
+      if (msg.action === 'clear-conversation') {
+        try {
+          const { clearConversation } = await import('../lib/ipc')
+          const res = await clearConversation(msg.sessionId)
+          const title = sessionsRef.current.find((s) => s.id === msg.sessionId)?.title || ''
+          say(`${title} ${res?.message || (res?.success ? '已清空' : '清空失败')}`, 4000)
+          if (res?.success) machine.forceState('happy', 1500)
+          await loadSessions()
+        } catch (err: any) { say(err?.message || '清空失败', 4000) }
+      }
+    })
+    return () => { unsubNeed(); unsubClear(); unsubPaneAction() }
+  }, [loadNeedsInput, markNeedsInput, clearNeedsInput, loadSessions, machine, say])
 
   // Ntfy push notifications — keep last 3
   const [ntfyMessages, setNtfyMessages] = useState<Array<{ id: number; text: string; url?: string; color: string; time: string }>>([])
@@ -213,6 +227,19 @@ export default function PetCanvas() {
     }
   }, [attachSession, sessions, machine, say])
 
+  const doRestart = useCallback(async (id: string) => {
+    try {
+      machine.forceState('dance', 5000)
+      say('重启中喵~')
+      await window.api.invoke('session:restart-agent', id)
+      machine.forceState('happy', 2000)
+      say('重启完成喵~')
+    } catch (err: any) {
+      machine.forceState('sad', 1500)
+      say(err?.message || '重启失败喵...')
+    }
+  }, [machine, say])
+
   const handleAttach = useCallback(async (id: string) => {
     // Drift check: if claude/codex has rolled over to a newer jsonl (e.g. after
     // /clear), prompt before attaching. We check both detached AND running rows
@@ -222,7 +249,7 @@ export default function PetCanvas() {
       const { checkSessionDrift } = await import('../lib/ipc')
       const drift = await checkSessionDrift(id)
       if (drift) {
-        setDriftPrompt({ sessionId: id, drift })
+        setDriftPrompt({ sessionId: id, drift, kind: 'attach' })
         return
       }
     } catch { /* drift check failure shouldn't block attach */ }
@@ -457,27 +484,31 @@ export default function PetCanvas() {
           isRunning={(sessions.find(s => s.id === driftPrompt.sessionId)?.status === 'running')}
           drift={driftPrompt.drift}
           onKeepCurrent={() => {
-            const id = driftPrompt.sessionId
+            const { sessionId, kind } = driftPrompt
             setDriftPrompt(null)
-            void performAttach(id)
+            if (kind === 'restart') void doRestart(sessionId)
+            else void performAttach(sessionId)
           }}
           onUseLatest={async () => {
-            const { sessionId, drift } = driftPrompt
+            const { sessionId, drift, kind } = driftPrompt
             const isRunning = sessions.find(s => s.id === sessionId)?.status === 'running'
             setDriftPrompt(null)
             try {
               const { rebindExternal } = await import('../lib/ipc')
-              // running: soft rebind (DB only, keep pane running its current jsonl)
-              // detached: hard rebind (kill tmux + restore via new id)
-              await rebindExternal(sessionId, drift.latestId, isRunning)
+              // attach + running: soft rebind (DB only, keep pane running its current jsonl)
+              // attach + detached, or restart: keep tmux so restart-agent can respawn-pane
+              // into a launch script that uses the new externalSessionId.
+              const keepTmux = kind === 'restart' ? true : isRunning
+              await rebindExternal(sessionId, drift.latestId, keepTmux)
               await loadSessions()
-              say(isRunning ? '记录已对齐喵~' : '已切到新对话喵~')
+              if (kind === 'attach') say(isRunning ? '记录已对齐喵~' : '已切到新对话喵~')
             } catch (err) {
               console.error('[kitty] rebind failed:', err)
               say('切换失败了喵...')
               return
             }
-            void performAttach(sessionId)
+            if (kind === 'restart') void doRestart(sessionId)
+            else void performAttach(sessionId)
           }}
           onClose={() => setDriftPrompt(null)}
         />
@@ -503,14 +534,26 @@ export default function PetCanvas() {
             onRename={renameSession}
             onRestart={async (id) => {
               try {
-                machine.forceState('dance', 5000)
-                say('重启中喵~')
-                await window.api.invoke('session:restart-agent', id)
-                machine.forceState('happy', 2000)
-                say('重启完成喵~')
+                const { checkSessionDrift } = await import('../lib/ipc')
+                const drift = await checkSessionDrift(id)
+                if (drift) {
+                  setDriftPrompt({ sessionId: id, drift, kind: 'restart' })
+                  return
+                }
+              } catch { /* drift failure shouldn't block restart */ }
+              void doRestart(id)
+            }}
+            onClearConversation={async (id) => {
+              try {
+                const { clearConversation } = await import('../lib/ipc')
+                const res = await clearConversation(id)
+                say(res?.message || (res?.success ? '已清空' : '清空失败'), 4000)
+                if (res?.success) machine.forceState('happy', 1500)
+                else machine.forceState('sad', 1500)
+                await loadSessions()
               } catch (err: any) {
+                say(err?.message || '清空失败', 4000)
                 machine.forceState('sad', 1500)
-                say(err?.message || '重启失败喵...')
               }
             }}
             onEditEnv={(id) => setEnvEditor(id)}
@@ -775,8 +818,22 @@ function SessionDriftPrompt({
       </div>
 
       <div style={{ fontSize: 11, color: C.textDim, marginBottom: 8, lineHeight: 1.5 }}>
-        当前绑定的对话 <code style={{ color: C.primary }}>{currentLabel}</code> 不是该目录下最新的。
+        该目录下检测到比当前更新的对话。
         {isRunning && <span style={{ color: C.primary }}>{' '}（仅更新记录，不重启 pane）</span>}
+      </div>
+
+      <div style={{
+        background: `${C.container}cc`,
+        border: `1px solid ${C.outline}33`,
+        borderRadius: 10,
+        padding: '8px 10px',
+        marginBottom: 8,
+      }}>
+        <div style={{ fontSize: 10, color: C.textDim, marginBottom: 2 }}>当前绑定</div>
+        <div style={{ fontSize: 12, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+          {drift.currentSummary ? `📌 ${drift.currentSummary}` : <span style={{ color: C.textDim }}>📌 {currentLabel}（无预览，可能文件已被删/移动）</span>}
+        </div>
+        <div style={{ fontSize: 10, color: C.textDim, marginTop: 2 }}>{drift.currentDate || '—'} · {currentLabel}</div>
       </div>
 
       <div style={{
@@ -791,6 +848,12 @@ function SessionDriftPrompt({
           🔄 {drift.latestSummary}
         </div>
         <div style={{ fontSize: 10, color: C.textDim, marginTop: 2 }}>{drift.latestDate} · {drift.latestId.slice(0, 8)}</div>
+        {drift.latestCwd && (
+          <div style={{ fontSize: 10, marginTop: 4, color: drift.latestCwdMatch === false ? '#f59e0b' : C.textDim, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+            {drift.latestCwdMatch === false ? '⚠ 不同目录: ' : '目录: '}
+            <span style={{ fontFamily: 'ui-monospace, Menlo, monospace' }}>{drift.latestCwd}</span>
+          </div>
+        )}
       </div>
 
       <div style={{ display: 'flex', gap: 6 }}>

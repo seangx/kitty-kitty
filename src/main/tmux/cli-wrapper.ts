@@ -215,14 +215,21 @@ export function getToolCommand(tool: string): string {
  * the daemon has already pushed into its own thread. With `resume <threadId>
  * --remote <ws>` the TUI binds to the daemon's actual thread.
  */
-export function generateCodexRemoteScript(wsUrl: string, threadId?: string, cwd?: string): string {
+export function generateCodexRemoteScript(wsUrl: string, threadId?: string, cwd?: string, bannerText?: string): string {
   const scriptPath = join(tmpdir(), `kitty_launch_${Date.now()}.sh`)
   const cmd = threadId
     ? `codex resume ${shellQuoteForSh(threadId)} --remote ${shellQuoteForSh(wsUrl)}`
     : `codex --remote ${shellQuoteForSh(wsUrl)}`
+  // Banner: when set, runs before codex spawns. `clear` wipes the previous
+  // pane content (e.g. the WebSocket reset error printed by the old codex
+  // client when hive SIGTERM'd its daemon) so the user's first visible glimpse
+  // is the friendly "重置对话中" message, not a red error.
+  const banner = bannerText
+    ? `clear\nprintf '\\033[36m%s\\033[0m\\n' ${shellQuoteForSh(bannerText)}\n`
+    : ''
   let script = `#!/bin/bash
 ${PATH_PREAMBLE}
-${cmd}
+${banner}${cmd}
 # Keep shell alive when TUI exits so the pane doesn't vanish silently
 exec $SHELL
 `

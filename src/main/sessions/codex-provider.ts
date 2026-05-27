@@ -70,6 +70,58 @@ function readFirstLine(filePath: string, maxBytes = 256 * 1024): string | null {
   }
 }
 
+/**
+ * Read the first ~512KB of a rollout and pull out the first "real" user
+ * message text — i.e. not the synthetic `<environment_context>` / permissions
+ * / `<user_instructions>` blocks codex prepends to every thread. Used to give
+ * the user a recognizable preview in pickers and drift dialogs.
+ */
+const PREVIEW_SCAN_BYTES = 512 * 1024
+
+function readUserPreview(filePath: string): string {
+  let fd: number | null = null
+  try {
+    fd = openSync(filePath, 'r')
+    const buf = Buffer.alloc(32 * 1024)
+    let acc = ''
+    let totalRead = 0
+    while (totalRead < PREVIEW_SCAN_BYTES) {
+      const n = readSync(fd, buf, 0, buf.length, null)
+      if (n <= 0) break
+      acc += buf.slice(0, n).toString('utf-8')
+      totalRead += n
+    }
+    for (const line of acc.split('\n')) {
+      const t = line.trim()
+      if (!t) continue
+      let parsed: any
+      try { parsed = JSON.parse(t) } catch { continue }
+      const payload = parsed?.payload ?? parsed
+      if (!payload || typeof payload !== 'object') continue
+      if (payload.type !== 'message' || payload.role !== 'user') continue
+      const content = payload.content
+      if (!Array.isArray(content)) continue
+      for (const item of content) {
+        if (!item || typeof item !== 'object') continue
+        const text: unknown = item.text ?? item.input_text ?? null
+        if (typeof text !== 'string') continue
+        if (
+          text.startsWith('<environment_context>') ||
+          text.startsWith('<permissions instructions>') ||
+          text.startsWith('<user_instructions>') ||
+          text.startsWith('# AGENTS.md')
+        ) continue
+        const oneLine = text.replace(/\s+/g, ' ').trim()
+        if (oneLine.length === 0) continue
+        return oneLine.slice(0, 80)
+      }
+    }
+  } catch { /* ignore */ } finally {
+    if (fd !== null) { try { closeSync(fd) } catch { /* ignore */ } }
+  }
+  return ''
+}
+
 function readHeader(filePath: string): { id: string; cwd: string } | null {
   // session_meta is the first line. Codex embeds `base_instructions.text`
   // (the full system prompt) in it, so the line can easily exceed 20KB.
@@ -85,11 +137,24 @@ function readHeader(filePath: string): { id: string; cwd: string } | null {
   } catch { return null }
 }
 
-/** Walk recent day folders, yielding headers for files matching `cwdFilter`, newest first. */
-function findHeadersForCwd(cwd: string, dayLimit: number, capFiles: number): CodexHeader[] {
-  const matches: CodexHeader[] = []
+/**
+ * Walk recent day folders and return headers.
+ *
+ * Returns two lists:
+ *  - `matched`: rollouts whose header `cwd` equals `cwd` (strict match)
+ *  - `recent`:  the most-recent rollouts across ALL cwds (sorted by mtime desc)
+ *
+ * Strict cwd matching catches the common case. The `recent` list exists
+ * because codex rollouts record the cwd codex was launched with, NOT
+ * necessarily the project directory the user thinks of as "this session".
+ * A user may start codex from $HOME (or worktree root, or anywhere) then
+ * work on a project — the rollout header still says $HOME. Without a
+ * fallback the drift/restore path would never find the rollout.
+ */
+function findHeaders(cwd: string, dayLimit: number, capFiles: number): { matched: CodexHeader[]; recent: CodexHeader[] } {
+  const matched: CodexHeader[] = []
+  const recent: CodexHeader[] = []
   let read = 0
-  // Collect candidate files first (across day folders) then sort by mtime desc.
   const candidates: { filePath: string; mtime: number }[] = []
   for (const dayDir of walkRecentDayFolders(dayLimit)) {
     let files: string[] = []
@@ -106,25 +171,42 @@ function findHeadersForCwd(cwd: string, dayLimit: number, capFiles: number): Cod
     read++
     const h = readHeader(c.filePath)
     if (!h) continue
-    if (h.cwd !== cwd) continue
-    matches.push({ id: h.id, cwd: h.cwd, filePath: c.filePath, mtime: c.mtime })
+    const header: CodexHeader = { id: h.id, cwd: h.cwd, filePath: c.filePath, mtime: c.mtime }
+    recent.push(header)
+    if (h.cwd === cwd) matched.push(header)
   }
-  return matches
+  return { matched, recent }
+}
+
+/** Backwards-compatible cwd-filtered view used by deleteSessionFile. */
+function findHeadersForCwd(cwd: string, dayLimit: number, capFiles: number): CodexHeader[] {
+  return findHeaders(cwd, dayLimit, capFiles).matched
 }
 
 export const codexProvider: ExternalSessionProvider = {
   tool: 'codex',
 
   findSessions(projectDir) {
-    const headers = findHeadersForCwd(projectDir, SCAN_DAY_LIMIT, READ_FILE_CAP)
-    return headers.slice(0, 5).map((h) => ({
-      id: h.id,
-      summary: h.id.slice(0, 8),
-      date: new Date(h.mtime).toISOString().slice(0, 16).replace('T', ' '),
-    }))
+    const { matched, recent } = findHeaders(projectDir, SCAN_DAY_LIMIT, READ_FILE_CAP)
+    // Prefer cwd-matched results; if 0 matches, fall back to recent rollouts
+    // across ALL cwds so drift detection / picker still surfaces the actual
+    // active rollout when codex was launched from a different directory.
+    const source = matched.length > 0 ? matched : recent
+    return source.slice(0, 5).map((h) => {
+      const preview = readUserPreview(h.filePath)
+      return {
+        id: h.id,
+        summary: preview || h.id.slice(0, 8),
+        date: new Date(h.mtime).toISOString().slice(0, 16).replace('T', ' '),
+        cwd: h.cwd,
+        cwdMatch: h.cwd === projectDir,
+      }
+    })
   },
 
   findUnclaimedSessionId(cwd, claimed) {
+    // Keep strict-cwd matching here: backfill should NOT cross cwds, otherwise
+    // two kitty sessions with different cwds could race for the same rollout.
     const headers = findHeadersForCwd(cwd, SYNC_DAY_LIMIT, READ_FILE_CAP)
     for (const h of headers) {
       if (!claimed.has(h.id)) return h.id

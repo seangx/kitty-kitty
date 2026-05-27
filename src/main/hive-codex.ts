@@ -129,6 +129,59 @@ export async function codexPaneWs(input: CodexPaneWsInput): Promise<CodexPaneWsR
   }
 }
 
+/**
+ * POST /admin/codex-set-thread — switch (or reset) a codex agent's daemon
+ * thread. Hive's supervisor SIGTERMs the daemon and respawns it bound to the
+ * requested thread (or a fresh one when `threadId` is null).
+ *
+ * Maps to four outcomes the caller must distinguish:
+ *   - 'ok'              normal success; { threadId, wsUrl } reflect the new bound thread
+ *   - 'resumed_as_new'  resume failed (jsonl corrupted etc.); daemon fell back to a fresh
+ *                       thread. UI should surface "session couldn't be restored, new one started"
+ *   - 'timeout'         30s elapsed, daemon not yet ready; UI should poll codexPaneWs
+ *   - 'error'           validation failure / network / unreachable
+ */
+export type SetThreadResult =
+  | { kind: 'ok'; threadId: string; wsUrl: string }
+  | { kind: 'resumed_as_new'; threadId: string; wsUrl: string; originalRequest: string }
+  | { kind: 'timeout'; requested: string | null }
+  | { kind: 'error'; message: string }
+
+const HIVE_ADMIN_URL = 'http://127.0.0.1:4123'
+
+export async function codexSetThread(agentId: string, threadId: string | null): Promise<SetThreadResult> {
+  let res: Response
+  try {
+    res = await fetch(`${HIVE_ADMIN_URL}/admin/codex-set-thread`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ agent_id: agentId, thread_id: threadId }),
+    })
+  } catch (err: any) {
+    return { kind: 'error', message: `hive unreachable: ${err?.message || err}` }
+  }
+  let body: any
+  try { body = await res.json() } catch { body = {} }
+  if (!res.ok) {
+    return { kind: 'error', message: body?.error || `hive ${res.status}` }
+  }
+  if (!body.ok) {
+    return { kind: 'timeout', requested: threadId }
+  }
+  if (typeof body.thread_id !== 'string' || typeof body.ws_url !== 'string') {
+    return { kind: 'error', message: 'hive returned malformed response' }
+  }
+  if (threadId && body.thread_id !== threadId) {
+    return {
+      kind: 'resumed_as_new',
+      threadId: body.thread_id,
+      wsUrl: body.ws_url,
+      originalRequest: threadId,
+    }
+  }
+  return { kind: 'ok', threadId: body.thread_id, wsUrl: body.ws_url }
+}
+
 export async function renameAgent(agentId: string, newDisplayName: string): Promise<{ success: boolean; error?: string }> {
   if (!agentId || !newDisplayName) return { success: false, error: 'missing agentId or name' }
   const r = await runHive(['agent', 'rename', agentId, newDisplayName], { timeoutMs: 5000 })

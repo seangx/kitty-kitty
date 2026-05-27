@@ -12,6 +12,8 @@ export interface ExternalSessionEntry {
   summary: string
   date: string
   tool?: string  // filled in by handlers when merging entries from multiple providers
+  cwd?: string   // the rollout's actual cwd (may differ from queried projectDir for codex fallback)
+  cwdMatch?: boolean  // true if rollout cwd === queried projectDir; false when provider returned a fallback
 }
 
 export interface ExternalSessionProvider {
