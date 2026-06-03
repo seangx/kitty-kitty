@@ -545,6 +545,43 @@ function bindPaneActionKeys(): void {
 }
 
 /**
+ * Click-dispatcher for tmux status bar `range=user|kitty:*` regions. Tmux
+ * forwards `#{mouse_status_range}` (e.g. "user|kitty:group:3") when the
+ * MouseDown1Status binding fires. We parse it here and delegate to the right
+ * follow-up script. Lives in /tmp like the rest of the helpers.
+ */
+function ensureStatusClickScript(): string {
+  const switchScript = ensureSwitchGroupScript()
+  const scriptPath = join(tmpdir(), 'kitty_status_click.sh')
+  writeFileSync(scriptPath, `#!/bin/bash
+# tmux's mouse_status_range variable returns ONLY the user-range argument
+# (e.g. "kitty:group:4"), not the full "user|kitty:group:4". Match on the
+# arg form, not the type-prefixed form.
+RANGE="\$1"
+[ -z "\$RANGE" ] && exit 0
+case "\$RANGE" in
+  kitty:group:*)
+    IDX="\${RANGE##*:}"
+    exec "${switchScript}" "\$IDX"
+    ;;
+esac
+`)
+  chmodSync(scriptPath, '755')
+  return scriptPath
+}
+
+function bindStatusClickKeys(): void {
+  const script = ensureStatusClickScript()
+  try {
+    // Use root keytable so click fires without tmux prefix. -F template expands
+    // mouse_status_range to the user range string we tagged in status-format.
+    // Default MouseDown1Status (select window) is irrelevant here since our
+    // window-status-format is empty.
+    execSync(`${TMUX} bind-key -T root MouseDown1Status run-shell -b '${script} "#{mouse_status_range}"'`, { stdio: 'ignore' })
+  } catch { /* ignore */ }
+}
+
+/**
  * Bind Alt+1~9 to switch between groups. Panes handle session navigation inside a group.
  */
 function bindAltGroupKeys(): void {
@@ -574,6 +611,7 @@ export function refreshAllStatusBars(): void {
   bindGroupKeys()
   bindAltGroupKeys()
   bindPaneActionKeys()
+  bindStatusClickKeys()
 }
 
 /**
@@ -609,6 +647,9 @@ done < <(\$TMUX_BIN list-sessions -F '#{session_name}' 2>/dev/null | grep '^${SE
 N=0
 
 # Named groups with active sessions
+# Each tab is wrapped in #[range=user|kitty:group:<N>]...#[norange] so the
+# MouseDown1Status binding can dispatch a click on the tab to the same script
+# used by prefix+N / Alt+N (kitty_switch_group.sh).
 while IFS='|' read -r GID GNAME; do
   [ -z "\$GID" ] && continue
   # Count visible sessions in this group
@@ -624,10 +665,10 @@ while IFS='|' read -r GID GNAME; do
   [ "\${COUNT:-0}" -eq 0 ] && continue
   N=\$((N+1))
   if [ "\$GID" = "\$ACTIVE_GROUP" ]; then
-    printf '#[fg=#06b6d4,bg=#3a3a5c,bold]  %d  %s (%d)  #[bg=%s]' "\$N" "\$GNAME" "\$COUNT" "\$GBG"
+    printf '#[range=user|kitty:group:%d]#[fg=#06b6d4,bg=#3a3a5c,bold]  %d  %s (%d)  #[norange]#[bg=%s]' "\$N" "\$N" "\$GNAME" "\$COUNT" "\$GBG"
   else
     [ "\$N" -gt 1 ] && printf '#[fg=#3a3a5c,bg=%s] ' "\$GBG"
-    printf '#[fg=#706f8a,bg=%s]  %d  %s (%d)  ' "\$GBG" "\$N" "\$GNAME" "\$COUNT"
+    printf '#[range=user|kitty:group:%d]#[fg=#706f8a,bg=%s]  %d  %s (%d)  #[norange]' "\$N" "\$GBG" "\$N" "\$GNAME" "\$COUNT"
   fi
 done < <(sqlite3 "\$DB" "SELECT id, name FROM groups ORDER BY created_at;" 2>/dev/null)
 
@@ -639,10 +680,10 @@ while IFS='|' read -r TNAME TITLE; do
   DISPLAY="\${TITLE:-\$TNAME}"
   if [ "\$TNAME" = "\$RENDER_SESSION" ]; then
     [ "\$N" -gt 1 ] && printf '#[fg=#3a3a5c,bg=%s] ' "\$GBG"
-    printf '#[fg=#06b6d4,bg=#3a3a5c,bold]  %d  %s  #[bg=%s]' "\$N" "\$DISPLAY" "\$GBG"
+    printf '#[range=user|kitty:group:%d]#[fg=#06b6d4,bg=#3a3a5c,bold]  %d  %s  #[norange]#[bg=%s]' "\$N" "\$N" "\$DISPLAY" "\$GBG"
   else
     [ "\$N" -gt 1 ] && printf '#[fg=#3a3a5c,bg=%s] ' "\$GBG"
-    printf '#[fg=#706f8a,bg=%s]  %d  %s  ' "\$GBG" "\$N" "\$DISPLAY"
+    printf '#[range=user|kitty:group:%d]#[fg=#706f8a,bg=%s]  %d  %s  #[norange]' "\$N" "\$GBG" "\$N" "\$DISPLAY"
   fi
 done < <(sqlite3 "\$DB" "SELECT tmux_name, title FROM sessions WHERE (group_id IS NULL OR group_id='') AND COALESCE(hidden,0)=0 ORDER BY updated_at DESC;" 2>/dev/null)
 `)

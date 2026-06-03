@@ -31,6 +31,7 @@ import { join } from 'path'
 import { log } from './logger'
 import { getPetWindow } from './windows/pet-window'
 import * as sessionRepo from './db/session-repo'
+import { clearMark } from './session-clear-state'
 
 const SOCK_DIR = join(homedir(), '.kitty-kitty')
 const CLAUDE_PROJECTS = join(homedir(), '.claude', 'projects')
@@ -157,6 +158,10 @@ async function handleRequest(req: IncomingMessage, res: ServerResponse): Promise
       if (row && row.externalSessionId !== claudeSessionId) {
         if (isJsonlInCwd(claudeSessionId, row.cwd)) {
           sessionRepo.updateSessionExternalId(kittyId, claudeSessionId)
+          // The genuinely-new jsonl has appeared (and is cwd-validated), so a
+          // prior "新对话" clear is now resolved — lift the mark so normal
+          // sync/restart behaviour resumes.
+          clearMark(kittyId)
           log('wakeup', `${kittyId} externalSessionId synced: ${(row.externalSessionId || '(none)').slice(0, 8)} → ${claudeSessionId.slice(0, 8)} (event=${hookEvent})`)
         } else {
           log('wakeup', `${kittyId} REJECT cross-cwd sync: jsonl ${claudeSessionId.slice(0, 8)} not in ${row.cwd} (event=${hookEvent})`)

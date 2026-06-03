@@ -14,6 +14,7 @@ import { getDB } from '../db/database'
 import * as ntfy from '../ntfy'
 import { getProvider } from '../sessions'
 import { clearNeedsInput, getPendingInput, isJsonlInCwd } from '../wakeup'
+import { markCleared, isCleared } from '../session-clear-state'
 import type { SessionInfo } from '@shared/types/session'
 
 /**
@@ -468,7 +469,10 @@ export function registerSessionHandlers(): void {
     if (!tmux.isSessionAlive(session.tmuxName)) {
       return { success: false, message: '会话未运行，无法清空' }
     }
-    const target = session.paneId || resolvePaneTarget(session.tmuxName, session.mainPane || '0.0')
+    // Use the safe resolver so a cleared session with a lost pane_id doesn't
+    // send /clear (or respawn) into a sibling session's pane.
+    const target = resolveRestartPaneTarget(session)
+      ?? resolvePaneTarget(session.tmuxName, session.mainPane || '0.0')
 
     if (session.tool === 'claude') {
       try {
@@ -476,8 +480,13 @@ export function registerSessionHandlers(): void {
       } catch (err: any) {
         return { success: false, message: err?.message || '发送 /clear 失败' }
       }
-      // Eager-clear cache so a pre-hook restart doesn't resume the old jsonl.
+      // Clear cache + mark as cleared. The mark stops syncExternalSessionIds
+      // from backfilling the OLD jsonl (the new one isn't on disk until the
+      // user's first message) and makes a pre-hook restart start fresh instead
+      // of `claude -c`-ing the old one. The wakeup Stop hook lifts the mark
+      // once the genuinely-new jsonl is reported.
       sessionRepo.updateSessionExternalId(session.id, '')
+      markCleared(session.id)
       log('session', `clear-conversation (claude): ${session.title}`)
       return { success: true, message: '已清空对话，新 jsonl 由 hook 同步' }
     }
@@ -1190,7 +1199,10 @@ function syncAndList(): SessionInfo[] {
  */
 function syncExternalSessionIds(): void {
   const sessions = sessionRepo.listSessions()
-  const needsSync = sessions.filter(s => !s.externalSessionId && s.cwd && getProvider(s.tool))
+  // Skip sessions just cleared (新对话): their new jsonl isn't on disk yet, so
+  // backfilling would resurrect the OLD jsonl. The mark is lifted by the
+  // wakeup Stop hook once the real new jsonl appears.
+  const needsSync = sessions.filter(s => !s.externalSessionId && s.cwd && getProvider(s.tool) && !isCleared(s.id))
   if (needsSync.length === 0) return
 
   // Already-claimed ids across ALL sessions (avoid double-assignment within kitty)
@@ -1233,11 +1245,25 @@ function toSessionInfo(s: tmux.TmuxSession): SessionInfo {
   }
 }
 
+/**
+ * Pick the launch mode when restarting a pane with no/known external id:
+ *   - has externalSessionId          → 'resume' that exact id
+ *   - just cleared (新对话), no id    → 'new' — DON'T `claude -c`, which would
+ *     resume the OLD jsonl (the cleared session's new jsonl isn't on disk yet)
+ *   - otherwise no id                → 'continue' (pick up the latest in cwd,
+ *     the normal "reattach to my project" behaviour)
+ */
+function restartMode(session: sessionRepo.SessionRow): 'resume' | 'new' | 'continue' {
+  if (session.externalSessionId) return 'resume'
+  if (isCleared(session.id)) return 'new'
+  return 'continue'
+}
+
 async function restartSessionPane(session: sessionRepo.SessionRow): Promise<void> {
-  // In pane mode, use paneId (%N) to target the exact pane; otherwise use mainPane
-  const target = session.paneId
-    ? session.paneId
-    : resolvePaneTarget(session.tmuxName, session.mainPane || '0.0')
+  // Resolve the exact pane to respawn WITHOUT clobbering a sibling session's
+  // pane. Falls back to mainPane only when the tmux session is gone entirely.
+  const target = resolveRestartPaneTarget(session)
+    ?? resolvePaneTarget(session.tmuxName, session.mainPane || '0.0')
 
   // Codex with hive bridge: instead of `codex resume`, re-attach the pane to
   // the still-alive daemon thread via `codex --remote <ws>`. If the daemon is
@@ -1279,11 +1305,11 @@ async function restartSessionPane(session: sessionRepo.SessionRow): Promise<void
       launch = generateCodexRemoteScript(ws.ws_url, ws.thread_id, session.cwd || undefined)
     } else {
       log('codex-bridge', `restart fallback (ws status=${ws.status}): ${ws.error || ''}`)
-      const mode = session.externalSessionId ? 'resume' : 'continue'
+      const mode = restartMode(session)
       launch = generateLaunchScript(session.tool, mode, session.externalSessionId || undefined, session.cwd || undefined)
     }
   } else {
-    const mode = session.externalSessionId ? 'resume' : 'continue'
+    const mode = restartMode(session)
     launch = generateLaunchScript(session.tool, mode, session.externalSessionId || undefined, session.cwd || undefined)
   }
 
@@ -1404,4 +1430,68 @@ function resolvePaneTarget(tmuxName: string, mainPane: string): string {
   if (pane.startsWith('%')) return pane
   if (pane.includes(':')) return pane
   return `${tmuxName}:${pane}`
+}
+
+/** Live pane ids (%N) of a tmux session, in order. Empty if session is gone. */
+function listPaneIds(tmuxName: string): string[] {
+  try {
+    return execSync(`${tmux.TMUX} list-panes -t "${tmuxName}" -F '#{pane_id}'`, {
+      encoding: 'utf-8', stdio: ['ignore', 'pipe', 'ignore'],
+    }).trim().split('\n').filter(Boolean)
+  } catch {
+    return []
+  }
+}
+
+/**
+ * Pick the EXACT pane to respawn for a restart, never clobbering another
+ * session's pane.
+ *
+ * The bug this fixes: in pane mode several sessions share one tmux_name (the
+ * host's `kitty_<hostId>`). If a session's own pane died, its `pane_id` gets
+ * cleared by syncPaneIds. A naive restart then falls back to `:0.0`, which is
+ * whatever pane happens to be first — i.e. a *different* session's pane — and
+ * respawn-pane -k turns that sibling into this session's tool. (Observed:
+ * restarting codex turned tap-slash's pane into codex.)
+ *
+ * Resolution order:
+ *   1. own pane_id still alive          → use it
+ *   2. a live pane not claimed by any other session → adopt it
+ *   3. otherwise split a brand-new pane → use it
+ * In cases 2/3 the DB pane_id is updated so future restarts are stable.
+ * Returns null only when the tmux session itself is gone (caller falls back).
+ */
+function resolveRestartPaneTarget(session: sessionRepo.SessionRow): string | null {
+  const live = listPaneIds(session.tmuxName)
+  if (live.length === 0) return null
+
+  if (session.paneId && live.includes(session.paneId)) return session.paneId
+
+  const claimed = new Set(
+    sessionRepo.listSessions()
+      .filter((s) => s.id !== session.id && s.tmuxName === session.tmuxName && s.paneId)
+      .map((s) => s.paneId),
+  )
+  const free = live.find((p) => !claimed.has(p))
+  if (free) {
+    sessionRepo.updateSessionPaneId(session.id, free)
+    log('session', `restart: ${session.title} adopted free pane ${free} (was ${session.paneId || 'none'})`)
+    return free
+  }
+
+  // All panes belong to other sessions — split a new one for us.
+  try {
+    const cwdFlag = session.cwd ? `-c "${session.cwd}"` : ''
+    const newPane = execSync(
+      `${tmux.TMUX} split-window -t "${session.tmuxName}" -h ${cwdFlag} -P -F '#{pane_id}'`,
+      { encoding: 'utf-8', stdio: ['ignore', 'pipe', 'ignore'], env: tmux.tmuxSpawnEnv() },
+    ).trim()
+    sessionRepo.updateSessionPaneId(session.id, newPane)
+    tmux.applyMainVerticalLayout(session.tmuxName)
+    log('session', `restart: ${session.title} created new pane ${newPane} (all panes were claimed)`)
+    return newPane
+  } catch (err) {
+    log('session', `restart: ${session.title} split-window failed, falling back to :0.0`, err)
+    return resolvePaneTarget(session.tmuxName, session.mainPane || '0.0')
+  }
 }
