@@ -541,6 +541,8 @@ function bindPaneActionKeys(): void {
   const script = ensurePaneActionScript()
   try {
     execSync(`${TMUX} bind-key -n M-c run-shell -b '${script} clear-conversation'`, { stdio: 'ignore' })
+    // Alt+T: set the focused pane's session as its group's main window.
+    execSync(`${TMUX} bind-key -n M-t run-shell -b '${script} set-main-session'`, { stdio: 'ignore' })
   } catch { /* ignore */ }
 }
 

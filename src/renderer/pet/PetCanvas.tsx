@@ -1,6 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import PetSprite from './PetSprite'
-import PixelSprite from './PixelSprite'
 import TagCloud from './TagCloud'
 import InputPopup from './InputPopup'
 import ContextMenu from './ContextMenu'
@@ -9,8 +8,7 @@ import SessionPicker from './SessionPicker'
 import SpeechBubble from './SpeechBubble'
 import { PetStateMachine } from './animations/state-machine'
 import { BehaviorScheduler } from './animations/behaviors'
-import { SKINS } from './animations/sprite-data'
-import type { AnimationState, SkinId } from '@shared/types/pet'
+import type { AnimationState } from '@shared/types/pet'
 import { IPC } from '@shared/types/ipc'
 import { useSessionStore } from '../store/session-store'
 import { useConfigStore } from '../store/config-store'
@@ -31,7 +29,6 @@ export default function PetCanvas() {
   const [dirPick, setDirPick] = useState<DirPickResult | null>(null)
   const [contextMenu, setContextMenu] = useState<{ x: number; y: number } | null>(null)
   const [speech, setSpeech] = useState<string | null>(null)
-  const [showSkinPicker, setShowSkinPicker] = useState(false)
   const [envEditor, setEnvEditor] = useState<string | null>(null)
   const [groupPrompt, setGroupPrompt] = useState(false)
   const [driftPrompt, setDriftPrompt] = useState<{ sessionId: string; drift: import('../lib/ipc').SessionDrift; kind: 'attach' | 'restart' } | null>(null)
@@ -40,7 +37,7 @@ export default function PetCanvas() {
   const dragOffset = useRef({ x: 0, y: 0 })
 
   const { sessions, loadSessions, createSession, attachSession, killSession, renameSession, needsInput, loadNeedsInput, markNeedsInput, clearNeedsInput } = useSessionStore()
-  const { bubble, setBubble, lastTool, setLastTool } = useConfigStore()
+  const { bubble, lastTool, setLastTool } = useConfigStore()
 
   const machine = useMemo(() => new PetStateMachine(setAnimation), [])
   const scheduler = useMemo(() => new BehaviorScheduler(machine), [machine])
@@ -55,7 +52,6 @@ export default function PetCanvas() {
   const closeAll = useCallback(() => {
     setShowInput(false)
     setShowSettings(false)
-    setShowSkinPicker(false)
     setDirPick(null)
     setContextMenu(null)
     setGroupPrompt(false)
@@ -101,6 +97,15 @@ export default function PetCanvas() {
           if (res?.success) machine.forceState('happy', 1500)
           await loadSessions()
         } catch (err: any) { say(err?.message || '清空失败', 4000) }
+      } else if (msg.action === 'set-main-session') {
+        const s = sessionsRef.current.find((x) => x.id === msg.sessionId)
+        if (!s?.groupId) { say('该会话不在分组里喵~', 3000); return }
+        try {
+          await window.api.invoke('group:set-main-session', s.groupId, s.id)
+          say(`${s.title} 设为主窗口喵~`, 3000)
+          machine.forceState('happy', 1500)
+          await loadSessions()
+        } catch (err: any) { say(err?.message || '设置失败', 4000) }
       }
     })
     return () => { unsubNeed(); unsubClear(); unsubPaneAction() }
@@ -137,7 +142,7 @@ export default function PetCanvas() {
     setTimeout(() => { setNtfyMessages([]); setNtfyDismissing(false) }, count * 80 + 200)
   }, [ntfyMessages.length])
 
-  const anyPopup = showInput || showSettings || showSkinPicker || !!dirPick || !!envEditor || groupPrompt || !!driftPrompt
+  const anyPopup = showInput || showSettings || !!dirPick || !!envEditor || groupPrompt || !!driftPrompt
 
   const clickAnimations: AnimationState[] = ['happy', 'dance', 'jump', 'roll', 'stretch', 'lick', 'sneak']
   const clickIndex = useRef(0)
@@ -316,7 +321,6 @@ export default function PetCanvas() {
       }
     }},
     { separator: true as const },
-    { label: '🎨 换装', onClick: () => setShowSkinPicker(true) },
     { label: '⚙️ 设置', onClick: () => setShowSettings(true) },
   ], [handleOpenInDir, loadSessions, machine, say])
 
@@ -444,15 +448,6 @@ export default function PetCanvas() {
       </DraggablePopup>
     )}
     {/* Skills panel opens in a separate window */}
-    {showSkinPicker && (
-      <DraggablePopup>
-        <SkinPicker
-          current={bubble.skin}
-          onSelect={(id) => { setBubble({ skin: id }); setShowSkinPicker(false); machine.forceState('happy', 1500); say('换装成功喵~') }}
-          onClose={() => setShowSkinPicker(false)}
-        />
-      </DraggablePopup>
-    )}
     {envEditor && (
       <DraggablePopup>
         <EnvEditor
@@ -561,9 +556,9 @@ export default function PetCanvas() {
           />
         </div>
       </div>
-      <div style={{ position: 'relative', flexShrink: 0, width: 96, height: 96, pointerEvents: 'auto' }}>
+      <div style={{ position: 'relative', flexShrink: 0, width: 128, height: 128, pointerEvents: 'auto' }}>
         {speech && <SpeechBubble text={speech} onDone={() => setSpeech(null)} />}
-        <PetSprite state={animation} skin={bubble.skin} size={96} />
+        <PetSprite state={animation} skin={bubble.skin} size={128} />
       </div>
       {contextMenu && (
         <ContextMenu x={contextMenu.x} y={contextMenu.y} onClose={() => setContextMenu(null)} items={menuItems} />
@@ -573,49 +568,12 @@ export default function PetCanvas() {
   )
 }
 
-// ─── Skin Picker ─────────────────────────────────────
+// ─── Shared popup colors ─────────────────────────────
 
 const skinC = {
   variant: '#23233f', container: '#17172f',
   text: '#e5e3ff', textDim: '#aaa8c3',
   primaryDim: '#645efb', outline: '#46465c',
-}
-
-function SkinPicker({ current, onSelect, onClose }: { current: SkinId; onSelect: (id: SkinId) => void; onClose: () => void }) {
-  const entries = Object.entries(SKINS) as [SkinId, typeof SKINS[SkinId]][]
-  return (
-    <div style={{
-      background: `${skinC.variant}f5`, backdropFilter: 'blur(32px)', WebkitBackdropFilter: 'blur(32px)',
-      borderRadius: 16, padding: 14, width: 260,
-      boxShadow: `0 12px 48px rgba(0,0,0,0.6), inset 0 1px 0 ${skinC.outline}20`,
-      fontFamily: "'Plus Jakarta Sans', -apple-system, sans-serif", color: skinC.text,
-    }}>
-      <div data-drag-handle style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 12, cursor: 'grab' }}>
-        <span style={{ fontSize: 14, fontWeight: 600 }}>🎨 换装</span>
-        <button onClick={onClose} style={{ background: 'none', border: 'none', color: skinC.textDim, cursor: 'pointer', fontSize: 16 }}>✕</button>
-      </div>
-      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: 8 }}>
-        {entries.map(([id, skin]) => (
-          <button
-            key={id}
-            onClick={() => onSelect(id)}
-            style={{
-              padding: '10px 4px 8px', borderRadius: 12, cursor: 'pointer', textAlign: 'center',
-              border: current === id ? `2px solid ${skinC.primaryDim}` : `1px solid ${skinC.outline}33`,
-              background: current === id ? `${skinC.primaryDim}22` : `${skinC.container}88`,
-              color: current === id ? skinC.text : skinC.textDim,
-              fontFamily: 'inherit', transition: 'all 0.15s',
-            }}
-          >
-            <div style={{ display: 'flex', justifyContent: 'center', minHeight: 48 }}>
-              <PixelSprite state="idle" skin={id} size={48} />
-            </div>
-            <div style={{ fontSize: 11, marginTop: 6, fontWeight: current === id ? 600 : 400 }}>{skin.name}</div>
-          </button>
-        ))}
-      </div>
-    </div>
-  )
 }
 
 // ─── Env Editor ──────────────────

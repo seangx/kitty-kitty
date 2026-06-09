@@ -36,23 +36,32 @@ export function skinHasPngSprites(skin: SkinId): boolean {
   return false
 }
 
-/** Frame timing per animation state (ms per frame) */
+/** Frame timing per animation state (ms per frame). Slower than 12fps so the
+ *  motion reads calmly; locomotion (walk/run/jump) a touch quicker than idle. */
 const INTERVAL_MS: Record<AnimationState, number> = {
-  'idle': 900,
-  'walk-left': 200,
-  'walk-right': 200,
-  'sleep': 1200,
-  'happy': 350,
-  'think': 600,
-  'talk': 250,
-  'sad': 800,
-  'stretch': 500,
-  'dance': 250,
-  'roll': 350,
-  'lick': 300,
-  'jump': 200,
-  'sneak': 500,
+  'idle': 140,
+  'walk-left': 110,
+  'walk-right': 110,
+  'sleep': 180,
+  'happy': 110,
+  'think': 150,
+  'talk': 130,
+  'sad': 180,
+  'stretch': 150,
+  'dance': 110,
+  'roll': 120,
+  'lick': 150,
+  'jump': 110,
+  'sneak': 150,
 }
+
+/** States that play forward-then-backward (ping-pong) instead of looping 0→11→0.
+ *  These are in-place "gesture" clips (the cat returns to its rest pose), so a
+ *  back-and-forth read is seamless. Locomotion/tumbling clips are left as plain
+ *  forward loops since reversing them would look like walking backwards. */
+const PING_PONG: Set<AnimationState> = new Set([
+  'idle', 'sleep', 'sad', 'stretch', 'think', 'lick', 'talk', 'happy',
+])
 
 interface Props {
   state: AnimationState
@@ -64,16 +73,16 @@ export default function PngSprite({ state, skin, size = 128 }: Props) {
   const urls = useMemo(() => {
     // Prefer state-specific frames; for walk-left fall back to walk-right with horizontal flip
     const key = `${skin}/${state}`
-    if (FRAME_INDEX[key]?.length) return { urls: FRAME_INDEX[key], flip: false }
+    if (FRAME_INDEX[key]?.length) return { urls: FRAME_INDEX[key], flip: false, resolved: state as AnimationState }
     if (state === 'walk-left' && FRAME_INDEX[`${skin}/walk-right`]?.length) {
-      return { urls: FRAME_INDEX[`${skin}/walk-right`], flip: true }
+      return { urls: FRAME_INDEX[`${skin}/walk-right`], flip: true, resolved: 'walk-right' as AnimationState }
     }
-    // Fallback to idle for missing states
-    return { urls: FRAME_INDEX[`${skin}/idle`] ?? [], flip: false }
+    // Fallback to idle for missing states — use idle's timing/ping-pong too.
+    return { urls: FRAME_INDEX[`${skin}/idle`] ?? [], flip: false, resolved: 'idle' as AnimationState }
   }, [state, skin])
 
-  const interval = INTERVAL_MS[state] ?? 600
-  const frameIdx = useFrameAnimation(urls.urls.length, interval)
+  const interval = INTERVAL_MS[urls.resolved] ?? 600
+  const frameIdx = useFrameAnimation(urls.urls.length, interval, PING_PONG.has(urls.resolved))
 
   const src = urls.urls[frameIdx] ?? urls.urls[0]
   if (!src) return null
@@ -86,7 +95,8 @@ export default function PngSprite({ state, skin, size = 128 }: Props) {
       alt=""
       draggable={false}
       style={{
-        imageRendering: 'pixelated',
+        // Calico set is 256px photoreal RGBA, scaled down — keep it smooth.
+        imageRendering: 'auto',
         display: 'block',
         filter: 'drop-shadow(0 2px 6px rgba(0,0,0,0.45))',
         transform: urls.flip ? 'scaleX(-1)' : undefined,
@@ -97,15 +107,19 @@ export default function PngSprite({ state, skin, size = 128 }: Props) {
   )
 }
 
-function useFrameAnimation(frameCount: number, intervalMs: number): number {
-  const [frame, setFrame] = useState(0)
+function useFrameAnimation(frameCount: number, intervalMs: number, pingpong = false): number {
+  const [tick, setTick] = useState(0)
   useEffect(() => {
-    setFrame(0)
+    setTick(0)
     if (frameCount <= 1) return
-    const id = setInterval(() => {
-      setFrame((prev) => (prev + 1) % frameCount)
-    }, intervalMs)
+    const id = setInterval(() => setTick((t) => t + 1), intervalMs)
     return () => clearInterval(id)
   }, [frameCount, intervalMs])
-  return frame
+
+  if (frameCount <= 1) return 0
+  if (!pingpong) return tick % frameCount
+  // 0,1,…,n-1,n-2,…,1 then repeat — seamless forward/back with no jump.
+  const period = (frameCount - 1) * 2
+  const pos = tick % period
+  return pos < frameCount ? pos : period - pos
 }

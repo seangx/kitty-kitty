@@ -765,7 +765,7 @@ export default function TagCloud({ sessions, onAttach, onKill, onRename, onResta
               { label: '📦 技能', action: () => { onOpenSkills(ctxMenu.id); setCtxMenu(null) } },
               { label: '🌱 环境变量', action: () => { onEditEnv(ctxMenu.id); setCtxMenu(null) } },
               ...(ctxMenu && sessions.find(s => s.id === ctxMenu.id)?.groupId ? [{
-                label: '📌 设为主窗口',
+                label: '📌 设为主窗口 (Alt+T)',
                 action: async () => {
                   const session = sessions.find(s => s.id === ctxMenu!.id)
                   if (session?.groupId) {

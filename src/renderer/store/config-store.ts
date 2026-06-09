@@ -16,12 +16,13 @@ interface ConfigState {
 
 // Load from localStorage
 function loadConfig(): BubbleConfig {
-  const VALID_SKINS: BubbleConfig['skin'][] = ['calico', 'sheep', 'chicken']
   try {
     const saved = localStorage.getItem('kitty-bubble-config')
     if (saved) {
       const parsed = { ...DEFAULT_BUBBLE_CONFIG, ...JSON.parse(saved) }
-      if (!VALID_SKINS.includes(parsed.skin)) parsed.skin = DEFAULT_BUBBLE_CONFIG.skin
+      // Skin switching removed — pin to the default (三花/calico) regardless of
+      // any legacy value saved by older builds.
+      parsed.skin = DEFAULT_BUBBLE_CONFIG.skin
       return parsed
     }
   } catch {}
