@@ -46,6 +46,8 @@ interface ToolConfig {
   continueFlag?: string
   /** Flag to resume a specific session, followed by session ID */
   resumeFlag?: string
+  /** Flag to start a NEW session with a caller-provided id (claude: --session-id) */
+  sessionIdFlag?: string
 }
 
 /**
@@ -115,6 +117,7 @@ const TOOLS: Record<string, ToolConfig> = {
     cmd: 'claude',
     continueFlag: '-c',
     resumeFlag: '--resume',
+    sessionIdFlag: '--session-id',
   },
   codex: {
     cmd: 'codex',
@@ -156,6 +159,7 @@ export function generateLaunchScript(
   mode: LaunchMode,
   resumeId?: string,
   cwd?: string,
+  sessionId?: string,
 ): string {
   const config = TOOLS[tool] || { cmd: tool }
   const scriptPath = join(tmpdir(), `kitty_launch_${Date.now()}.sh`)
@@ -167,7 +171,7 @@ export function generateLaunchScript(
       script = buildContinueScript(config)
       break
     case 'new':
-      script = buildNewScript(config)
+      script = buildNewScript(config, sessionId)
       break
     case 'resume':
       script = buildResumeScript(config, resumeId!)
@@ -285,8 +289,12 @@ exec $SHELL
 `
 }
 
-function buildNewScript(config: ToolConfig): string {
-  const cmd = baseCmd(config)
+function buildNewScript(config: ToolConfig, sessionId?: string): string {
+  let cmd = baseCmd(config)
+  // Pre-bind the session id when the tool supports it (claude --session-id).
+  // Lets kitty know the jsonl name up front instead of claiming by cwd later,
+  // so multiple sessions can share one cwd without cross-assignment.
+  if (sessionId && config.sessionIdFlag) cmd += ` ${config.sessionIdFlag} ${sessionId}`
   return `#!/bin/bash
 ${PATH_PREAMBLE}
 ${cmd}

@@ -7,7 +7,7 @@ import { execSync, spawn } from 'child_process'
 import { v4 as uuid } from 'uuid'
 import { log } from '../logger'
 import * as tmux from '../tmux/session-manager'
-import { generateLaunchScript, isToolInstalled, getInstallHint, getNtfyTopic, setNtfyTopic, getCodexHiveBridge, setCodexHiveBridge, needsDevChannelAutoAccept, generateCodexRemoteScript } from '../tmux/cli-wrapper'
+import { generateLaunchScript, type LaunchMode, isToolInstalled, getInstallHint, getNtfyTopic, setNtfyTopic, getCodexHiveBridge, setCodexHiveBridge, needsDevChannelAutoAccept, generateCodexRemoteScript } from '../tmux/cli-wrapper'
 import { registerCodexAgent, codexPaneWs, codexSetThread, renameAgent } from '../hive-codex'
 import * as sessionRepo from '../db/session-repo'
 import { getDB } from '../db/database'
@@ -49,7 +49,7 @@ async function tryPrepareCodexRemoteScript(args: {
   kittyId: string
   title: string
   projectDir?: string
-}): Promise<{ script: string; hiveAgentId: string } | null> {
+}): Promise<{ script: string; hiveAgentId: string; threadId?: string } | null> {
   if (!getCodexHiveBridge()) return null
   try {
     const reg = await registerCodexAgent({
@@ -66,7 +66,7 @@ async function tryPrepareCodexRemoteScript(args: {
       log('codex-bridge', `ws not ready (status=${ws.status}): ${ws.error || ''}`)
       return null
     }
-    return { script: generateCodexRemoteScript(ws.ws_url, ws.thread_id, args.projectDir), hiveAgentId: reg.agentId }
+    return { script: generateCodexRemoteScript(ws.ws_url, ws.thread_id, args.projectDir), hiveAgentId: reg.agentId, threadId: ws.thread_id }
   } catch (err) {
     log('codex-bridge', 'unexpected:', err)
     return null
@@ -153,13 +153,18 @@ export function registerSessionHandlers(): void {
         const session = tmux.createTmuxSession(t, firstMessage, undefined, script, provisional)
         sessionRepo.saveSession(session)
         if (hiveAgentId) sessionRepo.updateSessionHiveAgentId(session.id, hiveAgentId)
+        if (bridged.threadId) sessionRepo.updateSessionExternalId(session.id, bridged.threadId)
         tmux.attachSession(session.tmuxName)
         return toSessionInfo(session)
       }
     }
-    script = generateLaunchScript(t, 'new')
+    // Pre-bind a session id for claude so its jsonl is identifiable up front
+    // (lets multiple claude sessions share one cwd without cross-assignment).
+    const claudeSid = t === 'claude' ? uuid() : undefined
+    script = generateLaunchScript(t, 'new', undefined, undefined, claudeSid)
     const session = tmux.createTmuxSession(t, firstMessage, undefined, script)
     sessionRepo.saveSession(session)
+    if (claudeSid) sessionRepo.updateSessionExternalId(session.id, claudeSid)
     tmux.attachSession(session.tmuxName)
     return toSessionInfo(session)
   })
@@ -191,22 +196,28 @@ export function registerSessionHandlers(): void {
     let script: string
     let hiveAgentId = ''
     let presetId: string | undefined
+    let bridgedThreadId: string | undefined
+    let claudeSid: string | undefined
     if (t === 'codex') {
       const provisional = uuid().slice(0, 8)
       const bridged = await tryPrepareCodexRemoteScript({ kittyId: provisional, title: basename(dir), projectDir: dir })
       if (bridged) {
         script = bridged.script
         hiveAgentId = bridged.hiveAgentId
+        bridgedThreadId = bridged.threadId
         presetId = provisional
       } else {
         script = generateLaunchScript(t, 'new')
       }
     } else {
-      script = generateLaunchScript(t, 'new')
+      claudeSid = t === 'claude' ? uuid() : undefined
+      script = generateLaunchScript(t, 'new', undefined, undefined, claudeSid)
     }
     const session = tmux.createTmuxSession(t, undefined, dir, script, presetId)
     sessionRepo.saveSession(session)
     if (hiveAgentId) sessionRepo.updateSessionHiveAgentId(session.id, hiveAgentId)
+    if (bridgedThreadId) sessionRepo.updateSessionExternalId(session.id, bridgedThreadId)
+    if (claudeSid) sessionRepo.updateSessionExternalId(session.id, claudeSid)
     tmux.attachSession(session.tmuxName)
     return { type: 'created' as const, session: toSessionInfo(session) }
   })
@@ -222,6 +233,8 @@ export function registerSessionHandlers(): void {
     let script: string
     let hiveAgentId = ''
     let presetId: string | undefined
+    let bridgedThreadId: string | undefined
+    let claudeSid: string | undefined
     // Path B applies only to NEW codex sessions — we can't `codex --remote`
     // into an arbitrary pre-existing thread, hive's daemon thread is fresh.
     if (t === 'codex' && mode === 'new') {
@@ -230,16 +243,21 @@ export function registerSessionHandlers(): void {
       if (bridged) {
         script = bridged.script
         hiveAgentId = bridged.hiveAgentId
+        bridgedThreadId = bridged.threadId
         presetId = provisional
       } else {
         script = generateLaunchScript(t, mode)
       }
     } else {
-      script = generateLaunchScript(t, mode, resumeId === '__new__' ? undefined : resumeId || undefined)
+      // Pre-bind a session id only for a genuinely NEW claude session.
+      claudeSid = (t === 'claude' && mode === 'new') ? uuid() : undefined
+      script = generateLaunchScript(t, mode, resumeId === '__new__' ? undefined : resumeId || undefined, undefined, claudeSid)
     }
     const session = tmux.createTmuxSession(t, undefined, dir, script, presetId)
     sessionRepo.saveSession(session)
     if (hiveAgentId) sessionRepo.updateSessionHiveAgentId(session.id, hiveAgentId)
+    if (bridgedThreadId) sessionRepo.updateSessionExternalId(session.id, bridgedThreadId)
+    if (claudeSid) sessionRepo.updateSessionExternalId(session.id, claudeSid)
     tmux.attachSession(session.tmuxName)
     return toSessionInfo(session)
   })
@@ -1047,9 +1065,15 @@ function syncPaneIds(): void {
 function tryRestoreSession(row: sessionRepo.SessionRow): boolean {
   if (!row.cwd || !existsSync(row.cwd)) return false
   try {
-    const script = row.externalSessionId
-      ? generateLaunchScript(row.tool, 'resume', row.externalSessionId, row.cwd)
-      : generateLaunchScript(row.tool, 'restore', undefined, row.cwd)
+    let script: string
+    if (row.externalSessionId) {
+      script = generateLaunchScript(row.tool, 'resume', row.externalSessionId, row.cwd)
+    } else {
+      // No bound jsonl to resume — pre-bind a fresh id for claude so this restore
+      // can't grab a sibling's transcript when the cwd is shared.
+      const { sid, mode } = prebindClaudeRelaunch(row, 'restore')
+      script = generateLaunchScript(row.tool, mode, undefined, row.cwd, sid)
+    }
     execSync(
       `${tmux.TMUX} new-session -d -s "${row.tmuxName}" -c "${row.cwd}" "${script}"`,
       { stdio: ['ignore', 'ignore', 'pipe'], env: tmux.tmuxSpawnEnv() }
@@ -1208,7 +1232,18 @@ function syncExternalSessionIds(): void {
   // Already-claimed ids across ALL sessions (avoid double-assignment within kitty)
   const claimed = new Set(sessions.map(s => s.externalSessionId).filter(Boolean))
 
+  // Defense: blind mtime-based claiming can't tell apart >1 unbound session that
+  // share one cwd — it would cross-assign their jsonls. Skip those cwds entirely
+  // and let the wakeup hook bind them by header instead. (New claude sessions are
+  // pre-bound via --session-id, so they normally never reach needsSync at all.)
+  const unboundPerCwd = new Map<string, number>()
+  for (const s of needsSync) unboundPerCwd.set(s.cwd, (unboundPerCwd.get(s.cwd) || 0) + 1)
+
   for (const row of needsSync) {
+    if ((unboundPerCwd.get(row.cwd) || 0) > 1) {
+      log('sync', `skip blind claim: ${unboundPerCwd.get(row.cwd)} unbound sessions share cwd ${row.cwd} (${row.title})`)
+      continue
+    }
     const provider = getProvider(row.tool)
     if (!provider) continue
     try {
@@ -1259,15 +1294,42 @@ function restartMode(session: sessionRepo.SessionRow): 'resume' | 'new' | 'conti
   return 'continue'
 }
 
+/**
+ * For a claude session about to relaunch WITHOUT an exact jsonl to resume
+ * (new/continue/restore), pre-bind a fresh --session-id so its transcript is
+ * identifiable up front — this is what keeps multiple claude sessions sharing one
+ * cwd from cross-assigning each other's history on restart. Returns {sid, mode}
+ * to feed straight into generateLaunchScript.
+ *
+ * A LONE session in its cwd keeps continue/restore (so it still recovers its own
+ * most-recent history). Only a cleared session (genuinely new) or a session that
+ * shares its cwd with others is forced onto a fresh id — there `claude -c` would
+ * otherwise grab a sibling's transcript.
+ */
+function prebindClaudeRelaunch(
+  session: sessionRepo.SessionRow,
+  mode: LaunchMode,
+): { sid?: string; mode: LaunchMode } {
+  if (session.tool !== 'claude' || mode === 'resume') return { mode }
+  const shareCwd = sessionRepo.listSessions().filter(s => s.cwd === session.cwd).length > 1
+  if (mode === 'new' || shareCwd) {
+    const sid = uuid()
+    sessionRepo.updateSessionExternalId(session.id, sid)
+    log('sync', `prebind claude id for ${session.title}: ${sid.slice(0, 8)} (mode ${mode}→new, shareCwd=${shareCwd})`)
+    return { sid, mode: 'new' }
+  }
+  return { mode }
+}
+
 async function restartSessionPane(session: sessionRepo.SessionRow): Promise<void> {
   // Resolve the exact pane to respawn WITHOUT clobbering a sibling session's
   // pane. Falls back to mainPane only when the tmux session is gone entirely.
   const target = resolveRestartPaneTarget(session)
     ?? resolvePaneTarget(session.tmuxName, session.mainPane || '0.0')
 
-  // Codex with hive bridge: instead of `codex resume`, re-attach the pane to
-  // the still-alive daemon thread via `codex --remote <ws>`. If the daemon is
-  // gone or bridge is off, fall back to the normal resume/continue script.
+  // Codex with hive bridge: restart the hive-managed daemon app-server for the
+  // target thread, then attach the pane via `codex --remote <ws>`. Restarting
+  // the app-server is intentional: it refreshes Codex's MCP tool registry.
   let launch: string
   let bridgedHiveAgentId = ''
   if (session.tool === 'codex' && getCodexHiveBridge()) {
@@ -1283,34 +1345,29 @@ async function restartSessionPane(session: sessionRepo.SessionRow): Promise<void
     })
     if (reg.success && reg.agentId) bridgedHiveAgentId = reg.agentId
     const ws = await codexPaneWs({ key: session.id, timeoutMs: 10000 })
-    // If DB has a thread pinned (via drift "切到最新" or manual rebind) that's
-    // different from what hive's daemon is currently hosting, honor the user's
-    // pin: bypass bridge and bare resume that thread. Without this, users who
-    // deliberately rebound to an older thread would silently see daemon's
-    // thread again (bridge would overwrite their choice).
-    //
-    // The trade-off (documented for future readers): pinning means this pane
-    // loses hive push from daemon (daemon writes a different thread). To rejoin
-    // daemon, the user must drift-rebind back to the daemon's current thread,
-    // or clear DB externalSessionId.
-    const userPinnedDifferentThread =
-      ws.status === 'ready' &&
-      !!session.externalSessionId &&
-      !!ws.thread_id &&
-      session.externalSessionId !== ws.thread_id
-    if (userPinnedDifferentThread) {
-      log('codex-bridge', `bypass bridge: DB pinned to ${session.externalSessionId.slice(0, 8)} ≠ daemon thread ${(ws.thread_id || '').slice(0, 8)}`)
-      launch = generateLaunchScript(session.tool, 'resume', session.externalSessionId, session.cwd || undefined)
+    const agentId = bridgedHiveAgentId || session.hiveAgentId
+    const requestedThreadId = session.externalSessionId || ws.thread_id || ''
+    if (agentId && requestedThreadId) {
+      const reset = await codexSetThread(agentId, requestedThreadId)
+      if (reset.kind === 'ok' || reset.kind === 'resumed_as_new') {
+        sessionRepo.updateSessionExternalId(session.id, reset.threadId)
+        launch = generateCodexRemoteScript(reset.wsUrl, reset.threadId, session.cwd || undefined)
+      } else {
+        log('codex-bridge', `daemon reset failed (${reset.kind}): ${reset.kind === 'error' ? reset.message : 'timeout'}`)
+        const mode = restartMode(session)
+        launch = generateLaunchScript(session.tool, mode, session.externalSessionId || undefined, session.cwd || undefined)
+      }
     } else if (ws.status === 'ready' && ws.ws_url) {
       launch = generateCodexRemoteScript(ws.ws_url, ws.thread_id, session.cwd || undefined)
+      if (ws.thread_id) sessionRepo.updateSessionExternalId(session.id, ws.thread_id)
     } else {
       log('codex-bridge', `restart fallback (ws status=${ws.status}): ${ws.error || ''}`)
       const mode = restartMode(session)
       launch = generateLaunchScript(session.tool, mode, session.externalSessionId || undefined, session.cwd || undefined)
     }
   } else {
-    const mode = restartMode(session)
-    launch = generateLaunchScript(session.tool, mode, session.externalSessionId || undefined, session.cwd || undefined)
+    const { sid, mode } = prebindClaudeRelaunch(session, restartMode(session))
+    launch = generateLaunchScript(session.tool, mode, session.externalSessionId || undefined, session.cwd || undefined, sid)
   }
 
   // Parse per-session env and pass via respawn-pane -e KEY=VALUE
