@@ -35,6 +35,53 @@ function savePosition(x: number, y: number): void {
   } catch { /* ignore */ }
 }
 
+// ─── 贴边隐藏(探头吸附) ───────────────────
+type SnapEdge = 'left' | 'right' | 'top'
+const SNAP_PEEK = 64      // 吸附后屏内留出的一截(px)
+const SNAP_THRESHOLD = 24 // 窗口边缘距屏幕 workArea < 此值(或越界)即吸附
+let snapState: { edge: SnapEdge; restore: { x: number; y: number } } | null = null
+
+/** 拖动松手时判定该吸附到哪条边(left/right/top),都不满足返回 null。下边不支持。 */
+function computeSnapEdge(win: BrowserWindow): SnapEdge | null {
+  const b = win.getBounds()
+  const wa = screen.getDisplayMatching(b).workArea
+  const cands: Array<{ edge: SnapEdge; d: number }> = [
+    { edge: 'left', d: b.x - wa.x },
+    { edge: 'right', d: (wa.x + wa.width) - (b.x + b.width) },
+    { edge: 'top', d: b.y - wa.y },
+  ].filter((c) => c.d < SNAP_THRESHOLD)
+  if (!cands.length) return null
+  cands.sort((a, c) => a.d - c.d) // 最越界/最近的一条边优先
+  return cands[0].edge
+}
+
+/** 把窗口移到指定边、只留 SNAP_PEEK 一截在屏内,并记录吸附前位置。 */
+function snapTo(win: BrowserWindow, edge: SnapEdge): void {
+  const b = win.getBounds()
+  const wa = screen.getDisplayMatching(b).workArea
+  snapState = { edge, restore: { x: b.x, y: b.y } }
+  let x = b.x
+  let y = b.y
+  if (edge === 'left') x = wa.x - (b.width - SNAP_PEEK)
+  else if (edge === 'right') x = wa.x + wa.width - SNAP_PEEK
+  else if (edge === 'top') y = wa.y - (b.height - SNAP_PEEK)
+  win.setPosition(Math.round(x), Math.round(y))
+  win.webContents.send('pet:snapped', { edge })
+}
+
+/** 解除吸附,滑回吸附前位置(clamp 进屏内保证完整可见)。 */
+function unsnap(win: BrowserWindow): void {
+  if (!snapState) return
+  const b = win.getBounds()
+  const wa = screen.getDisplayMatching(b).workArea
+  let { x, y } = snapState.restore
+  x = Math.max(wa.x, Math.min(x, wa.x + wa.width - b.width))
+  y = Math.max(wa.y, Math.min(y, wa.y + wa.height - b.height))
+  snapState = null
+  win.setPosition(Math.round(x), Math.round(y))
+  win.webContents.send('pet:unsnapped')
+}
+
 export function createPetWindow(): BrowserWindow {
   const display = screen.getPrimaryDisplay()
   const { width: screenWidth, height: screenHeight } = display.workAreaSize
@@ -86,11 +133,24 @@ export function createPetWindow(): BrowserWindow {
     })
     ipcMain.handle('drag-start', () => {
       const win = getPetWindow()
-      if (win && !win.isDestroyed()) win.setAlwaysOnTop(true, 'screen-saver')
+      if (!win || win.isDestroyed()) return
+      win.setAlwaysOnTop(true, 'screen-saver')
+      // 拖动已吸附的猫 → 先隐式解除吸附(窗口跟手,不移动),让 renderer 退出探头模式
+      if (snapState) {
+        snapState = null
+        win.webContents.send('pet:unsnapped')
+      }
     })
     ipcMain.handle('drag-end', () => {
       const win = getPetWindow()
-      if (win && !win.isDestroyed()) win.setAlwaysOnTop(true, 'floating')
+      if (!win || win.isDestroyed()) return
+      win.setAlwaysOnTop(true, 'floating')
+      const edge = computeSnapEdge(win)
+      if (edge) snapTo(win, edge)
+    })
+    ipcMain.handle('pet:unsnap', () => {
+      const win = getPetWindow()
+      if (win && !win.isDestroyed()) unsnap(win)
     })
     ipcMain.handle('popup-open', (_e, type: string, params: string) => {
       if (popupWindow && !popupWindow.isDestroyed()) {
@@ -158,9 +218,9 @@ export function createPetWindow(): BrowserWindow {
     })
   }
 
-  // Save position when window moves
+  // Save position when window moves (吸附期间不存,避免把屏外坐标写进位置文件)
   petWindow.on('moved', () => {
-    if (petWindow && !petWindow.isDestroyed()) {
+    if (petWindow && !petWindow.isDestroyed() && !snapState) {
       const [x, y] = petWindow.getPosition()
       savePosition(x, y)
     }

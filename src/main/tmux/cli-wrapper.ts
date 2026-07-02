@@ -160,6 +160,7 @@ export function generateLaunchScript(
   resumeId?: string,
   cwd?: string,
   sessionId?: string,
+  extraArgs?: string,
 ): string {
   const config = TOOLS[tool] || { cmd: tool }
   const scriptPath = join(tmpdir(), `kitty_launch_${Date.now()}.sh`)
@@ -168,16 +169,16 @@ export function generateLaunchScript(
 
   switch (mode) {
     case 'continue':
-      script = buildContinueScript(config)
+      script = buildContinueScript(config, extraArgs)
       break
     case 'new':
-      script = buildNewScript(config, sessionId)
+      script = buildNewScript(config, sessionId, extraArgs)
       break
     case 'resume':
-      script = buildResumeScript(config, resumeId!)
+      script = buildResumeScript(config, resumeId!, extraArgs)
       break
     case 'restore':
-      script = buildRestoreScript(config)
+      script = buildRestoreScript(config, extraArgs)
       break
   }
 
@@ -200,6 +201,62 @@ function prefixCwd(script: string, cwd: string): string {
     /^#!\/bin\/bash\n/,
     `#!/bin/bash\ncd ${shellQuoteForSh(cwd)} 2>/dev/null || true\n`,
   )
+}
+
+/**
+ * 把 hive 身份(HIVE_AGENT_KEY / NAME)焊进已生成的 launch script 本体,
+ * 紧跟 PATH 之后。幂等。
+ *
+ * 背景:HIVE_AGENT_KEY 原本只靠 kitty 在 tmux `new-session`/`split-window`/
+ * `respawn-pane` 上附的 `-e` 注入,而 `-e` 只是「这一次进程启动」的 ephemeral
+ * 环境,tmux 不会持久化它。一旦 pane 经「app 重启原地恢复 / claude 退出落到
+ * `exec $SHELL` 后重跑脚本 / 手动操作」等不走 kitty `-e` 的途径再次拉起,key
+ * 就永久丢失,hive MCP 随即 fallback 到按 name 注册 → 同 cwd 多会话错绑/串号。
+ * 写进脚本本体后,无论脚本被怎样重跑,身份都在。
+ */
+export function injectHiveIdentity(scriptPath: string, key: string, name: string): void {
+  if (!scriptPath || !key || !scriptPath.endsWith('.sh')) return
+  try {
+    if (!existsSync(scriptPath)) return
+    let script = readFileSync(scriptPath, 'utf-8')
+    if (script.includes('HIVE_AGENT_KEY=')) return // 已注入,幂等
+    const exportLines =
+      `export HIVE_AGENT_KEY=${shellQuoteForSh(key)}\n` +
+      `export HIVE_AGENT_NAME=${shellQuoteForSh(name || '')}`
+    script = script.includes(PATH_PREAMBLE)
+      ? script.replace(PATH_PREAMBLE, `${PATH_PREAMBLE}\n${exportLines}`)
+      : script.replace(/^#!\/bin\/bash\n/, `#!/bin/bash\n${exportLines}\n`)
+    writeFileSync(scriptPath, script)
+    chmodSync(scriptPath, '755')
+  } catch { /* best-effort:注入失败不阻断 spawn */ }
+}
+
+/**
+ * 把 per-session 环境变量焊进 launch script 本体(PATH 之后)。幂等。
+ *
+ * 与 injectHiveIdentity 同理:env 原本只在部分重建路径靠 tmux `-e` 注入,而
+ * app 重启自动恢复(tryRestoreSession)/unhide 等路径不注入 → 设过的 env 丢失。
+ * 写进脚本本体后无论怎样重跑都带上。只接受合法 shell 变量名,跳过非法 key。
+ */
+export function injectSessionEnv(scriptPath: string, envJson: string): void {
+  if (!scriptPath || !envJson || !scriptPath.endsWith('.sh')) return
+  try {
+    if (!existsSync(scriptPath)) return
+    let env: Record<string, string>
+    try { env = JSON.parse(envJson) } catch { return }
+    const keys = Object.keys(env || {}).filter((k) => /^[A-Za-z_][A-Za-z0-9_]*$/.test(k))
+    if (!keys.length) return
+    let script = readFileSync(scriptPath, 'utf-8')
+    if (script.includes('# kitty:session-env')) return // 已注入,幂等
+    const exportLines =
+      '# kitty:session-env\n' +
+      keys.map((k) => `export ${k}=${shellQuoteForSh(String(env[k]))}`).join('\n')
+    script = script.includes(PATH_PREAMBLE)
+      ? script.replace(PATH_PREAMBLE, `${PATH_PREAMBLE}\n${exportLines}`)
+      : script.replace(/^#!\/bin\/bash\n/, `#!/bin/bash\n${exportLines}\n`)
+    writeFileSync(scriptPath, script)
+    chmodSync(scriptPath, '755')
+  } catch { /* best-effort */ }
 }
 
 /**
@@ -252,12 +309,13 @@ function shellQuoteForSh(s: string): string {
 
 const PATH_PREAMBLE = 'export PATH="/opt/homebrew/bin:/usr/local/bin:$HOME/.local/bin:$PATH"'
 
-/** Build the full base command: cmd + hardcoded defaultArgs + user config toolArgs */
-function baseCmd(config: ToolConfig): string {
+/** Build the full base command: cmd + hardcoded defaultArgs + 全局 toolArgs + per-session extraArgs(追加在最后,可覆盖前面的 flag) */
+function baseCmd(config: ToolConfig, extraArgs?: string): string {
   const parts = [config.cmd]
   if (config.defaultArgs) parts.push(config.defaultArgs)
   const userArgs = getUserToolArgs(config.cmd)
   if (userArgs) parts.push(userArgs)
+  if (extraArgs && extraArgs.trim()) parts.push(extraArgs.trim())
   return parts.join(' ')
 }
 
@@ -271,9 +329,9 @@ export function needsDevChannelAutoAccept(tool: string): boolean {
   return userArgs.includes('--dangerously-load-development-channels')
 }
 
-function buildContinueScript(config: ToolConfig): string {
-  if (!config.continueFlag) return buildNewScript(config)
-  const cmd = baseCmd(config)
+function buildContinueScript(config: ToolConfig, extraArgs?: string): string {
+  if (!config.continueFlag) return buildNewScript(config, undefined, extraArgs)
+  const cmd = baseCmd(config, extraArgs)
 
   return `#!/bin/bash
 ${PATH_PREAMBLE}
@@ -289,8 +347,8 @@ exec $SHELL
 `
 }
 
-function buildNewScript(config: ToolConfig, sessionId?: string): string {
-  let cmd = baseCmd(config)
+function buildNewScript(config: ToolConfig, sessionId?: string, extraArgs?: string): string {
+  let cmd = baseCmd(config, extraArgs)
   // Pre-bind the session id when the tool supports it (claude --session-id).
   // Lets kitty know the jsonl name up front instead of claiming by cwd later,
   // so multiple sessions can share one cwd without cross-assignment.
@@ -303,9 +361,9 @@ exec $SHELL
 `
 }
 
-function buildResumeScript(config: ToolConfig, resumeId: string): string {
-  if (!config.resumeFlag) return buildNewScript(config)
-  const cmd = baseCmd(config)
+function buildResumeScript(config: ToolConfig, resumeId: string, extraArgs?: string): string {
+  if (!config.resumeFlag) return buildNewScript(config, undefined, extraArgs)
+  const cmd = baseCmd(config, extraArgs)
 
   return `#!/bin/bash
 ${PATH_PREAMBLE}
@@ -321,8 +379,8 @@ exec $SHELL
 `
 }
 
-function buildRestoreScript(config: ToolConfig): string {
-  const cmd = baseCmd(config)
+function buildRestoreScript(config: ToolConfig, extraArgs?: string): string {
+  const cmd = baseCmd(config, extraArgs)
   // Best-effort: try continue → new → shell
   if (!config.continueFlag) {
     return `#!/bin/bash

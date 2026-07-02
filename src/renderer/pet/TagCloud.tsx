@@ -763,7 +763,7 @@ export default function TagCloud({ sessions, onAttach, onKill, onRename, onResta
               { label: '🧹 清空对话 (Alt+C)', action: () => { onClearConversation(ctxMenu.id); setCtxMenu(null) } },
               { label: '📂 打开目录', action: () => { const s = alive.find(x => x.id === ctxMenu.id); if (s?.cwd) window.api.invoke('shell:open-path', s.cwd); setCtxMenu(null) } },
               { label: '📦 技能', action: () => { onOpenSkills(ctxMenu.id); setCtxMenu(null) } },
-              { label: '🌱 环境变量', action: () => { onEditEnv(ctxMenu.id); setCtxMenu(null) } },
+              { label: '⚙️ 会话设置', action: () => { onEditEnv(ctxMenu.id); setCtxMenu(null) } },
               ...(ctxMenu && sessions.find(s => s.id === ctxMenu.id)?.groupId ? [{
                 label: '📌 设为主窗口 (Alt+T)',
                 action: async () => {

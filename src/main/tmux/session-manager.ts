@@ -4,6 +4,7 @@ import { join } from 'path'
 import { tmpdir, homedir } from 'os'
 import { v4 as uuid } from 'uuid'
 import { getDB } from '../db/database'
+import { injectHiveIdentity } from './cli-wrapper'
 
 /** Resolve tmux binary — GUI apps don't inherit homebrew PATH */
 function findTmux(): string {
@@ -112,6 +113,8 @@ export function createTmuxSession(tool: string, firstMessage?: string, cwd?: str
 
   // Use launch script if provided, otherwise raw tool command
   const command = launchScript || getToolCommand(tool)
+  //焊死 hive 身份进脚本本体(根治:不再只靠下面 ephemeral 的 tmux `-e`)
+  if (launchScript) injectHiveIdentity(launchScript, id, title)
   // Inject hive identity env so kitty-hive MCP (if installed) auto-registers this agent
   const hiveEnv =
     ` -e ${shellQuote(`HIVE_AGENT_KEY=${id}`)}` +
@@ -354,6 +357,8 @@ export function createPaneInSession(
   const hiveFlags = hiveEnv
     ? ` -e ${shellQuote(`HIVE_AGENT_KEY=${hiveEnv.key}`)} -e ${shellQuote(`HIVE_AGENT_NAME=${hiveEnv.name}`)}`
     : ''
+  //焊死 hive 身份进脚本本体(根治:不再只靠 ephemeral 的 tmux `-e`)
+  if (hiveEnv) injectHiveIdentity(command, hiveEnv.key, hiveEnv.name)
   let paneId: string
   if (isFirstSplit) {
     paneId = execSync(

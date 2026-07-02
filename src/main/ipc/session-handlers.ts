@@ -7,7 +7,7 @@ import { execSync, spawn } from 'child_process'
 import { v4 as uuid } from 'uuid'
 import { log } from '../logger'
 import * as tmux from '../tmux/session-manager'
-import { generateLaunchScript, type LaunchMode, isToolInstalled, getInstallHint, getNtfyTopic, setNtfyTopic, getCodexHiveBridge, setCodexHiveBridge, needsDevChannelAutoAccept, generateCodexRemoteScript } from '../tmux/cli-wrapper'
+import { generateLaunchScript, type LaunchMode, isToolInstalled, getInstallHint, getNtfyTopic, setNtfyTopic, getCodexHiveBridge, setCodexHiveBridge, needsDevChannelAutoAccept, generateCodexRemoteScript, injectHiveIdentity, injectSessionEnv } from '../tmux/cli-wrapper'
 import { registerCodexAgent, codexPaneWs, codexSetThread, renameAgent } from '../hive-codex'
 import * as sessionRepo from '../db/session-repo'
 import { getDB } from '../db/database'
@@ -606,6 +606,18 @@ export function registerSessionHandlers(): void {
     return { success: true }
   })
 
+  // Get per-session launch args (CLI flags appended after global toolArgs)
+  ipcMain.handle('session:get-launch-args', (_event, id: string) => {
+    const row = sessionRepo.listSessions().find(s => s.id === id)
+    return row?.launchArgs || ''
+  })
+
+  // Set per-session launch args
+  ipcMain.handle('session:set-launch-args', (_event, id: string, args: string) => {
+    sessionRepo.updateSessionLaunchArgs(id, String(args || ''))
+    return { success: true }
+  })
+
   // Delete an external CLI session file (claude / codex / ...)
   ipcMain.handle('session:delete-external-session', (_event, tool: string, projectDir: string, sessionId: string) => {
     const provider = getProvider(tool)
@@ -783,6 +795,8 @@ export function registerSessionHandlers(): void {
         const sTool = session.tool
         const sTmuxName = session.tmuxName
         const gid = session.groupId
+        const sLaunchArgs = session.launchArgs || undefined
+        const sEnv = session.env
         setTimeout(() => {
           try {
             if (gid) {
@@ -792,7 +806,8 @@ export function registerSessionHandlers(): void {
               const hostTmux = groupSessions[0]?.tmuxName
               if (hostTmux && sCwd && existsSync(sCwd)) {
                 const tempName = `kitty_tmp_${Date.now()}`
-                const script = generateLaunchScript(sTool || 'claude', 'restore')
+                const script = generateLaunchScript(sTool || 'claude', 'restore', undefined, undefined, undefined, sLaunchArgs)
+                injectSessionEnv(script, sEnv)
                 execSync(
                   `${tmux.TMUX} new-session -d -s "${tempName}" -c "${sCwd}" "${script}"`,
                   { stdio: 'ignore', env: tmux.tmuxSpawnEnv() }
@@ -810,7 +825,8 @@ export function registerSessionHandlers(): void {
             } else {
               // Ungrouped: rebuild standalone tmux session if the old one is gone
               if (sTmuxName && !tmux.isSessionAlive(sTmuxName) && sCwd && existsSync(sCwd)) {
-                const script = generateLaunchScript(sTool || 'claude', 'restore')
+                const script = generateLaunchScript(sTool || 'claude', 'restore', undefined, undefined, undefined, sLaunchArgs)
+                injectSessionEnv(script, sEnv)
                 execSync(
                   `${tmux.TMUX} new-session -d -s "${sTmuxName}" -c "${sCwd}" "${script}"`,
                   { stdio: 'ignore', env: tmux.tmuxSpawnEnv() }
@@ -1066,14 +1082,16 @@ function tryRestoreSession(row: sessionRepo.SessionRow): boolean {
   if (!row.cwd || !existsSync(row.cwd)) return false
   try {
     let script: string
+    const extraArgs = row.launchArgs || undefined
     if (row.externalSessionId) {
-      script = generateLaunchScript(row.tool, 'resume', row.externalSessionId, row.cwd)
+      script = generateLaunchScript(row.tool, 'resume', row.externalSessionId, row.cwd, undefined, extraArgs)
     } else {
       // No bound jsonl to resume — pre-bind a fresh id for claude so this restore
       // can't grab a sibling's transcript when the cwd is shared.
       const { sid, mode } = prebindClaudeRelaunch(row, 'restore')
-      script = generateLaunchScript(row.tool, mode, undefined, row.cwd, sid)
+      script = generateLaunchScript(row.tool, mode, undefined, row.cwd, sid, extraArgs)
     }
+    injectSessionEnv(script, row.env)
     execSync(
       `${tmux.TMUX} new-session -d -s "${row.tmuxName}" -c "${row.cwd}" "${script}"`,
       { stdio: ['ignore', 'ignore', 'pipe'], env: tmux.tmuxSpawnEnv() }
@@ -1355,7 +1373,7 @@ async function restartSessionPane(session: sessionRepo.SessionRow): Promise<void
       } else {
         log('codex-bridge', `daemon reset failed (${reset.kind}): ${reset.kind === 'error' ? reset.message : 'timeout'}`)
         const mode = restartMode(session)
-        launch = generateLaunchScript(session.tool, mode, session.externalSessionId || undefined, session.cwd || undefined)
+        launch = generateLaunchScript(session.tool, mode, session.externalSessionId || undefined, session.cwd || undefined, undefined, session.launchArgs || undefined)
       }
     } else if (ws.status === 'ready' && ws.ws_url) {
       launch = generateCodexRemoteScript(ws.ws_url, ws.thread_id, session.cwd || undefined)
@@ -1363,11 +1381,11 @@ async function restartSessionPane(session: sessionRepo.SessionRow): Promise<void
     } else {
       log('codex-bridge', `restart fallback (ws status=${ws.status}): ${ws.error || ''}`)
       const mode = restartMode(session)
-      launch = generateLaunchScript(session.tool, mode, session.externalSessionId || undefined, session.cwd || undefined)
+      launch = generateLaunchScript(session.tool, mode, session.externalSessionId || undefined, session.cwd || undefined, undefined, session.launchArgs || undefined)
     }
   } else {
     const { sid, mode } = prebindClaudeRelaunch(session, restartMode(session))
-    launch = generateLaunchScript(session.tool, mode, session.externalSessionId || undefined, session.cwd || undefined, sid)
+    launch = generateLaunchScript(session.tool, mode, session.externalSessionId || undefined, session.cwd || undefined, sid, session.launchArgs || undefined)
   }
 
   // Parse per-session env and pass via respawn-pane -e KEY=VALUE
@@ -1383,6 +1401,10 @@ async function restartSessionPane(session: sessionRepo.SessionRow): Promise<void
   // Hive identity — re-inject on every restart so MCP re-registers this agent
   envFlags += ` -e "HIVE_AGENT_KEY=${session.id}"`
   envFlags += ` -e "HIVE_AGENT_NAME=${String(session.title || '').replace(/"/g, '\\"')}"`
+
+  //焊死 hive 身份 + per-session env 进脚本本体,防 respawn/app 重启/手动重跑丢失(根治)
+  injectHiveIdentity(launch, session.id, session.title || '')
+  injectSessionEnv(launch, session.env)
 
   execSync(`${tmux.TMUX} respawn-pane -k${envFlags} -t "${target}" "${launch}"`, { stdio: 'ignore' })
   if (bridgedHiveAgentId && bridgedHiveAgentId !== session.hiveAgentId) {

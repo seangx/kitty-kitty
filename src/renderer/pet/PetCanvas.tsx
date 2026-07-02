@@ -30,6 +30,7 @@ export default function PetCanvas() {
   const [contextMenu, setContextMenu] = useState<{ x: number; y: number } | null>(null)
   const [speech, setSpeech] = useState<string | null>(null)
   const [envEditor, setEnvEditor] = useState<string | null>(null)
+  const [snapEdge, setSnapEdge] = useState<'left' | 'right' | 'top' | null>(null)
   const [groupPrompt, setGroupPrompt] = useState(false)
   const [driftPrompt, setDriftPrompt] = useState<{ sessionId: string; drift: import('../lib/ipc').SessionDrift; kind: 'attach' | 'restart' } | null>(null)
   const isDragging = useRef(false)
@@ -64,7 +65,10 @@ export default function PetCanvas() {
     loadSessions()
     const poll = setInterval(() => loadSessions(), 10000)
     const unsub = window.api.on('window-blur', closeAll)
-    return () => { scheduler.stop(); machine.destroy(); clearInterval(poll); unsub() }
+    // 贴边隐藏(探头吸附):主进程 drag-end 判定后 push 吸附状态
+    const unsubSnap = window.api.on('pet:snapped', (msg: any) => setSnapEdge(msg?.edge ?? null))
+    const unsubUnsnap = window.api.on('pet:unsnapped', () => setSnapEdge(null))
+    return () => { scheduler.stop(); machine.destroy(); clearInterval(poll); unsub(); unsubSnap(); unsubUnsnap() }
   }, [scheduler, machine, loadSessions, closeAll])
 
   // Wakeup ("xxx 在等你") IPC — bound ONCE, never re-binds on session updates,
@@ -454,7 +458,7 @@ export default function PetCanvas() {
           sessionId={envEditor}
           sessionTitle={sessions.find(s => s.id === envEditor)?.title || ''}
           onClose={() => setEnvEditor(null)}
-          onSaved={() => { machine.forceState('happy', 1500); say('环境变量已保存喵~') }}
+          onSaved={() => { machine.forceState('happy', 1500); say('会话设置已保存喵~') }}
         />
       </DraggablePopup>
     )}
@@ -512,7 +516,7 @@ export default function PetCanvas() {
 
     {/* Pet area — cat, tagcloud, context menu */}
     <div
-      style={{ width: '100%', height: '100%', display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'flex-end', userSelect: 'none', position: 'relative' }}
+      style={{ width: '100%', height: '100%', display: 'flex', flexDirection: 'column', alignItems: snapEdge === 'left' ? 'flex-end' : snapEdge === 'right' ? 'flex-start' : 'center', justifyContent: 'flex-end', userSelect: 'none', position: 'relative' }}
       onMouseDown={handleMouseDown} onClick={handleClick} onContextMenu={handleContextMenu}
       onMouseMove={handleMouseMove} onMouseLeave={handleMouseLeave}
     >
@@ -520,7 +524,7 @@ export default function PetCanvas() {
           doesn't intercept mousemove (which would flip the window into
           interactive mode and block click-through to underlying windows).
           Children with real UI must opt back in via pointerEvents:auto. */}
-      <div style={{ flex: '1 1 auto', minHeight: 0, width: '100%', overflow: 'auto', display: 'flex', flexDirection: 'column', justifyContent: 'flex-end', pointerEvents: 'none' }}>
+      <div style={{ flex: '1 1 auto', minHeight: 0, width: '100%', overflow: 'auto', display: snapEdge ? 'none' : 'flex', flexDirection: 'column', justifyContent: 'flex-end', pointerEvents: 'none' }}>
         <div style={{ pointerEvents: 'auto' }}>
           <TagCloud
             sessions={sessions}
@@ -556,7 +560,11 @@ export default function PetCanvas() {
           />
         </div>
       </div>
-      <div style={{ position: 'relative', flexShrink: 0, width: 128, height: 128, pointerEvents: 'auto' }}>
+      <div
+        style={{ position: 'relative', flexShrink: 0, width: 128, height: 128, pointerEvents: 'auto', cursor: snapEdge ? 'pointer' : undefined }}
+        onClick={(e) => { if (snapEdge) { e.stopPropagation(); window.api.invoke('pet:unsnap') } }}
+        title={snapEdge ? '点我回来喵~' : undefined}
+      >
         {speech && <SpeechBubble text={speech} onDone={() => setSpeech(null)} />}
         <PetSprite state={animation} skin={bubble.skin} size={128} />
       </div>
@@ -582,15 +590,20 @@ function EnvEditor({ sessionId, sessionTitle, onClose, onSaved }: {
   sessionId: string; sessionTitle: string; onClose: () => void; onSaved: () => void
 }) {
   const [text, setText] = useState('')
+  const [argsText, setArgsText] = useState('')
   const [loading, setLoading] = useState(true)
   const [saving, setSaving] = useState(false)
 
   useEffect(() => {
-    window.api.invoke('session:get-env', sessionId).then((env: any) => {
+    Promise.all([
+      window.api.invoke('session:get-env', sessionId),
+      window.api.invoke('session:get-launch-args', sessionId),
+    ]).then(([env, args]: any[]) => {
       const lines = env && typeof env === 'object'
         ? Object.entries(env).map(([k, v]) => `${k}=${v}`).join('\n')
         : ''
       setText(lines)
+      setArgsText(typeof args === 'string' ? args : '')
       setLoading(false)
     }).catch(() => setLoading(false))
   }, [sessionId])
@@ -608,11 +621,14 @@ function EnvEditor({ sessionId, sessionTitle, onClose, onSaved }: {
         const v = trimmed.slice(eq + 1).trim()
         if (k) env[k] = v
       }
-      await window.api.invoke('session:set-env', sessionId, env)
+      await Promise.all([
+        window.api.invoke('session:set-env', sessionId, env),
+        window.api.invoke('session:set-launch-args', sessionId, argsText.trim()),
+      ])
       onSaved()
       onClose()
     } catch (e) {
-      console.error('save env failed:', e)
+      console.error('save session config failed:', e)
     }
     setSaving(false)
   }
@@ -625,16 +641,17 @@ function EnvEditor({ sessionId, sessionTitle, onClose, onSaved }: {
       fontFamily: "'Plus Jakarta Sans', -apple-system, sans-serif", color: skinC.text,
     }}>
       <div data-drag-handle style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 10, cursor: 'grab' }}>
-        <span style={{ fontSize: 13, fontWeight: 600 }}>🌱 环境变量 · {sessionTitle}</span>
+        <span style={{ fontSize: 13, fontWeight: 600 }}>⚙️ 会话设置 · {sessionTitle}</span>
         <button onClick={onClose} style={{ background: 'none', border: 'none', color: skinC.textDim, cursor: 'pointer', fontSize: 16 }}>✕</button>
       </div>
+      <div style={{ fontSize: 11, color: skinC.text, fontWeight: 600, marginBottom: 4 }}>🌱 环境变量</div>
       <textarea
         value={loading ? '加载中...' : text}
         onChange={(e) => setText(e.target.value)}
         placeholder="KEY=value&#10;ANOTHER=value"
         disabled={loading}
         style={{
-          width: '100%', boxSizing: 'border-box', minHeight: 140,
+          width: '100%', boxSizing: 'border-box', minHeight: 110,
           padding: '8px 10px', borderRadius: 8,
           border: `1px solid ${skinC.outline}55`,
           background: `${skinC.container}aa`,
@@ -644,7 +661,26 @@ function EnvEditor({ sessionId, sessionTitle, onClose, onSaved }: {
         }}
       />
       <div style={{ fontSize: 10, color: skinC.textDim, marginTop: 4 }}>
-        每行一个 KEY=VALUE，重启会话后生效
+        每行一个 KEY=VALUE
+      </div>
+      <div style={{ fontSize: 11, color: skinC.text, fontWeight: 600, margin: '12px 0 4px' }}>🚀 启动参数</div>
+      <input
+        value={loading ? '加载中...' : argsText}
+        onChange={(e) => setArgsText(e.target.value)}
+        placeholder="--model opus  --dangerously-skip-permissions"
+        disabled={loading}
+        style={{
+          width: '100%', boxSizing: 'border-box',
+          padding: '8px 10px', borderRadius: 8,
+          border: `1px solid ${skinC.outline}55`,
+          background: `${skinC.container}aa`,
+          color: skinC.text, fontSize: 12,
+          fontFamily: 'ui-monospace, SFMono-Regular, Menlo, monospace',
+          outline: 'none',
+        }}
+      />
+      <div style={{ fontSize: 10, color: skinC.textDim, marginTop: 4 }}>
+        追加在全局 toolArgs 之后（后者覆盖前者）。环境变量 + 启动参数均需<b>重启会话</b>后生效
       </div>
       <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 6, marginTop: 10 }}>
         <button onClick={onClose} style={{
