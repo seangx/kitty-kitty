@@ -29,6 +29,7 @@ export interface GroupRow {
   name: string
   color: string | null
   mainSessionId: string | null
+  archived: number
 }
 
 // --- Sessions ---
@@ -162,17 +163,37 @@ export function createGroup(id: string, name: string, color?: string): void {
 
 export function listGroups(): GroupRow[] {
   const db = getDB()
+  // 主界面列表:归档的 group 不返回(TagCloud 因此自动不渲染它们)
   return db.prepare(`
-    SELECT id, name, color, main_session_id as mainSessionId
+    SELECT id, name, color, main_session_id as mainSessionId,
+           COALESCE(archived, 0) as archived
     FROM groups
+    WHERE COALESCE(archived, 0) = 0
     ORDER BY created_at
   `).all() as GroupRow[]
+}
+
+export function listArchivedGroups(): GroupRow[] {
+  const db = getDB()
+  return db.prepare(`
+    SELECT id, name, color, main_session_id as mainSessionId,
+           COALESCE(archived, 0) as archived
+    FROM groups
+    WHERE COALESCE(archived, 0) = 1
+    ORDER BY created_at
+  `).all() as GroupRow[]
+}
+
+export function setGroupArchived(id: string, archived: boolean): void {
+  const db = getDB()
+  db.prepare('UPDATE groups SET archived = ? WHERE id = ?').run(archived ? 1 : 0, id)
 }
 
 export function getGroupById(id: string): GroupRow | undefined {
   const db = getDB()
   return db.prepare(`
-    SELECT id, name, color, main_session_id as mainSessionId
+    SELECT id, name, color, main_session_id as mainSessionId,
+           COALESCE(archived, 0) as archived
     FROM groups
     WHERE id = ?
   `).get(id) as GroupRow | undefined

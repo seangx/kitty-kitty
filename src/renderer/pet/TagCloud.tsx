@@ -871,6 +871,26 @@ export default function TagCloud({ sessions, onAttach, onKill, onRename, onResta
             onMouseEnter={(e) => { (e.target as HTMLElement).style.background = `${theme.dim}33` }}
             onMouseLeave={(e) => { (e.target as HTMLElement).style.background = 'none' }}
           >♻️ 重启组内会话</button>
+          <button onClick={async () => {
+            const gid = groupCtxMenu.id
+            setGroupCtxMenu(null)
+            try {
+              await window.api.invoke('group:archive', gid)
+              await loadGroups()
+              await loadSessions()
+            } catch (e: any) {
+              console.error('archive group failed:', e)
+              window.alert(`归档失败: ${e?.message || e}`)
+            }
+          }}
+            style={{
+              display: 'block', width: '100%', padding: '6px 12px', textAlign: 'left',
+              background: 'none', border: 'none', color: '#e5e3ff', cursor: 'pointer',
+              fontSize: 12, fontFamily: 'inherit', borderRadius: 6,
+            }}
+            onMouseEnter={(e) => { (e.target as HTMLElement).style.background = `${theme.dim}33` }}
+            onMouseLeave={(e) => { (e.target as HTMLElement).style.background = 'none' }}
+          >📦 归档(结束组内会话)</button>
           {/* Rename group inline */}
           <div style={{ display: 'flex', gap: 4, padding: '4px 10px' }}>
             <input

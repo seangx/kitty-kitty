@@ -11,16 +11,38 @@ const C = {
   primaryDim: '#645efb', outline: '#46465c',
 }
 
+interface ArchivedGroup {
+  id: string
+  name: string
+  color: string | null
+  sessionCount: number
+}
+
 export default function SettingsPanel({ onClose }: Props) {
   const { bubble, setBubble, resetBubble } = useConfigStore()
   const [ntfyTopic, setNtfyTopic] = useState('')
   const [codexHiveBridge, setCodexHiveBridgeState] = useState(false)
+  const [archivedGroups, setArchivedGroups] = useState<ArchivedGroup[]>([])
   const ntfyTimer = useRef<ReturnType<typeof setTimeout> | null>(null)
+
+  const loadArchived = () => {
+    window.api.invoke('group:list-archived').then((g: any) => setArchivedGroups(g || [])).catch(() => {})
+  }
 
   useEffect(() => {
     window.api.invoke('ntfy:topic:get').then((t: any) => setNtfyTopic(t || '')).catch(() => {})
     window.api.invoke('config:codex-hive-bridge:get').then((v: any) => setCodexHiveBridgeState(!!v)).catch(() => {})
+    loadArchived()
   }, [])
+
+  const handleUnarchive = async (id: string) => {
+    try {
+      await window.api.invoke('group:unarchive', id)
+      loadArchived()
+    } catch (e) {
+      console.error('unarchive failed:', e)
+    }
+  }
 
   return (
     <div style={{
@@ -83,6 +105,29 @@ export default function SettingsPanel({ onClose }: Props) {
           codex 新建会话用 <code>codex --remote</code> 接到 kitty-hive 的 daemon，可接收 hive 推送
         </div>
       </div>
+
+      {/* Archived groups */}
+      {archivedGroups.length > 0 && (
+        <>
+          <div style={{ height: 1, background: `${C.outline}33`, margin: '12px 0' }} />
+          <div style={{ fontSize: 11, color: C.textDim, marginBottom: 8, fontWeight: 500 }}>📦 已归档 ({archivedGroups.length})</div>
+          <div style={{ marginBottom: 14, display: 'flex', flexDirection: 'column', gap: 6 }}>
+            {archivedGroups.map((g) => (
+              <div key={g.id} style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                <span style={{ width: 8, height: 8, borderRadius: '50%', background: g.color || C.primaryDim, flexShrink: 0 }} />
+                <span style={{ flex: 1, fontSize: 12, color: C.text, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                  {g.name}
+                  <span style={{ fontSize: 10, color: C.textDim, marginLeft: 6 }}>{g.sessionCount} 会话</span>
+                </span>
+                <button onClick={() => handleUnarchive(g.id)}
+                  style={{ padding: '2px 10px', borderRadius: 9999, background: `${C.container}aa`, border: `1px solid ${C.outline}33`, color: C.text, fontSize: 10, cursor: 'pointer', fontFamily: 'inherit', flexShrink: 0 }}>
+                  恢复
+                </button>
+              </div>
+            ))}
+          </div>
+        </>
+      )}
 
       <div style={{ height: 1, background: `${C.outline}33`, margin: '12px 0' }} />
 

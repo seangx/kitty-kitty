@@ -33,9 +33,14 @@ ALTER TABLE groups ADD COLUMN archived INTEGER NOT NULL DEFAULT 0
 | IPC | 行为 |
 |---|---|
 | `group:archive(groupId)` | 遍历 `listSessionsByGroup(groupId)`:对每个会话 `killSessionTmux(session)`(复用现有,kill tmux 不删记录) + `updateSessionStatus(id, 'dead')`;最后 `setGroupArchived(groupId, true)` |
-| `group:unarchive(groupId)` | `setGroupArchived(groupId, false)`(仅清标记,会话记录仍是 dead 态) |
+| `group:unarchive(groupId)` | `setGroupArchived(groupId, false)` + 组内 `dead → detached` |
 | `group:list-archived` | 返回归档 group,每个附带会话数(`listSessionsByGroup(id).length`) |
 | `group:list` | 不变(内部走 `listGroups()`,已只返回未归档) |
+
+### 实现中发现的两处修正(2026-07-06)
+
+1. **重启防复活**:`syncAndList` 首次 sync 的 auto-restore 循环不检查 status,归档的 dead 行会被 `tryRestoreSession` 复活(现有代码没暴露是因为 kill 即删记录,dead 行从不长存;归档首次引入长期 dead 行)。→ restore 循环跳过归档组的会话(`listArchivedGroups` 建 Set 过滤)。
+2. **unarchive 改为 dead→detached**:renderer 的 `alive` 过滤掉 dead,若"保持 dead"则恢复后的会话永远不渲染、无法点击。detached 可见,tmux 不存在时常规 sync "keep as-is",点击时走现有 attach 的 on-the-fly restore 重建 —— 正是"点击时重建"的原意。
 
 ## renderer
 
