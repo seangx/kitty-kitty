@@ -655,6 +655,38 @@ export function registerSessionHandlers(): void {
     sessionRepo.updateGroupColor(groupId, color)
   })
 
+  // 归档:kill 组内全部 tmux(保留 DB 记录,status→dead),标记 archived。
+  // group:list 只返回未归档 → 主界面自动收起;数据完整可恢复。
+  ipcMain.handle('group:archive', (_event, groupId: string) => {
+    const group = sessionRepo.getGroupById(groupId)
+    if (!group) throw new Error('Group not found')
+    const rows = sessionRepo.listSessionsByGroup(groupId)
+    for (const s of rows) {
+      try { killSessionTmux(s) } catch { /* tmux 可能已死 */ }
+      sessionRepo.updateSessionStatus(s.id, 'dead')
+    }
+    sessionRepo.setGroupArchived(groupId, true)
+    log('group', `archived: ${group.name} (${rows.length} sessions)`)
+    return { success: true, count: rows.length }
+  })
+
+  // 取消归档:清标记 + 组内 dead→detached(dead 在主界面不渲染,detached 可见;
+  // 点击 detached 会话时走现有 attach 的 on-the-fly restore 重建 tmux)
+  ipcMain.handle('group:unarchive', (_event, groupId: string) => {
+    sessionRepo.setGroupArchived(groupId, false)
+    for (const s of sessionRepo.listSessionsByGroup(groupId)) {
+      if (s.status === 'dead') sessionRepo.updateSessionStatus(s.id, 'detached')
+    }
+    return { success: true }
+  })
+
+  ipcMain.handle('group:list-archived', () => {
+    return sessionRepo.listArchivedGroups().map((g) => ({
+      ...g,
+      sessionCount: sessionRepo.listSessionsByGroup(g.id).length,
+    }))
+  })
+
   ipcMain.handle('session:set-group', (_event, sessionId: string, groupId: string | null) => {
     const rows = sessionRepo.listSessions()
     const session = rows.find((s) => s.id === sessionId)
@@ -1166,7 +1198,10 @@ function syncAndList(): SessionInfo[] {
 
     // Re-read rows now that tmux_name may have been reset
     const rowsForRestore = sessionRepo.listSessions()
+    // 归档组的会话不自动复活(归档=kill tmux 留记录,重启必须保持归档态)
+    const archivedGroupIds = new Set(sessionRepo.listArchivedGroups().map((g) => g.id))
     for (const row of rowsForRestore) {
+      if (row.groupId && archivedGroupIds.has(row.groupId)) continue
       if (!liveNames.has(row.tmuxName) && row.cwd && existsSync(row.cwd) && !row.hidden) {
         if (tryRestoreSession(row)) liveNames.add(row.tmuxName)
       }
