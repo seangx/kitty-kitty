@@ -41,15 +41,47 @@ const SNAP_PEEK = 64      // 吸附后屏内留出的一截(px)
 const SNAP_THRESHOLD = 24 // 窗口边缘距屏幕 workArea < 此值(或越界)即吸附
 let snapState: { edge: SnapEdge; restore: { x: number; y: number } } | null = null
 
+/**
+ * 窗口中心点所在的显示器。
+ * 不用 getDisplayMatching(重叠面积法):拖动越过屏间边界时,窗口探进相邻屏的
+ * 面积一超过一半,matching 就突然切到相邻屏,吸附会用错屏的 workArea 计算,
+ * 把窗口推出整个虚拟桌面(多屏丢猫 bug 的根因)。中心点法稳定且符合直觉。
+ */
+function displayForWindow(b: Electron.Rectangle): Electron.Display {
+  return screen.getDisplayNearestPoint({
+    x: Math.round(b.x + b.width / 2),
+    y: Math.round(b.y + b.height / 2),
+  })
+}
+
+/**
+ * 该显示器 edge 方向外侧、窗口正对的位置上,是否还有相邻显示器。
+ * 内边(屏与屏之间的过渡)不允许吸附——把窗口推出这种边不是"藏进边缘",
+ * 而是塞进相邻屏。只有虚拟桌面的外边缘才能吸附隐藏。
+ */
+function hasAdjacentDisplay(disp: Electron.Display, edge: SnapEdge, b: Electron.Rectangle): boolean {
+  const db = disp.bounds
+  // 探测点:屏物理边界(bounds,非 workArea——workArea 顶部让出的 menubar 仍属本屏)
+  // 外侧 8px,在窗口中线对应的位置上
+  const probe = edge === 'left' ? { x: db.x - 8, y: Math.round(b.y + b.height / 2) }
+    : edge === 'right' ? { x: db.x + db.width + 8, y: Math.round(b.y + b.height / 2) }
+    : { x: Math.round(b.x + b.width / 2), y: db.y - 8 }
+  return screen.getAllDisplays().some((d) =>
+    d.id !== disp.id &&
+    probe.x >= d.bounds.x && probe.x < d.bounds.x + d.bounds.width &&
+    probe.y >= d.bounds.y && probe.y < d.bounds.y + d.bounds.height)
+}
+
 /** 拖动松手时判定该吸附到哪条边(left/right/top),都不满足返回 null。下边不支持。 */
 function computeSnapEdge(win: BrowserWindow): SnapEdge | null {
   const b = win.getBounds()
-  const wa = screen.getDisplayMatching(b).workArea
+  const disp = displayForWindow(b)
+  const wa = disp.workArea
   const cands: Array<{ edge: SnapEdge; d: number }> = [
     { edge: 'left', d: b.x - wa.x },
     { edge: 'right', d: (wa.x + wa.width) - (b.x + b.width) },
     { edge: 'top', d: b.y - wa.y },
-  ].filter((c) => c.d < SNAP_THRESHOLD)
+  ].filter((c) => c.d < SNAP_THRESHOLD && !hasAdjacentDisplay(disp, c.edge, b))
   if (!cands.length) return null
   cands.sort((a, c) => a.d - c.d) // 最越界/最近的一条边优先
   return cands[0].edge
@@ -58,7 +90,7 @@ function computeSnapEdge(win: BrowserWindow): SnapEdge | null {
 /** 把窗口移到指定边、只留 SNAP_PEEK 一截在屏内,并记录吸附前位置。 */
 function snapTo(win: BrowserWindow, edge: SnapEdge): void {
   const b = win.getBounds()
-  const wa = screen.getDisplayMatching(b).workArea
+  const wa = displayForWindow(b).workArea
   snapState = { edge, restore: { x: b.x, y: b.y } }
   let x = b.x
   let y = b.y
@@ -73,8 +105,15 @@ function snapTo(win: BrowserWindow, edge: SnapEdge): void {
 function unsnap(win: BrowserWindow): void {
   if (!snapState) return
   const b = win.getBounds()
-  const wa = screen.getDisplayMatching(b).workArea
-  let { x, y } = snapState.restore
+  // clamp 用 restore 点所在的屏:吸附时窗口大部分在屏外,当前 bounds 的
+  // 中心可能已不落在原屏(甚至任何屏)内,不能拿它定屏
+  const { x: rx, y: ry } = snapState.restore
+  const wa = screen.getDisplayNearestPoint({
+    x: Math.round(rx + b.width / 2),
+    y: Math.round(ry + b.height / 2),
+  }).workArea
+  let x = rx
+  let y = ry
   x = Math.max(wa.x, Math.min(x, wa.x + wa.width - b.width))
   y = Math.max(wa.y, Math.min(y, wa.y + wa.height - b.height))
   snapState = null
