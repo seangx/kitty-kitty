@@ -1116,7 +1116,10 @@ function tryRestoreSession(row: sessionRepo.SessionRow): boolean {
     let script: string
     const extraArgs = row.launchArgs || undefined
     if (row.externalSessionId) {
-      script = generateLaunchScript(row.tool, 'resume', row.externalSessionId, row.cwd, undefined, extraArgs)
+      // prebind 会在 jsonl 从未落盘时把 resume 降级为 new+同 id(--session-id),
+      // 避免 claude --resume 报 "No conversation found"
+      const { sid, mode } = prebindClaudeRelaunch(row, 'resume')
+      script = generateLaunchScript(row.tool, mode, mode === 'resume' ? row.externalSessionId : undefined, row.cwd, sid, extraArgs)
     } else {
       // No bound jsonl to resume — pre-bind a fresh id for claude so this restore
       // can't grab a sibling's transcript when the cwd is shared.
@@ -1363,7 +1366,17 @@ function prebindClaudeRelaunch(
   session: sessionRepo.SessionRow,
   mode: LaunchMode,
 ): { sid?: string; mode: LaunchMode } {
-  if (session.tool !== 'claude' || mode === 'resume') return { mode }
+  if (session.tool !== 'claude') return { mode }
+  if (mode === 'resume') {
+    // --session-id 预绑定后一条消息都没发过 → jsonl 从未落盘,--resume 必报
+    // "No conversation found"。改走 new 并复用同一个 id:不报错,且未来 jsonl
+    // 落盘时文件名仍是 DB 里的 id,绑定不破。
+    if (session.externalSessionId && session.cwd && !isJsonlInCwd(session.externalSessionId, session.cwd)) {
+      log('sync', `resume→new: jsonl ${session.externalSessionId.slice(0, 8)} never landed (${session.title})`)
+      return { sid: session.externalSessionId, mode: 'new' }
+    }
+    return { mode }
+  }
   const shareCwd = sessionRepo.listSessions().filter(s => s.cwd === session.cwd).length > 1
   if (mode === 'new' || shareCwd) {
     const sid = uuid()
