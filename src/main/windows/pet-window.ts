@@ -121,6 +121,48 @@ function unsnap(win: BrowserWindow): void {
   win.webContents.send('pet:unsnapped')
 }
 
+/**
+ * 显示器布局变化(插拔屏/换扩展坞/切投影)后的自愈:
+ * - 若处于吸附态,窗口大部分在旧屏的屏外坐标,新布局下极易失效(丢猫) →
+ *   一律解除吸附,把猫拽回吸附前位置(clamp 进主屏可见区)。
+ * - 若非吸附但窗口中心已不在任何屏的可见区(所在屏被拔掉) → 拽回主屏可见。
+ * 两种情况都把归位后的可见坐标写进位置文件,重启也不会再卡屏外。
+ */
+function ensureOnScreen(): void {
+  const win = petWindow
+  if (!win || win.isDestroyed()) return
+  const b = win.getBounds()
+  const primary = screen.getPrimaryDisplay().workArea
+  const clampToPrimary = (px: number, py: number): [number, number] => [
+    Math.round(Math.max(primary.x, Math.min(px, primary.x + primary.width - b.width))),
+    Math.round(Math.max(primary.y, Math.min(py, primary.y + primary.height - b.height))),
+  ]
+
+  if (snapState) {
+    // 吸附态:用吸附前位置归位(它也可能在已拔掉的屏上,故 clamp 到主屏)
+    const { x: rx, y: ry } = snapState.restore
+    snapState = null
+    win.webContents.send('pet:unsnapped')
+    const [x, y] = clampToPrimary(rx, ry)
+    win.setPosition(x, y)
+    savePosition(x, y)
+    return
+  }
+
+  // 非吸附:窗口中心是否还落在某块屏的可见区内
+  const cx = b.x + b.width / 2
+  const cy = b.y + b.height / 2
+  const centerVisible = screen.getAllDisplays().some((d) => {
+    const wa = d.workArea
+    return cx >= wa.x && cx < wa.x + wa.width && cy >= wa.y && cy < wa.y + wa.height
+  })
+  if (!centerVisible) {
+    const [x, y] = clampToPrimary(b.x, b.y)
+    win.setPosition(x, y)
+    savePosition(x, y)
+  }
+}
+
 export function createPetWindow(): BrowserWindow {
   const display = screen.getPrimaryDisplay()
   const { width: screenWidth, height: screenHeight } = display.workAreaSize
@@ -191,6 +233,18 @@ export function createPetWindow(): BrowserWindow {
       const win = getPetWindow()
       if (win && !win.isDestroyed()) unsnap(win)
     })
+
+    // 显示器布局变化自愈:插拔屏/换扩展坞后若猫卡在失效坐标(尤其吸附态换屏),
+    // 自动拽回主屏可见区。debounce + 缓冲,等系统重排稳定再读 bounds。
+    let displayChangeTimer: ReturnType<typeof setTimeout> | null = null
+    const onDisplayChange = (): void => {
+      if (displayChangeTimer) clearTimeout(displayChangeTimer)
+      displayChangeTimer = setTimeout(ensureOnScreen, 400)
+    }
+    screen.on('display-added', onDisplayChange)
+    screen.on('display-removed', onDisplayChange)
+    screen.on('display-metrics-changed', onDisplayChange)
+
     ipcMain.handle('popup-open', (_e, type: string, params: string) => {
       if (popupWindow && !popupWindow.isDestroyed()) {
         popupWindow.focus()
