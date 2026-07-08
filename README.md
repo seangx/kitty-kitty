@@ -9,11 +9,13 @@
 ## 功能
 
 - **像素宠物** — 像素风桌宠常驻屏幕，多种动画（idle/walk/think/talk/happy/sneak/roll/jump/stretch/dance），三套皮肤可换装（三花、绵悠悠、皮皮鸡）
-- **会话管理** — 创建、切换、分组管理多个 AI agent 会话
+- **贴边吸附** — 拖桌宠到屏幕左/右/上边缘自动吸附成探头，只露一小截猫，点击唤回；多屏环境自动识别边界，切换显示器后自动归位
+- **会话管理** — 创建、切换、分组管理多个 AI agent 会话；每个 claude 会话预分配 `--session-id`，同一目录多会话历史不串
 - **Pane 分组** — 同组会话自动合并为一个 tmux 窗口的多个 pane：主 pane 占左 35%，其余右侧均分；右键气泡"设为主窗口"调整
+- **组归档** — 右键组头「归档」把整组从主界面收起、结束组内 tmux 会话但保留全部记录；设置面板「已归档」区一键恢复
 - **状态栏** — 顶部 tmux 状态栏显示分组 tab；未分组会话拆开成独立 tab（每个会话一个 slot）
-- **一键重启** — 右键会话气泡或组头，重启单个 / 整组 / 全部会话，基于 `claude --resume <id>` 精确恢复
-- **环境变量** — 每个会话独立环境变量，重启时通过 `tmux respawn-pane -e` 注入
+- **一键重启** — 右键会话气泡或组头，重启单个 / 整组 / 全部会话，基于 `claude --resume <id>` 精确恢复（jsonl 未落盘时自动降级）
+- **会话设置** — 每个会话独立配置环境变量 + CLI 启动参数（如 `--model opus`），焊进 launch script 本体，重启/自动恢复都不丢
 - **推送通知** — 订阅 ntfy.sh topic，部署状态等消息直接推送到桌宠气泡
 - **技能管理** — 搜索、安装、按分类批量部署 superpowers 技能到会话
 - **Hive 协作** — 会话身份自动同步到 [kitty-hive](https://github.com/seangx/kitty-hive)，改名/删除实时对齐，可选
@@ -73,11 +75,11 @@ npm run dist
 - **单击** 桌宠 — 互动
 - **双击** 桌宠 — 打开输入框，创建新会话
 - **右键** 桌宠 — 菜单（新对话、在目录中开始、新建分组、重启全部、换装、设置）
-- **拖拽** 桌宠 — 移动位置
+- **拖拽** 桌宠 — 移动位置；拖到屏幕左/右/上边缘松手自动吸附成探头，点击探头唤回
 - **点击** 会话气泡 — attach 到该会话的 tmux 窗口
 - **悬停** 会话气泡 — 显示「重启」快捷按钮
-- **右键** 会话气泡 — 重命名、重启会话、打开目录、技能、环境变量、设为主窗口、退出、退出并删除
-- **右键** 组头 — 在此组创建会话、重启组内会话、重命名、设置颜色
+- **右键** 会话气泡 — 重命名、重启会话、打开目录、技能、会话设置（env + 启动参数）、设为主窗口、退出、退出并删除
+- **右键** 组头 — 在此组创建会话、重启组内会话、重命名、设置颜色、📦 归档
 - **拖拽** 会话气泡 — 到分组头入组；到隐藏栏隐藏；从隐藏栏拖出取消隐藏
 
 ### 快捷键（tmux session 内）
@@ -119,18 +121,29 @@ curl -H "Title: Deploy" -H "Tags: white_check_mark" \
 
 右键会话气泡或悬停气泡点「重启」。重启走 `tmux respawn-pane -k`，直接在同一个 pane 内启动新进程，无需轮询等待：
 
-- 有 claude session ID → `claude --resume <id>` 精确恢复
-- 没有 → fallback 到 `claude -c` continue 模式
+- 有 claude session ID 且 jsonl 已落盘 → `claude --resume <id>` 精确恢复
+- 有 session ID 但 jsonl 从未落盘（新会话没发消息就重启）→ 降级为 `claude --session-id <同一个id>` 起新对话，保持 id 绑定不破
+- 没有 session ID → fallback 到 `claude -c` continue 模式
 - 组级：右键组头 → 「重启组内会话」
 - 全局：右键桌宠 → 「重启全部」
 
-### 环境变量
+### 会话设置
 
-每个会话独立配置环境变量，右键气泡 → 「环境变量」：
+每个会话独立配置环境变量 + CLI 启动参数，右键气泡 → 「⚙️ 会话设置」：
 
-- 编辑器接受 `KEY=VALUE` 格式，每行一条
+- **环境变量** — `KEY=VALUE` 每行一条，非法 shell 变量名自动过滤
+- **启动参数** — 追加在全局 `toolArgs` 之后（后者覆盖前者），例如 `--model opus --dangerously-skip-permissions`
 - 存储在 DB 的 session 行里
-- 重启会话时通过 `tmux respawn-pane -e KEY=VALUE` 注入生效
+- **焊进 launch script 本体**（紧跟 `PATH` 之后），无论 respawn / app 重启自动恢复 / 手动重跑脚本都不丢；重启会话生效
+
+### 组归档
+
+用完的组可以整个收起来，需要时再拉回：
+
+- 右键组头 → 「📦 归档（结束组内会话）」— 组从主界面消失，组内 tmux 会话被结束（`claude --resume` 需要的 jsonl 保留）
+- 设置面板「📦 已归档」区列出所有归档组（名字 + 会话数），点「恢复」拉回主界面
+- 恢复后组内会话是 detached 态，点击某会话时走现有 attach 逻辑重建 tmux
+- 归档状态跨重启保持，不会自动复活
 
 ### 技能管理
 
@@ -148,16 +161,17 @@ curl -H "Title: Deploy" -H "Tags: white_check_mark" \
 
 **工作原理**：
 
-- 创建/重启会话时，kitty 通过 `tmux new-session -e` / `respawn-pane -e` 注入两个环境变量：
+- 创建/重启会话时，kitty 把两个环境变量**焊进 launch script 本体**（紧跟 `PATH` 之后 `export`）：
   - `HIVE_AGENT_KEY` = kitty 里的 session id（稳定不变，重启不换）
   - `HIVE_AGENT_NAME` = 会话标题
+  - 焊进脚本而非依赖 `tmux -e`（后者是 ephemeral 环境，app 重启原地恢复、`exec $SHELL` 后重跑脚本、手动 split 都会丢 key，导致同 cwd 多会话在 hive 上错绑串号）
 - [kitty-hive channel plugin](https://github.com/seangx/kitty-hive) 启动时读这两个变量，按 key 在 hive 上 upsert 出 agent，同 key 永远映射到同一 agent_id。
 - 会话**改名** → kitty 立刻调 `kitty-hive agent register --key ... --display-name ...` 同步新名字到 hive。
 - 会话**删除** → 调 `kitty-hive agent remove --key ... --yes`，hive agent 一起清掉。
 
 **零依赖**：kitty-hive 没装、server 没启动、网络不通——三条 CLI 调用全部静默失败，kitty 正常跑。
 
-**注意**：已经在跑的老会话 pane env 里没有 `HIVE_AGENT_*`，需要右键"重启会话"一次才会首次同步到 hive。新建的会话开箱即用。
+**注意**：更新前的老 launch script 里没写身份 `export`，需要右键"重启会话"一次才会重新生成带身份的脚本、首次同步到 hive。新建的会话开箱即用。
 
 ## 项目结构
 
