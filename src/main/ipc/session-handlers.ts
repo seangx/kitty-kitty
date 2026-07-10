@@ -494,6 +494,11 @@ export function registerSessionHandlers(): void {
 
     if (session.tool === 'claude') {
       try {
+        // C-u 先清掉输入框里的既有草稿 —— send-keys 是往输入框追加字符,若有
+        // 未提交草稿,"/clear" 会拼到草稿末尾变成普通消息(不在行首=不是命令),
+        // claude 实际没清空而 kitty 已清 DB + markCleared,状态分裂;此时重启
+        // 会走 new 起空白会话,用户丢上下文(管家 79MB 事故的根因)。
+        execSync(`${tmux.TMUX} send-keys -t "${target}" C-u`, { stdio: 'ignore' })
         execSync(`${tmux.TMUX} send-keys -t "${target}" "/clear" Enter`, { stdio: 'ignore' })
       } catch (err: any) {
         return { success: false, message: err?.message || '发送 /clear 失败' }
@@ -540,6 +545,8 @@ export function registerSessionHandlers(): void {
       // daemon stays on old thread, hive pushes land there until next bridge
       // restart picks up daemon's actual thread_id.
       try {
+        // C-u 先清草稿,防 "/clear" 拼进未提交文本变普通消息(同 claude 分支)
+        execSync(`${tmux.TMUX} send-keys -t "${target}" C-u`, { stdio: 'ignore' })
         execSync(`${tmux.TMUX} send-keys -t "${target}" "/clear" Enter`, { stdio: 'ignore' })
       } catch (err: any) {
         return { success: false, message: err?.message || '发送 /clear 失败' }
