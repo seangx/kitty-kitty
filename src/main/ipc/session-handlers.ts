@@ -1420,7 +1420,13 @@ async function restartSessionPane(session: sessionRepo.SessionRow): Promise<void
     const ws = await codexPaneWs({ key: session.id, timeoutMs: 10000 })
     const agentId = bridgedHiveAgentId || session.hiveAgentId
     const requestedThreadId = session.externalSessionId || ws.thread_id || ''
-    if (agentId && requestedThreadId) {
+    if (ws.status === 'ready' && ws.ws_url && ws.thread_id && ws.thread_id === requestedThreadId) {
+      // daemon 已在目标 thread 上 → 直接 attach,禁止 set-thread。
+      // set-thread 语义是"切换 thread",hive 端会 SIGTERM daemon 重生;之前
+      // 无条件调它导致每次重启都杀 daemon(my-game restart_count=89 事故):
+      // daemon 重生走指数退避(封顶 60s),kitty 只等 30s → 永远 timeout 死循环。
+      launch = generateCodexRemoteScript(ws.ws_url, ws.thread_id, session.cwd || undefined)
+    } else if (agentId && requestedThreadId) {
       const reset = await codexSetThread(agentId, requestedThreadId)
       if (reset.kind === 'ok' || reset.kind === 'resumed_as_new') {
         sessionRepo.updateSessionExternalId(session.id, reset.threadId)
