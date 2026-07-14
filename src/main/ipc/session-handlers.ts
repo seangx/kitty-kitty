@@ -90,6 +90,16 @@ const transferring = new Set<string>()
  * 全局规则(~/.claude/CLAUDE.md ↔ ~/.codex/AGENTS.md)是用户级配置,影响所有
  * 会话,不在变身时自动改动。
  */
+/** 该 cwd 的 claude 项目记忆索引(存在且非空才返回路径)。编码规则同 jsonl。 */
+function claudeMemoryIndex(cwd: string): string | null {
+  if (!cwd) return null
+  for (const enc of [cwd.replace(/[/.]/g, '-'), cwd.replace(/\//g, '-')]) {
+    const p = join(homedir(), '.claude', 'projects', enc, 'memory', 'MEMORY.md')
+    try { if (existsSync(p) && statSync(p).size > 0) return p } catch { /* ignore */ }
+  }
+  return null
+}
+
 function linkProjectRules(cwd: string, toTool: 'codex' | 'claude'): void {
   if (!cwd) return
   const claudeMd = join(cwd, 'CLAUDE.md')
@@ -631,6 +641,16 @@ export function registerSessionHandlers(): void {
       const updated = sessionRepo.listSessions().find((s) => s.id === id)!
       // bridge 开走 bridge(daemon setThread),关则 codex resume —— 全复用重启逻辑
       await restartSessionPane(updated)
+      // 项目记忆指引:codex 无 memory 机制,告知只读路径。写入权留在 claude 侧
+      // (codex 期间的新知走 handoff 回流,由 claude 消化入库),避免双写污染索引。
+      const memIdx = claudeMemoryIndex(session.cwd)
+      if (memIdx) {
+        setTimeout(() => {
+          const now = sessionRepo.listSessions().find((s) => s.id === id)
+          if (!now || now.tool !== 'codex') return
+          try { tmux.sendKeys(updated.tmuxName, `项目记忆索引: ${memIdx} (Claude Code 持久记忆,只读参考)。做重大决策前可读相关条目;新发现无需写入,变回 claude 时会自动移交。`) } catch { /* ignore */ }
+        }, 8000)
+      }
       log('transfer', `${session.title}: → codex thread ${threadId.slice(0, 8)}${reused ? ' (reused)' : ''}`)
       return { success: true, message: reused ? '已切回 Codex(复用上次线程)~ 再按 Alt+X 可变回' : '已转交给 Codex 喵~ 再按 Alt+X 可变回' }
     } finally {
