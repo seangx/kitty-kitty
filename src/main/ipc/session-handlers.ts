@@ -705,7 +705,10 @@ export function registerSessionHandlers(): void {
         const updatedD = sessionRepo.listSessions().find((s) => s.id === id)!
         sendTransferProgress(id, 'restart')
         await restartSessionPane(updatedD)
-        if (!newThreadId) clearMark(id)
+        // 不能立即 clearMark:新 TUI 的 rollout 未落盘前解禁,盲回填会按 mtime
+        // 抢先认领 cwd 下的旧 thread(如刚废弃的全量 import)→ 重启 resume 错线程。
+        // 改为轮询 pane 实况,拿到真 thread 再绑定+解禁。
+        if (!newThreadId) bindFreshCodexThread(id)
         setTimeout(() => {
           const now = sessionRepo.listSessions().find((s) => s.id === id)
           if (!now || now.tool !== 'codex') return
@@ -1679,11 +1682,150 @@ function prebindClaudeRelaunch(
   return { mode }
 }
 
+const ROLLOUT_UUID_RE = /rollout-.*-([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})\.jsonl$/
+
+/** lsof a pid list and return the open rollout thread ids (newest mtime first). */
+function openRolloutThreads(pids: string[]): string[] {
+  if (pids.length === 0) return []
+  let raw = ''
+  try {
+    raw = execSync(`lsof -a -p ${pids.join(',')} -Fn`, {
+      encoding: 'utf-8', stdio: ['ignore', 'pipe', 'ignore'], timeout: 5000,
+    })
+  } catch { return [] }
+  const hits = new Map<string, number>()
+  for (const line of raw.split('\n')) {
+    if (!line.startsWith('n')) continue
+    const p = line.slice(1)
+    if (!p.includes('/.codex/sessions/') || !p.endsWith('.jsonl')) continue
+    const m = p.match(ROLLOUT_UUID_RE)
+    if (!m) continue
+    let mtime = 0
+    try { mtime = statSync(p).mtimeMs } catch { /* ignore */ }
+    if ((hits.get(m[1]) ?? -1) < mtime) hits.set(m[1], mtime)
+  }
+  return [...hits.entries()].sort((a, b) => b[1] - a[1]).map((e) => e[0])
+}
+
+/**
+ * Ground-truth probe: which codex thread is the pane ACTUALLY on right now?
+ *
+ * The DB's externalSessionId can drift from reality — codex creates threads
+ * kitty never hears about (plain `codex` launch, /new or /clear typed in the
+ * TUI, soft-clear fallback), and the blind mtime backfill in
+ * syncExternalSessionIds can claim a sibling rollout during the gap before a
+ * fresh TUI writes its file (管家 事故:降级交接后 sync 认领了废弃的全量
+ * import thread,重启 resume 错线程 → 一晚上的对话"消失").
+ *
+ * Truth sources, in reliability order:
+ *   1. The rollout file held OPEN (write fd) by the codex process. For plain
+ *      panes that's a descendant of pane_pid; for `--remote` panes the rollout
+ *      lives in the hive daemon (`codex app-server --listen <port>`), found
+ *      via the ws port in the pane's argv.
+ *   2. argv fallback: `codex resume <uuid>` — what the pane was told to open.
+ *      Stale if the TUI switched threads afterwards, so only used when no
+ *      open-file evidence exists.
+ *
+ * Returns '' when the pane holds no live codex (dead pane, claude pane, or
+ * probe failure) — callers must treat '' as "no evidence", not "no thread".
+ */
+function paneCodexThread(target: string): string {
+  try {
+    const panePid = execSync(`${tmux.TMUX} display-message -p -t "${target}" "#{pane_pid}"`, {
+      encoding: 'utf-8', stdio: ['ignore', 'pipe', 'ignore'],
+    }).trim()
+    if (!/^\d+$/.test(panePid)) return ''
+    // pane 进程树:bash(launch script) → node wrapper → codex 原生二进制
+    const pids: string[] = []
+    let frontier = [panePid]
+    for (let depth = 0; depth < 4 && frontier.length > 0; depth++) {
+      const next: string[] = []
+      for (const pid of frontier) {
+        try {
+          const kids = execSync(`pgrep -P ${pid}`, { encoding: 'utf-8', stdio: ['ignore', 'pipe', 'ignore'] }).trim()
+          if (kids) next.push(...kids.split('\n'))
+        } catch { /* no children */ }
+      }
+      pids.push(...next)
+      frontier = next
+    }
+    if (pids.length === 0) return ''
+    let argvResumeId = ''
+    let remotePort = ''
+    try {
+      const cmds = execSync(`ps -o command= -p ${pids.join(',')}`, { encoding: 'utf-8', stdio: ['ignore', 'pipe', 'ignore'] })
+      for (const line of cmds.split('\n')) {
+        if (!/\bcodex\b/.test(line)) continue
+        const rm = line.match(/\bresume\s+([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})\b/)
+        if (rm) argvResumeId = rm[1]
+        const pm = line.match(/--remote\s+ws:\/\/[^:\s]+:(\d+)/)
+        if (pm) remotePort = pm[1]
+      }
+    } catch { /* ps failed — lsof below may still work */ }
+    // remote pane → rollout 在 daemon 手里,按监听端口找 daemon 进程
+    if (remotePort) {
+      try {
+        const out = execSync(`lsof -nP -iTCP:${remotePort} -sTCP:LISTEN -Fp`, {
+          encoding: 'utf-8', stdio: ['ignore', 'pipe', 'ignore'], timeout: 5000,
+        })
+        const daemonPids = out.split('\n').filter((l) => l.startsWith('p')).map((l) => l.slice(1))
+        const open = openRolloutThreads(daemonPids)
+        if (open.length > 0) return open[0]
+      } catch { /* daemon gone — fall through */ }
+      return argvResumeId
+    }
+    const open = openRolloutThreads(pids)
+    if (open.length > 0) return open[0]
+    return argvResumeId
+  } catch { return '' }
+}
+
+/**
+ * 降级交接/清空后拉起的全新 codex TUI:thread id 只有 TUI 自己知道。轮询探测
+ * pane 真实线程,拿到即绑定 DB 并解除 cleared 标记。此前的做法是重启一返回就
+ * clearMark,而新 TUI 的 rollout 尚未落盘 → 10s 一跳的盲回填(按 mtime 认领
+ * cwd 下最新 rollout)会抢先认领旧 thread,永不纠正(管家事故根因)。
+ * 超时兜底 clearMark:此时 rollout 大概率已落盘,盲回填的"最新"已是正确目标。
+ */
+function bindFreshCodexThread(sessionId: string): void {
+  const deadline = Date.now() + 90_000
+  const timer = setInterval(() => {
+    const s = sessionRepo.listSessions().find((x) => x.id === sessionId)
+    if (!s) { clearInterval(timer); return }
+    if (s.externalSessionId) { clearInterval(timer); clearMark(sessionId); return }
+    const target = resolveRestartPaneTarget(s) ?? resolvePaneTarget(s.tmuxName, s.mainPane || '0.0')
+    const live = target ? paneCodexThread(target) : ''
+    if (live) {
+      sessionRepo.updateSessionExternalId(sessionId, live)
+      clearMark(sessionId)
+      log('sync', `codex fresh thread bound: ${s.title} → ${live.slice(0, 8)}`)
+      clearInterval(timer)
+      return
+    }
+    if (Date.now() > deadline) {
+      clearInterval(timer)
+      clearMark(sessionId)
+      log('sync', `codex fresh thread bind timeout: ${s.title} (fallback to blind sync)`)
+    }
+  }, 2000)
+}
+
 async function restartSessionPane(session: sessionRepo.SessionRow): Promise<void> {
   // Resolve the exact pane to respawn WITHOUT clobbering a sibling session's
   // pane. Falls back to mainPane only when the tmux session is gone entirely.
   const target = resolveRestartPaneTarget(session)
     ?? resolvePaneTarget(session.tmuxName, session.mainPane || '0.0')
+
+  // 重启前用 pane 实况纠偏 DB 线程(codex 在 TUI 里换线程 kitty 感知不到,
+  // 盲回填也可能记错)。cleared 标记 = 正在刻意换新线程,此时不纠。
+  if (session.tool === 'codex' && !isCleared(session.id)) {
+    const live = paneCodexThread(target)
+    if (live && live !== session.externalSessionId) {
+      sessionRepo.updateSessionExternalId(session.id, live)
+      log('sync', `codex thread drift healed: ${session.title} ${(session.externalSessionId || '∅').slice(0, 8)} → ${live.slice(0, 8)}`)
+      session = { ...session, externalSessionId: live }
+    }
+  }
 
   // Codex with hive bridge: restart the hive-managed daemon app-server for the
   // target thread, then attach the pane via `codex --remote <ws>`. Restarting

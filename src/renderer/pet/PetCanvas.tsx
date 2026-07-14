@@ -129,6 +129,22 @@ export default function PetCanvas() {
           machine.forceState('happy', 1500)
           await loadSessions()
         } catch (err: any) { say(err?.message || '设置失败', 4000) }
+      } else if (msg.action === 'restart') {
+        const title = sessionsRef.current.find((s) => s.id === msg.sessionId)?.title || ''
+        const stopBeat = startProgressHeartbeat(msg.sessionId, title, '重启')
+        try {
+          machine.forceState('dance', 60000)
+          say(`${title} 重启中喵~`)
+          await window.api.invoke('session:restart-agent', msg.sessionId)
+          stopBeat()
+          machine.forceState('happy', 2000)
+          say('重启完成喵~')
+          await loadSessions()
+        } catch (err: any) {
+          stopBeat()
+          machine.forceState('sad', 1500)
+          say(err?.message || '重启失败喵...')
+        }
       } else if (msg.action === 'transfer-codex') {
         const title = sessionsRef.current.find((s) => s.id === msg.sessionId)?.title || ''
         say(`${title} 变身中喵~`, 4000)
