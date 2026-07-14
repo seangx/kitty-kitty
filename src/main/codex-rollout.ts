@@ -9,12 +9,27 @@
  * 变回 claude 时没有官方的 codex→claude transfer,这里退而求其次:提取
  * transfer 之后新增的对话生成移交 markdown,注入 claude 作为工作记录。
  */
-import { readFileSync, readdirSync, writeFileSync, mkdirSync } from 'fs'
+import { readFileSync, readdirSync, writeFileSync, mkdirSync, statSync, unlinkSync } from 'fs'
 import { join } from 'path'
 import { homedir } from 'os'
 
 const SESSIONS_DIR = join(homedir(), '.codex', 'sessions')
 const PER_MSG_CAP = 8000 // 单条消息截断,防单条粘贴大文件撑爆移交文档
+const HANDOFF_TTL_MS = 7 * 24 * 3600_000 // 移交文档保留 7 天
+
+/** 清理过期的移交文档(生成新文档时顺手做,失败不阻断)。 */
+function pruneOldHandoffs(dir: string): void {
+  try {
+    const now = Date.now()
+    for (const f of readdirSync(dir)) {
+      if (!f.startsWith('codex-') || !f.endsWith('.md')) continue
+      const p = join(dir, f)
+      try {
+        if (now - statSync(p).mtimeMs > HANDOFF_TTL_MS) unlinkSync(p)
+      } catch { /* ignore */ }
+    }
+  } catch { /* ignore */ }
+}
 
 /** 按 threadId 找 rollout 文件(文件名以 -<threadId>.jsonl 结尾)。 */
 export function findRolloutFile(threadId: string): string | null {
@@ -73,7 +88,8 @@ export function buildCodexHandoff(threadId: string, sinceIso: string): CodexHand
   const md = [
     '# Codex 期间的工作记录',
     '',
-    `> 本会话曾转交给 Codex(thread \`${threadId.slice(0, 8)}…\`)。以下是转交期间的对话,按时间排序;工具调用/推理过程已省略,只保留双方消息。`,
+    `> 本会话曾转交给 Codex。以下是转交期间的对话,按时间排序;工具调用/推理过程已省略,只保留双方消息。`,
+    `> 想回看完整过程(含工具调用):\`codex resume ${threadId}\``,
     '',
     parts.join('\n\n'),
     '',
@@ -81,6 +97,7 @@ export function buildCodexHandoff(threadId: string, sinceIso: string): CodexHand
 
   const dir = join(homedir(), '.kitty-kitty', 'handoff')
   mkdirSync(dir, { recursive: true })
+  pruneOldHandoffs(dir)
   const file = join(dir, `codex-${threadId.slice(0, 8)}-${Date.now()}.md`)
   writeFileSync(file, md)
   return { file, turns }

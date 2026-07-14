@@ -1,6 +1,6 @@
 import { ipcMain, dialog, BrowserWindow, shell } from 'electron'
 import { IPC } from '@shared/types/ipc'
-import { readdirSync, existsSync, statSync, mkdirSync, readFileSync } from 'fs'
+import { readdirSync, existsSync, statSync, mkdirSync, readFileSync, symlinkSync } from 'fs'
 import { join, basename } from 'path'
 import { homedir } from 'os'
 import { execSync, spawn } from 'child_process'
@@ -83,6 +83,25 @@ async function tryPrepareCodexRemoteScript(args: {
  */
 /** Alt+X transfer 防重入(import 大 jsonl 可能要跑一阵)。 */
 const transferring = new Set<string>()
+
+/**
+ * 变身后同步项目级规则:目标工具的规则文件(AGENTS.md/CLAUDE.md)不存在时,
+ * 软链到源工具的——内容永远同步,且绝不覆盖已有文件。相对 symlink,repo 可移植。
+ * 全局规则(~/.claude/CLAUDE.md ↔ ~/.codex/AGENTS.md)是用户级配置,影响所有
+ * 会话,不在变身时自动改动。
+ */
+function linkProjectRules(cwd: string, toTool: 'codex' | 'claude'): void {
+  if (!cwd) return
+  const claudeMd = join(cwd, 'CLAUDE.md')
+  const agentsMd = join(cwd, 'AGENTS.md')
+  const [src, dst] = toTool === 'codex' ? [claudeMd, agentsMd] : [agentsMd, claudeMd]
+  try {
+    if (existsSync(src) && !existsSync(dst)) {
+      symlinkSync(basename(src), dst)
+      log('transfer', `rules: linked ${basename(dst)} → ${basename(src)} (${cwd})`)
+    }
+  } catch { /* ignore */ }
+}
 
 /** 找已安装 codex 插件里支持 transfer 的最高版本 companion 脚本。 */
 function findCodexCompanion(): string | null {
@@ -544,11 +563,24 @@ export function registerSessionHandlers(): void {
           return { success: false, message: 'transfer 快照损坏,无法变回' }
         }
         // codex 期间的增量 → 移交文档(先生成,session.externalSessionId 此刻还是 codex threadId)
+        const codexThreadId = session.externalSessionId
         let handoff: ReturnType<typeof buildCodexHandoff> = null
-        try { handoff = buildCodexHandoff(session.externalSessionId, origin.transferredAt || '') } catch { /* 无增量不阻断 */ }
+        try { handoff = buildCodexHandoff(codexThreadId, origin.transferredAt || '') } catch { /* 无增量不阻断 */ }
         sessionRepo.updateSessionTool(id, origin.tool)
         sessionRepo.updateSessionExternalId(id, origin.externalSessionId)
-        sessionRepo.updateSessionTransferOrigin(id, '')
+        // 留下"变回时刻"的 jsonl 指纹:下次变身时若 jsonl 未变(claude 侧零新内容,
+        // 含 handoff 注入——注入会改 jsonl,自动导向重新 transfer),直接复用本轮
+        // codex thread,零 transfer 零新孤儿(防横跳滚雪球)。
+        let backState = ''
+        try {
+          const jsonlBack = claudeJsonlPath(origin.externalSessionId, session.cwd)
+          if (jsonlBack) {
+            const st = statSync(jsonlBack)
+            backState = JSON.stringify({ lastCodexThreadId: codexThreadId, jsonlSize: st.size, jsonlMtime: Math.floor(st.mtimeMs) })
+          }
+        } catch { /* 无指纹→下次照常 transfer */ }
+        sessionRepo.updateSessionTransferOrigin(id, backState)
+        linkProjectRules(session.cwd, 'claude')
         const updated = sessionRepo.listSessions().find((s) => s.id === id)!
         await restartSessionPane(updated)
         if (handoff) {
@@ -569,23 +601,38 @@ export function registerSessionHandlers(): void {
       if (!session.externalSessionId) return { success: false, message: '会话还没有对话历史,无法转移' }
       const jsonl = claudeJsonlPath(session.externalSessionId, session.cwd)
       if (!jsonl) return { success: false, message: '找不到会话历史文件(还没发过消息?)' }
-      const companion = findCodexCompanion()
-      if (!companion) return { success: false, message: '未找到支持 transfer 的 codex 插件(需 ≥1.0.6)' }
-      log('transfer', `${session.title}: transferring ${session.externalSessionId.slice(0, 8)} → codex…`)
-      const r = await runCodexTransfer(companion, jsonl, session.cwd)
-      if (!r.threadId) return { success: false, message: `转移失败: ${r.error}` }
+      // 上次变回时的指纹仍匹配(claude 侧零新内容)→ 复用旧 thread,零 transfer
+      let threadId = ''
+      let reused = false
+      try {
+        const prev = JSON.parse(session.transferOrigin || '{}')
+        const st = statSync(jsonl)
+        if (prev.lastCodexThreadId && prev.jsonlSize === st.size && prev.jsonlMtime === Math.floor(st.mtimeMs)) {
+          threadId = prev.lastCodexThreadId
+          reused = true
+        }
+      } catch { /* 指纹损坏当不匹配 */ }
+      if (!threadId) {
+        const companion = findCodexCompanion()
+        if (!companion) return { success: false, message: '未找到支持 transfer 的 codex 插件(需 ≥1.0.6)' }
+        log('transfer', `${session.title}: transferring ${session.externalSessionId.slice(0, 8)} → codex…`)
+        const r = await runCodexTransfer(companion, jsonl, session.cwd)
+        if (!r.threadId) return { success: false, message: `转移失败: ${r.error}` }
+        threadId = r.threadId
+      }
       sessionRepo.updateSessionTransferOrigin(id, JSON.stringify({
         tool: 'claude',
         externalSessionId: session.externalSessionId,
         transferredAt: new Date().toISOString(),
       }))
       sessionRepo.updateSessionTool(id, 'codex')
-      sessionRepo.updateSessionExternalId(id, r.threadId)
+      sessionRepo.updateSessionExternalId(id, threadId)
+      linkProjectRules(session.cwd, 'codex')
       const updated = sessionRepo.listSessions().find((s) => s.id === id)!
       // bridge 开走 bridge(daemon setThread),关则 codex resume —— 全复用重启逻辑
       await restartSessionPane(updated)
-      log('transfer', `${session.title}: → codex thread ${r.threadId.slice(0, 8)}`)
-      return { success: true, message: '已转交给 Codex 喵~ 再按 Alt+X 可变回' }
+      log('transfer', `${session.title}: → codex thread ${threadId.slice(0, 8)}${reused ? ' (reused)' : ''}`)
+      return { success: true, message: reused ? '已切回 Codex(复用上次线程)~ 再按 Alt+X 可变回' : '已转交给 Codex 喵~ 再按 Alt+X 可变回' }
     } finally {
       transferring.delete(id)
     }
