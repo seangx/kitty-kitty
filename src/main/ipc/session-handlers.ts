@@ -14,8 +14,8 @@ import { getDB } from '../db/database'
 import * as ntfy from '../ntfy'
 import { getProvider } from '../sessions'
 import { clearNeedsInput, getPendingInput, isJsonlInCwd, claudeJsonlPath } from '../wakeup'
-import { markCleared, isCleared } from '../session-clear-state'
-import { buildCodexHandoff } from '../codex-rollout'
+import { markCleared, isCleared, clearMark } from '../session-clear-state'
+import { buildCodexHandoff, buildClaudeRecentHandoff } from '../codex-rollout'
 import type { SessionInfo } from '@shared/types/session'
 
 /**
@@ -83,6 +83,9 @@ async function tryPrepareCodexRemoteScript(args: {
  */
 /** Alt+X transfer 防重入(import 大 jsonl 可能要跑一阵)。 */
 const transferring = new Set<string>()
+
+/** jsonl 超过此值不走全量 import(会撑爆 codex 上下文),降级为近期上下文交接。 */
+const TRANSFER_FULL_CAP = 10 * 1024 * 1024
 
 /**
  * 变身后同步项目级规则:目标工具的规则文件(AGENTS.md/CLAUDE.md)不存在时,
@@ -614,14 +617,53 @@ export function registerSessionHandlers(): void {
       // 上次变回时的指纹仍匹配(claude 侧零新内容)→ 复用旧 thread,零 transfer
       let threadId = ''
       let reused = false
+      let jsonlStat: { size: number; mtimeMs: number } | null = null
+      try { jsonlStat = statSync(jsonl) } catch { /* stat 失败当普通路径 */ }
       try {
         const prev = JSON.parse(session.transferOrigin || '{}')
-        const st = statSync(jsonl)
-        if (prev.lastCodexThreadId && prev.jsonlSize === st.size && prev.jsonlMtime === Math.floor(st.mtimeMs)) {
+        if (jsonlStat && prev.lastCodexThreadId && prev.jsonlSize === jsonlStat.size && prev.jsonlMtime === Math.floor(jsonlStat.mtimeMs)) {
           threadId = prev.lastCodexThreadId
           reused = true
         }
       } catch { /* 指纹损坏当不匹配 */ }
+
+      // —— 大会话降级:全量 import 会撑爆 codex 上下文 → 近期对话+项目文档交接 ——
+      if (!threadId && jsonlStat && jsonlStat.size > TRANSFER_FULL_CAP) {
+        const recent = buildClaudeRecentHandoff(jsonl, session.cwd)
+        if (!recent) return { success: false, message: '会话过大且无法生成交接文档' }
+        sessionRepo.updateSessionTransferOrigin(id, JSON.stringify({
+          tool: 'claude',
+          externalSessionId: session.externalSessionId,
+          transferredAt: new Date().toISOString(),
+        }))
+        sessionRepo.updateSessionTool(id, 'codex')
+        let newThreadId = ''
+        if (getCodexHiveBridge()) {
+          // bridge:让 daemon 开全新 thread,restartSessionPane 直连分支即刻 attach
+          const reg = await registerCodexAgent({ key: session.id, displayName: session.title, projectDir: session.cwd || undefined })
+          if (reg.success && reg.agentId) {
+            sessionRepo.updateSessionHiveAgentId(id, reg.agentId)
+            const r2 = await codexSetThread(reg.agentId, null)
+            if (r2.kind === 'ok' || r2.kind === 'resumed_as_new') newThreadId = r2.threadId
+          }
+        }
+        sessionRepo.updateSessionExternalId(id, newThreadId)
+        // ext 为空(非 bridge / daemon 失败)时借 cleared 标记让重启走 'new',
+        // 否则 restartMode 会 'continue'(codex resume --last 挂错会话)
+        if (!newThreadId) markCleared(id)
+        linkProjectRules(session.cwd, 'codex')
+        const updatedD = sessionRepo.listSessions().find((s) => s.id === id)!
+        await restartSessionPane(updatedD)
+        if (!newThreadId) clearMark(id)
+        setTimeout(() => {
+          const now = sessionRepo.listSessions().find((s) => s.id === id)
+          if (!now || now.tool !== 'codex') return
+          try { tmux.sendKeys(updatedD.tmuxName, `请读 ${recent.file} —— 原 Claude 会话过大未全量导入,这是近期对话与项目文档指引,读完接手。`) } catch { /* ignore */ }
+        }, 8000)
+        log('transfer', `${session.title}: degraded handoff (${Math.round(jsonlStat.size / 1048576)}MB jsonl, ${recent.turns} turns)`)
+        return { success: true, message: `会话较大,已用近期上下文交接 Codex(${recent.turns} 条)~ 再按 Alt+X 可变回` }
+      }
+
       if (!threadId) {
         const companion = findCodexCompanion()
         if (!companion) return { success: false, message: '未找到支持 transfer 的 codex 插件(需 ≥1.0.6)' }
