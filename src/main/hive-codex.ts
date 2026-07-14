@@ -50,6 +50,10 @@ export interface RegisterCodexAgentInput {
   displayName: string
   projectDir?: string
   roles?: string
+  /** 注册为哪个工具(默认 codex)。Alt+X 变回 claude 时传 'claude'。 */
+  tool?: 'codex' | 'claude'
+  /** 显式允许切换已有 agent 的 tool(hive ≥0.7.7 的防护闸开口)。 */
+  switchTool?: boolean
 }
 
 export interface RegisterCodexAgentResult {
@@ -58,15 +62,32 @@ export interface RegisterCodexAgentResult {
   error?: string
 }
 
+/**
+ * 能力探测:hive CLI 是否支持 --switch-tool。
+ * 不按版本号挂钩——0.7.7 的 `--version` 未实现(实测 Unknown command),而旧版
+ * 对未知 flag 静默忽略(试错也探不出);grep register --help 是可靠信号。
+ * 缓存 10 分钟,升级 CLI 后最迟 10 分钟生效。
+ */
+let switchToolProbe: { at: number; ok: boolean } | null = null
+export async function hiveSupportsSwitchTool(): Promise<boolean> {
+  if (switchToolProbe && Date.now() - switchToolProbe.at < 600_000) return switchToolProbe.ok
+  const r = await runHive(['agent', 'register', '--help'], { timeoutMs: 3000 })
+  const ok = (r.stdout + r.stderr).includes('--switch-tool')
+  switchToolProbe = { at: Date.now(), ok }
+  return ok
+}
+
 export async function registerCodexAgent(input: RegisterCodexAgentInput): Promise<RegisterCodexAgentResult> {
+  const tool = input.tool || 'codex'
   const args = [
     'agent', 'register',
     '--key', input.key,
-    '--tool', 'codex',
+    '--tool', tool,
     '--display-name', input.displayName,
   ]
   if (input.projectDir) args.push('--project-dir', input.projectDir)
   if (input.roles) args.push('--roles', input.roles)
+  if (input.switchTool) args.push('--switch-tool')
 
   const r = await runHive(args, { timeoutMs: 5000 })
   if (r.code !== 0) {
@@ -79,7 +100,7 @@ export async function registerCodexAgent(input: RegisterCodexAgentInput): Promis
     log('hive-codex', `register: empty agent_id in stdout (stderr=${r.stderr.trim()})`)
     return { success: false, error: 'empty agent_id from kitty-hive' }
   }
-  log('hive-codex', `registered codex agent ${input.displayName} (${agentId.slice(0, 12)}…)`)
+  log('hive-codex', `registered ${tool} agent ${input.displayName} (${agentId.slice(0, 12)}…)${input.switchTool ? ' [switch-tool]' : ''}`)
   return { success: true, agentId }
 }
 

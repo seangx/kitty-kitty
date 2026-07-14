@@ -8,7 +8,7 @@ import { v4 as uuid } from 'uuid'
 import { log } from '../logger'
 import * as tmux from '../tmux/session-manager'
 import { generateLaunchScript, type LaunchMode, isToolInstalled, getInstallHint, getNtfyTopic, setNtfyTopic, getCodexHiveBridge, setCodexHiveBridge, needsDevChannelAutoAccept, generateCodexRemoteScript, injectHiveIdentity, injectSessionEnv } from '../tmux/cli-wrapper'
-import { registerCodexAgent, codexPaneWs, codexSetThread, renameAgent } from '../hive-codex'
+import { registerCodexAgent, codexPaneWs, codexSetThread, renameAgent, hiveSupportsSwitchTool } from '../hive-codex'
 import * as sessionRepo from '../db/session-repo'
 import { getDB } from '../db/database'
 import * as ntfy from '../ntfy'
@@ -599,6 +599,12 @@ export function registerSessionHandlers(): void {
         } catch { /* 无指纹→下次照常 transfer */ }
         sessionRepo.updateSessionTransferOrigin(id, backState)
         linkProjectRules(session.cwd, 'claude')
+        // hive tool 显式切回 claude(≥0.7.7 的 --switch-tool 防护闸开口),同时
+        // 触发 hive 杀掉本会话的 codex daemon,推送路由回 claude MCP 通道。
+        // 失败不阻断变回(只影响推送)。
+        if (getCodexHiveBridge() && await hiveSupportsSwitchTool()) {
+          await registerCodexAgent({ key: session.id, displayName: session.title, projectDir: session.cwd || undefined, tool: 'claude', switchTool: true })
+        }
         const updated = sessionRepo.listSessions().find((s) => s.id === id)!
         await restartSessionPane(updated)
         if (handoff) {
@@ -650,7 +656,7 @@ export function registerSessionHandlers(): void {
         let newThreadId = ''
         if (getCodexHiveBridge()) {
           // bridge:让 daemon 开全新 thread,restartSessionPane 直连分支即刻 attach
-          const reg = await registerCodexAgent({ key: session.id, displayName: session.title, projectDir: session.cwd || undefined })
+          const reg = await registerCodexAgent({ key: session.id, displayName: session.title, projectDir: session.cwd || undefined, switchTool: await hiveSupportsSwitchTool() })
           if (reg.success && reg.agentId) {
             sessionRepo.updateSessionHiveAgentId(id, reg.agentId)
             const r2 = await codexSetThread(reg.agentId, null)
@@ -690,6 +696,11 @@ export function registerSessionHandlers(): void {
       sessionRepo.updateSessionTool(id, 'codex')
       sessionRepo.updateSessionExternalId(id, threadId)
       linkProjectRules(session.cwd, 'codex')
+      // hive tool 显式切到 codex(防护闸开口),restartSessionPane 里的常规
+      // register 彼时 tool 已一致不会再被闸挡;hive 同时联动拉起 daemon
+      if (getCodexHiveBridge() && await hiveSupportsSwitchTool()) {
+        await registerCodexAgent({ key: session.id, displayName: session.title, projectDir: session.cwd || undefined, switchTool: true })
+      }
       const updated = sessionRepo.listSessions().find((s) => s.id === id)!
       // bridge 开走 bridge(daemon setThread),关则 codex resume —— 全复用重启逻辑
       await restartSessionPane(updated)
