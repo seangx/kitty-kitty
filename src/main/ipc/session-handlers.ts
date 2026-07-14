@@ -555,6 +555,9 @@ export function registerSessionHandlers(): void {
           // claude resume 启动需要几秒;消息只有一行,即使偶发掉进 shell 也无害
           const { file, turns } = handoff
           setTimeout(() => {
+            // 8s 内用户可能又按 Alt+X 变回 codex——校验会话仍是 claude 才注入
+            const now = sessionRepo.listSessions().find((s) => s.id === id)
+            if (!now || now.tool !== 'claude') return
             try { tmux.sendKeys(updated.tmuxName, `请读 ${file} —— 这是本会话转交 Codex 期间的工作记录(${turns} 条),读完继续接手。`) } catch { /* ignore */ }
           }, 8000)
         }
