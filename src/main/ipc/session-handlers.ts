@@ -16,6 +16,7 @@ import { getProvider } from '../sessions'
 import { clearNeedsInput, getPendingInput, isJsonlInCwd, claudeJsonlPath } from '../wakeup'
 import { markCleared, isCleared, clearMark } from '../session-clear-state'
 import { buildCodexHandoff, buildClaudeRecentHandoff, scanClaudeMessageTokens } from '../codex-rollout'
+import { getPetWindow } from '../windows/pet-window'
 import type { SessionInfo } from '@shared/types/session'
 
 /**
@@ -91,6 +92,15 @@ const transferring = new Set<string>()
 const TRANSFER_TOKEN_CAP = 120_000
 /** jsonl 超过此值必超窗,跳过预扫直接降级。 */
 const TRANSFER_SIZE_SHORTCUT = 50 * 1024 * 1024
+
+/**
+ * Alt+X 进度阶段推给 renderer(气泡心跳用)。真实百分比拿不到(官方 import
+ * 是黑盒单步 RPC),只推诚实的阶段:scan/transfer/handoff/restart。
+ */
+function sendTransferProgress(sessionId: string, stage: 'scan' | 'transfer' | 'handoff' | 'daemon' | 'restart'): void {
+  const win = getPetWindow()
+  if (win && !win.isDestroyed()) win.webContents.send('transfer:progress', { sessionId, stage })
+}
 
 /**
  * 变身后同步项目级规则:目标工具的规则文件(AGENTS.md/CLAUDE.md)不存在时,
@@ -582,6 +592,7 @@ export function registerSessionHandlers(): void {
       if (origin.tool && origin.externalSessionId) {
         // codex 期间的增量 → 移交文档(先生成,session.externalSessionId 此刻还是 codex threadId)
         const codexThreadId = session.externalSessionId
+        sendTransferProgress(id, 'handoff')
         let handoff: ReturnType<typeof buildCodexHandoff> = null
         try { handoff = buildCodexHandoff(codexThreadId, origin.transferredAt || '') } catch { /* 无增量不阻断 */ }
         sessionRepo.updateSessionTool(id, origin.tool)
@@ -606,6 +617,7 @@ export function registerSessionHandlers(): void {
           await registerCodexAgent({ key: session.id, displayName: session.title, projectDir: session.cwd || undefined, tool: 'claude', switchTool: true })
         }
         const updated = sessionRepo.listSessions().find((s) => s.id === id)!
+        sendTransferProgress(id, 'restart')
         await restartSessionPane(updated)
         if (handoff) {
           // claude resume 启动需要几秒;消息只有一行,即使偶发掉进 shell 也无害
@@ -626,6 +638,7 @@ export function registerSessionHandlers(): void {
       const jsonl = claudeJsonlPath(session.externalSessionId, session.cwd)
       if (!jsonl) return { success: false, message: '找不到会话历史文件(还没发过消息?)' }
       // 上次变回时的指纹仍匹配(claude 侧零新内容)→ 复用旧 thread,零 transfer
+      sendTransferProgress(id, 'scan')
       let threadId = ''
       let reused = false
       let jsonlStat: { size: number; mtimeMs: number } | null = null
@@ -645,6 +658,7 @@ export function registerSessionHandlers(): void {
         scanClaudeMessageTokens(jsonl, TRANSFER_TOKEN_CAP) > TRANSFER_TOKEN_CAP
       )
       if (tooBig) {
+        sendTransferProgress(id, 'handoff')
         const recent = buildClaudeRecentHandoff(jsonl, session.cwd)
         if (!recent) return { success: false, message: '会话过大且无法生成交接文档' }
         sessionRepo.updateSessionTransferOrigin(id, JSON.stringify({
@@ -669,6 +683,7 @@ export function registerSessionHandlers(): void {
         if (!newThreadId) markCleared(id)
         linkProjectRules(session.cwd, 'codex')
         const updatedD = sessionRepo.listSessions().find((s) => s.id === id)!
+        sendTransferProgress(id, 'restart')
         await restartSessionPane(updatedD)
         if (!newThreadId) clearMark(id)
         setTimeout(() => {
@@ -683,6 +698,7 @@ export function registerSessionHandlers(): void {
       if (!threadId) {
         const companion = findCodexCompanion()
         if (!companion) return { success: false, message: '未找到支持 transfer 的 codex 插件(需 ≥1.0.6)' }
+        sendTransferProgress(id, 'transfer')
         log('transfer', `${session.title}: transferring ${session.externalSessionId.slice(0, 8)} → codex…`)
         const r = await runCodexTransfer(companion, jsonl, session.cwd)
         if (!r.threadId) return { success: false, message: `转移失败: ${r.error}` }
@@ -703,6 +719,7 @@ export function registerSessionHandlers(): void {
       }
       const updated = sessionRepo.listSessions().find((s) => s.id === id)!
       // bridge 开走 bridge(daemon setThread),关则 codex resume —— 全复用重启逻辑
+      sendTransferProgress(id, 'restart')
       await restartSessionPane(updated)
       // 项目记忆指引:codex 无 memory 机制,告知只读路径。写入权留在 claude 侧
       // (codex 期间的新知走 handoff 回流,由 claude 消化入库),避免双写污染索引。
@@ -1651,6 +1668,7 @@ async function restartSessionPane(session: sessionRepo.SessionRow): Promise<void
     // (e.g. user / admin removed it). register is idempotent — same key
     // either reuses the row or creates a fresh one — so calling every
     // restart is safe and keeps DB ↔ hive in sync.
+    sendTransferProgress(session.id, 'daemon')
     const reg = await registerCodexAgent({
       key: session.id,
       displayName: session.title,

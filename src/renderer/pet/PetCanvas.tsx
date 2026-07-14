@@ -50,6 +50,22 @@ export default function PetCanvas() {
     sayTimer.current = setTimeout(() => setSpeech(null), duration)
   }, [])
 
+  // 长操作(变身/重启)的阶段心跳:主进程推 transfer:progress 阶段,这里每 3s
+  // 用「阶段 + 已用秒数」刷新气泡——拿不到真实百分比(import 是黑盒),只报真话
+  const progressStageRef = useRef<{ id: string; stage: string } | null>(null)
+  const PROGRESS_TEXT: Record<string, string> = useMemo(() => ({
+    scan: '预检会话大小', transfer: '导入 Codex', handoff: '生成交接文档', daemon: '等待 codex daemon', restart: '重启会话',
+  }), [])
+  const startProgressHeartbeat = useCallback((id: string, title: string, fallbackText: string) => {
+    const t0 = Date.now()
+    const timer = setInterval(() => {
+      const cur = progressStageRef.current
+      const stageText = cur && cur.id === id ? PROGRESS_TEXT[cur.stage] || fallbackText : fallbackText
+      say(`${title} ${stageText}中… ${Math.round((Date.now() - t0) / 1000)}s`, 4000)
+    }, 3000)
+    return () => { clearInterval(timer); if (progressStageRef.current?.id === id) progressStageRef.current = null }
+  }, [say, PROGRESS_TEXT])
+
   const closeAll = useCallback(() => {
     setShowInput(false)
     setShowSettings(false)
@@ -66,9 +82,12 @@ export default function PetCanvas() {
     const poll = setInterval(() => loadSessions(), 10000)
     const unsub = window.api.on('window-blur', closeAll)
     // 贴边隐藏(探头吸附):主进程 drag-end 判定后 push 吸附状态
+    const unsubProgress = window.api.on('transfer:progress', (msg: any) => {
+      if (msg?.sessionId && msg?.stage) progressStageRef.current = { id: msg.sessionId, stage: msg.stage }
+    })
     const unsubSnap = window.api.on('pet:snapped', (msg: any) => setSnapEdge(msg?.edge ?? null))
     const unsubUnsnap = window.api.on('pet:unsnapped', () => setSnapEdge(null))
-    return () => { scheduler.stop(); machine.destroy(); clearInterval(poll); unsub(); unsubSnap(); unsubUnsnap() }
+    return () => { scheduler.stop(); machine.destroy(); clearInterval(poll); unsub(); unsubProgress(); unsubSnap(); unsubUnsnap() }
   }, [scheduler, machine, loadSessions, closeAll])
 
   // Wakeup ("xxx 在等你") IPC — bound ONCE, never re-binds on session updates,
@@ -112,21 +131,24 @@ export default function PetCanvas() {
         } catch (err: any) { say(err?.message || '设置失败', 4000) }
       } else if (msg.action === 'transfer-codex') {
         const title = sessionsRef.current.find((s) => s.id === msg.sessionId)?.title || ''
-        say(`${title} 转移中喵~(大会话要等一阵)`, 8000)
-        machine.forceState('think', 8000)
+        say(`${title} 变身中喵~`, 4000)
+        machine.forceState('think', 60000)
+        const stopBeat = startProgressHeartbeat(msg.sessionId, title, '变身')
         try {
           const res: any = await window.api.invoke('session:transfer-codex', msg.sessionId)
+          stopBeat()
           say(`${title} ${res?.message || (res?.success ? '转移完成' : '转移失败')}`, 6000)
           machine.forceState(res?.success ? 'happy' : 'sad', 1500)
           await loadSessions()
         } catch (err: any) {
+          stopBeat()
           say(err?.message || '转移失败喵...', 5000)
           machine.forceState('sad', 1500)
         }
       }
     })
     return () => { unsubNeed(); unsubClear(); unsubPaneAction() }
-  }, [loadNeedsInput, markNeedsInput, clearNeedsInput, loadSessions, machine, say])
+  }, [loadNeedsInput, markNeedsInput, clearNeedsInput, loadSessions, machine, say, startProgressHeartbeat])
 
   // Ntfy push notifications — keep last 3
   const [ntfyMessages, setNtfyMessages] = useState<Array<{ id: number; text: string; url?: string; color: string; time: string }>>([])
@@ -250,17 +272,21 @@ export default function PetCanvas() {
   }, [attachSession, sessions, machine, say])
 
   const doRestart = useCallback(async (id: string) => {
+    const title = sessions.find((s) => s.id === id)?.title || ''
+    const stopBeat = startProgressHeartbeat(id, title, '重启')
     try {
-      machine.forceState('dance', 5000)
-      say('重启中喵~')
+      machine.forceState('dance', 60000)
+      say(`${title} 重启中喵~`)
       await window.api.invoke('session:restart-agent', id)
+      stopBeat()
       machine.forceState('happy', 2000)
       say('重启完成喵~')
     } catch (err: any) {
+      stopBeat()
       machine.forceState('sad', 1500)
       say(err?.message || '重启失败喵...')
     }
-  }, [machine, say])
+  }, [machine, say, sessions, startProgressHeartbeat])
 
   const handleAttach = useCallback(async (id: string) => {
     // Drift check: if claude/codex has rolled over to a newer jsonl (e.g. after
