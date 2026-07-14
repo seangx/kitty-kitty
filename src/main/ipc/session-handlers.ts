@@ -13,8 +13,9 @@ import * as sessionRepo from '../db/session-repo'
 import { getDB } from '../db/database'
 import * as ntfy from '../ntfy'
 import { getProvider } from '../sessions'
-import { clearNeedsInput, getPendingInput, isJsonlInCwd } from '../wakeup'
+import { clearNeedsInput, getPendingInput, isJsonlInCwd, claudeJsonlPath } from '../wakeup'
 import { markCleared, isCleared } from '../session-clear-state'
+import { buildCodexHandoff } from '../codex-rollout'
 import type { SessionInfo } from '@shared/types/session'
 
 /**
@@ -80,6 +81,52 @@ async function tryPrepareCodexRemoteScript(args: {
  * In that case kill only this row's own pane; only fall back to kill-session
  * when this is the last/only occupant of that tmux session.
  */
+/** Alt+X transfer 防重入(import 大 jsonl 可能要跑一阵)。 */
+const transferring = new Set<string>()
+
+/** 找已安装 codex 插件里支持 transfer 的最高版本 companion 脚本。 */
+function findCodexCompanion(): string | null {
+  const base = join(homedir(), '.claude', 'plugins', 'cache', 'openai-codex', 'codex')
+  try {
+    const versions = readdirSync(base).filter((v) => existsSync(join(base, v, 'commands', 'transfer.md')))
+    if (!versions.length) return null
+    versions.sort((a, b) => b.localeCompare(a, undefined, { numeric: true }))
+    return join(base, versions[0], 'scripts', 'codex-companion.mjs')
+  } catch {
+    return null
+  }
+}
+
+/** 调插件 companion 的 transfer 子命令,把 claude jsonl 导入成 codex thread。 */
+function runCodexTransfer(companion: string, sourceJsonl: string, cwd: string): Promise<{ threadId?: string; error?: string }> {
+  return new Promise((resolve) => {
+    const child = spawn('node', [companion, 'transfer', '--source', sourceJsonl, '--cwd', cwd, '--json'], {
+      stdio: ['ignore', 'pipe', 'pipe'],
+      env: { ...process.env, PATH: `/opt/homebrew/bin:/usr/local/bin:${process.env.PATH || ''}` },
+    })
+    let out = ''
+    let err = ''
+    child.stdout.on('data', (b: Buffer) => { out += b.toString() })
+    child.stderr.on('data', (b: Buffer) => { err += b.toString() })
+    // 大 jsonl(几十 MB)的导入可能要跑一阵,给足 3 分钟
+    const timer = setTimeout(() => { try { child.kill() } catch { /* ignore */ } }, 180_000)
+    child.on('exit', (code) => {
+      clearTimeout(timer)
+      if (code !== 0) {
+        return resolve({ error: (err || out).trim().slice(0, 300) || `transfer exited ${code}` })
+      }
+      try {
+        const payload = JSON.parse(out.trim())
+        if (payload?.threadId) return resolve({ threadId: payload.threadId })
+        resolve({ error: 'transfer 输出缺少 threadId' })
+      } catch {
+        resolve({ error: `transfer 输出解析失败: ${out.trim().slice(0, 200)}` })
+      }
+    })
+    child.on('error', (e) => { clearTimeout(timer); resolve({ error: String(e) }) })
+  })
+}
+
 function killSessionTmux(session: sessionRepo.SessionRow): void {
   const siblings = sessionRepo.listSessions().filter(
     (s) => s.id !== session.id && s.tmuxName === session.tmuxName,
@@ -481,6 +528,66 @@ export function registerSessionHandlers(): void {
   //               POST /admin/codex-set-thread {agent_id, thread_id: null}
   //               → daemon resets thread → update DB ext → respawn pane
   //             For now the short-term send-keys is documented to the user.
+  // Alt+X:claude 会话原地变身 codex(官方 transfer 导入完整历史);再按变回
+  // claude(resume 原 jsonl + 注入 codex 期间的增量工作记录)。
+  ipcMain.handle('session:transfer-codex', async (_event, id: string) => {
+    const session = sessionRepo.listSessions().find((s) => s.id === id)
+    if (!session) return { success: false, message: '会话不存在' }
+    if (transferring.has(id)) return { success: false, message: '转移进行中,别急喵' }
+    transferring.add(id)
+    try {
+      // —— 变回 claude(toggle back) ——
+      if (session.transferOrigin) {
+        let origin: { tool?: string; externalSessionId?: string; transferredAt?: string }
+        try { origin = JSON.parse(session.transferOrigin) } catch { origin = {} }
+        if (!origin.tool || !origin.externalSessionId) {
+          return { success: false, message: 'transfer 快照损坏,无法变回' }
+        }
+        // codex 期间的增量 → 移交文档(先生成,session.externalSessionId 此刻还是 codex threadId)
+        let handoff: ReturnType<typeof buildCodexHandoff> = null
+        try { handoff = buildCodexHandoff(session.externalSessionId, origin.transferredAt || '') } catch { /* 无增量不阻断 */ }
+        sessionRepo.updateSessionTool(id, origin.tool)
+        sessionRepo.updateSessionExternalId(id, origin.externalSessionId)
+        sessionRepo.updateSessionTransferOrigin(id, '')
+        const updated = sessionRepo.listSessions().find((s) => s.id === id)!
+        await restartSessionPane(updated)
+        if (handoff) {
+          // claude resume 启动需要几秒;消息只有一行,即使偶发掉进 shell 也无害
+          const { file, turns } = handoff
+          setTimeout(() => {
+            try { tmux.sendKeys(updated.tmuxName, `请读 ${file} —— 这是本会话转交 Codex 期间的工作记录(${turns} 条),读完继续接手。`) } catch { /* ignore */ }
+          }, 8000)
+        }
+        log('transfer', `${session.title}: back to ${origin.tool} (${origin.externalSessionId.slice(0, 8)})${handoff ? ` +handoff(${handoff.turns})` : ''}`)
+        return { success: true, message: handoff ? `已变回 claude,Codex 记录(${handoff.turns} 条)稍后注入` : '已变回 claude 会话' }
+      }
+      // —— claude → codex ——
+      if (session.tool !== 'claude') return { success: false, message: '只支持 claude 会话转给 codex' }
+      if (!session.externalSessionId) return { success: false, message: '会话还没有对话历史,无法转移' }
+      const jsonl = claudeJsonlPath(session.externalSessionId, session.cwd)
+      if (!jsonl) return { success: false, message: '找不到会话历史文件(还没发过消息?)' }
+      const companion = findCodexCompanion()
+      if (!companion) return { success: false, message: '未找到支持 transfer 的 codex 插件(需 ≥1.0.6)' }
+      log('transfer', `${session.title}: transferring ${session.externalSessionId.slice(0, 8)} → codex…`)
+      const r = await runCodexTransfer(companion, jsonl, session.cwd)
+      if (!r.threadId) return { success: false, message: `转移失败: ${r.error}` }
+      sessionRepo.updateSessionTransferOrigin(id, JSON.stringify({
+        tool: 'claude',
+        externalSessionId: session.externalSessionId,
+        transferredAt: new Date().toISOString(),
+      }))
+      sessionRepo.updateSessionTool(id, 'codex')
+      sessionRepo.updateSessionExternalId(id, r.threadId)
+      const updated = sessionRepo.listSessions().find((s) => s.id === id)!
+      // bridge 开走 bridge(daemon setThread),关则 codex resume —— 全复用重启逻辑
+      await restartSessionPane(updated)
+      log('transfer', `${session.title}: → codex thread ${r.threadId.slice(0, 8)}`)
+      return { success: true, message: '已转交给 Codex 喵~ 再按 Alt+X 可变回' }
+    } finally {
+      transferring.delete(id)
+    }
+  })
+
   ipcMain.handle('session:clear-conversation', async (_event, id: string) => {
     const session = sessionRepo.listSessions().find((s) => s.id === id)
     if (!session) return { success: false, message: '会话不存在' }

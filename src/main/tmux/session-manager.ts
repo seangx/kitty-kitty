@@ -548,6 +548,8 @@ function bindPaneActionKeys(): void {
     execSync(`${TMUX} bind-key -n M-c run-shell -b '${script} clear-conversation'`, { stdio: 'ignore' })
     // Alt+T: set the focused pane's session as its group's main window.
     execSync(`${TMUX} bind-key -n M-t run-shell -b '${script} set-main-session'`, { stdio: 'ignore' })
+    // Alt+X: transfer the focused claude session to codex (or toggle back).
+    execSync(`${TMUX} bind-key -n M-x run-shell -b '${script} transfer-codex'`, { stdio: 'ignore' })
   } catch { /* ignore */ }
 }
 

@@ -43,15 +43,21 @@ const CLAUDE_PROJECTS = join(homedir(), '.claude', 'projects')
  * the current `[/.]` → `-` encodings so older jsonl layouts still match.
  */
 export function isJsonlInCwd(sessionId: string, cwd: string): boolean {
-  if (!sessionId || !cwd) return false
+  return claudeJsonlPath(sessionId, cwd) !== null
+}
+
+/** 同 isJsonlInCwd,但返回 jsonl 的实际绝对路径(不存在返回 null)。 */
+export function claudeJsonlPath(sessionId: string, cwd: string): string | null {
+  if (!sessionId || !cwd) return null
   const candidates = [
     cwd.replace(/[/.]/g, '-'),
     cwd.replace(/\//g, '-'),
   ]
   for (const enc of candidates) {
-    if (existsSync(join(CLAUDE_PROJECTS, enc, `${sessionId}.jsonl`))) return true
+    const p = join(CLAUDE_PROJECTS, enc, `${sessionId}.jsonl`)
+    if (existsSync(p)) return p
   }
-  return false
+  return null
 }
 const SOCK_PATH = join(SOCK_DIR, 'wakeup.sock')
 

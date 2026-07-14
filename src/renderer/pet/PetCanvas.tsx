@@ -110,6 +110,19 @@ export default function PetCanvas() {
           machine.forceState('happy', 1500)
           await loadSessions()
         } catch (err: any) { say(err?.message || '设置失败', 4000) }
+      } else if (msg.action === 'transfer-codex') {
+        const title = sessionsRef.current.find((s) => s.id === msg.sessionId)?.title || ''
+        say(`${title} 转移中喵~(大会话要等一阵)`, 8000)
+        machine.forceState('think', 8000)
+        try {
+          const res: any = await window.api.invoke('session:transfer-codex', msg.sessionId)
+          say(`${title} ${res?.message || (res?.success ? '转移完成' : '转移失败')}`, 6000)
+          machine.forceState(res?.success ? 'happy' : 'sad', 1500)
+          await loadSessions()
+        } catch (err: any) {
+          say(err?.message || '转移失败喵...', 5000)
+          machine.forceState('sad', 1500)
+        }
       }
     })
     return () => { unsubNeed(); unsubClear(); unsubPaneAction() }
