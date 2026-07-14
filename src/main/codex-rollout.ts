@@ -107,8 +107,25 @@ export function buildCodexHandoff(threadId: string, sinceIso: string): CodexHand
 // 巨型 claude 会话(几十 MB jsonl)全量 import 会撑爆 codex 上下文。降级为:
 // 提取近期对话 + 项目文档指引,生成交接文档,起全新 codex thread 读它接手。
 
-const RECENT_CHAR_BUDGET = 300_000 // ≈10 万 token(粗按 3 chars/token)
+// 按估算 token 截断(实测:字符预算对中文对话严重低估——中文 1 字 ≈0.85 token,
+// 30 万字符的中文重文档实测 ≈167k tokens,会吃掉 codex 窗口大半)。
+// 50k ≈ 272k 窗口的 18%,给 codex 留足读 spec/干活的空间。
+const RECENT_TOKEN_BUDGET = 50_000
 const JSONL_HARD_CAP = 500 * 1024 * 1024 // 超过 500MB 连解析都不做
+
+/** o200k 经验系数估 token:汉字 ≈0.85/字,ASCII ≈0.25/char,其他 ≈0.5。 */
+function estimateTokens(text: string): number {
+  let cjk = 0
+  let ascii = 0
+  let other = 0
+  for (let i = 0; i < text.length; i++) {
+    const c = text.charCodeAt(i)
+    if (c >= 0x4e00 && c <= 0x9fff) cjk++
+    else if (c < 128) ascii++
+    else other++
+  }
+  return Math.round(cjk * 0.85 + ascii * 0.25 + other * 0.5)
+}
 
 /** 从 claude jsonl 行提取纯文本(过滤 thinking/tool 块与系统注入)。 */
 function textOfClaudeLine(d: { type?: string; message?: { content?: unknown } }): string {
@@ -167,11 +184,11 @@ export function buildClaudeRecentHandoff(jsonlPath: string, cwd: string): CodexH
   try { raw = readFileSync(jsonlPath, 'utf-8') } catch { return null }
   const lines = raw.split('\n')
 
-  // 从尾往前收集,直到吃满预算;再反转回时间正序
+  // 从尾往前收集,直到吃满 token 预算;再反转回时间正序
   const collected: string[] = []
   let used = 0
   let turns = 0
-  for (let i = lines.length - 1; i >= 0 && used < RECENT_CHAR_BUDGET; i--) {
+  for (let i = lines.length - 1; i >= 0 && used < RECENT_TOKEN_BUDGET; i--) {
     if (!lines[i].trim()) continue
     let d: { type?: string; message?: { content?: unknown } }
     try { d = JSON.parse(lines[i]) } catch { continue }
@@ -180,7 +197,7 @@ export function buildClaudeRecentHandoff(jsonlPath: string, cwd: string): CodexH
     if (!text) continue
     if (text.length > PER_MSG_CAP) text = `${text.slice(0, PER_MSG_CAP)}\n…(截断)`
     collected.push(`## ${d.type === 'user' ? '👤 User' : '🤖 Claude'}\n\n${text}`)
-    used += text.length
+    used += estimateTokens(text)
     turns++
   }
   if (!turns) return null
