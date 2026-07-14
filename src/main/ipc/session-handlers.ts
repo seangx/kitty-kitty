@@ -574,12 +574,12 @@ export function registerSessionHandlers(): void {
     transferring.add(id)
     try {
       // —— 变回 claude(toggle back) ——
-      if (session.transferOrigin) {
-        let origin: { tool?: string; externalSessionId?: string; transferredAt?: string }
-        try { origin = JSON.parse(session.transferOrigin) } catch { origin = {} }
-        if (!origin.tool || !origin.externalSessionId) {
-          return { success: false, message: 'transfer 快照损坏,无法变回' }
-        }
+      // transferOrigin 有两态:in-codex 快照{tool,externalSessionId,transferredAt}
+      // 和变回后的复用指纹{lastCodexThreadId,jsonlSize,jsonlMtime}。只有前者
+      // 才进变回分支;指纹态要落到下面的变身分支去消费(此前误判成"快照损坏")。
+      let origin: { tool?: string; externalSessionId?: string; transferredAt?: string } = {}
+      try { origin = JSON.parse(session.transferOrigin || '{}') } catch { /* 当无快照 */ }
+      if (origin.tool && origin.externalSessionId) {
         // codex 期间的增量 → 移交文档(先生成,session.externalSessionId 此刻还是 codex threadId)
         const codexThreadId = session.externalSessionId
         let handoff: ReturnType<typeof buildCodexHandoff> = null
