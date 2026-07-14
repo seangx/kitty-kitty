@@ -16,6 +16,7 @@
 - **状态栏** — 顶部 tmux 状态栏显示分组 tab；未分组会话拆开成独立 tab（每个会话一个 slot）
 - **一键重启** — 右键会话气泡或组头，重启单个 / 整组 / 全部会话，基于 `claude --resume <id>` 精确恢复（jsonl 未落盘时自动降级）
 - **会话设置** — 每个会话独立配置环境变量 + CLI 启动参数（如 `--model opus`），焊进 launch script 本体，重启/自动恢复都不丢
+- **会话变身** — Alt+X 把当前会话在 claude ⇄ codex 之间原地切换：历史随身携带、项目规则/记忆同步、hive 身份连续；大会话自动降级为近期上下文交接，变回时 codex 期间的增量自动移交
 - **推送通知** — 订阅 ntfy.sh topic，部署状态等消息直接推送到桌宠气泡
 - **技能管理** — 搜索、安装、按分类批量部署 superpowers 技能到会话
 - **Hive 协作** — 会话身份自动同步到 [kitty-hive](https://github.com/seangx/kitty-hive)，改名/删除实时对齐，可选
@@ -28,6 +29,7 @@
 | **tmux** | 会话管理核心 | macOS: `brew install tmux` / Ubuntu: `sudo apt install tmux` |
 | **Ghostty** (可选) | 推荐终端模拟器 | [ghostty.org](https://ghostty.org) |
 | **skillsmgr** (可选) | 技能管理 CLI | [skills-manager](https://github.com/jtianling/skills-manager) |
+| **codex CLI + 插件** (可选) | Alt+X 会话变身依赖：codex CLI 新版 + Claude Code 的 codex 插件 ≥1.0.6（提供官方 transfer） | `npm i -g @openai/codex` |
 
 > 启动时会自动检测 tmux，未安装会弹窗提示。
 > 从 `/Applications` 启动时会自动查找 `/opt/homebrew/bin/tmux` 等常见路径，无需额外配置 PATH。
@@ -88,6 +90,9 @@ npm run dist
 |--------|------|
 | **Alt+1~9** | 切换到第 N 个分组（或第 N 个独立未分组会话） |
 | **prefix+1~9** | 同上（prefix 默认 Ctrl+B） |
+| **Alt+C** | 清空当前 pane 会话的对话（同右键「清空对话」，先清输入框草稿再发 `/clear`） |
+| **Alt+T** | 把当前 pane 会话设为组的主窗口 |
+| **Alt+X** | 当前会话 claude ⇄ codex 变身（见 [会话变身](#会话变身claude--codex)） |
 | **Alt+←** | 关闭当前 pane |
 | **Alt+→** | 水平拆分新 pane |
 | **Alt+↓** | 垂直拆分新 pane |
@@ -135,6 +140,28 @@ curl -H "Title: Deploy" -H "Tags: white_check_mark" \
 - **启动参数** — 追加在全局 `toolArgs` 之后（后者覆盖前者），例如 `--model opus --dangerously-skip-permissions`
 - 存储在 DB 的 session 行里
 - **焊进 launch script 本体**（紧跟 `PATH` 之后），无论 respawn / app 重启自动恢复 / 手动重跑脚本都不丢；重启会话生效
+
+### 会话变身（claude ⇄ codex）
+
+在会话 pane 里按 **Alt+X**，当前会话在 claude 和 codex 之间**原地切换**——同一个气泡、同一个 pane、同一个 hive 身份，像给会话换了个大脑。再按一次变回去。
+
+**claude → codex**（按 jsonl 状态自动分流）：
+
+1. **指纹复用** — 上次变回后 claude 侧零新内容（jsonl size+mtime 未变）→ 直接 resume 上一轮的 codex thread，秒切、零导入
+2. **全量 transfer** — 对话量 ≤ 阈值（预扫估算 ~120k token，按官方导入口径含工具输出）→ 走 [codex 插件](https://github.com/openai/codex)（≥1.0.6）的官方 `transfer` 把完整历史导入成 codex thread
+3. **降级交接** — 超阈值的大会话（全量导入会撑爆 codex 上下文且不可恢复）→ 自动生成交接文档：尾部 ~50k token 近期对话 + 项目文档指引（README/HANDOFF/docs 内 .md 按新旧排前 10）+ 完整历史路径，起全新 codex thread 读文档接手
+
+**codex → claude**：`claude --resume` 回到原生历史（一直没动过），同时解析 codex rollout 提取**转交期间的增量对话**生成移交文档，约 8 秒后自动注入「请读 xxx 接手」。codex 期间的内容不合并进 claude 原生历史，但不丢——移交文档 7 天内保留，且文档头写明 `codex resume <threadId>` 可回看全程。
+
+**随变身自动同步**：
+
+| 内容 | 处理 |
+|---|---|
+| 项目规则 | 目标工具的规则文件不存在时自动软链（`AGENTS.md ⇄ CLAUDE.md`，绝不覆盖已有） |
+| 项目记忆 | 变身 codex 后注入 memory 索引路径（只读参考）；写入权留在 claude 侧，新知走移交回流 |
+| hive 身份 | 同一 agent_id 全程连续；配合 kitty-hive ≥0.7.7 的 `--switch-tool`，tool 标记双向切换、daemon 自动起/杀、推送路由跟随（旧版 hive 自动降级为直连，无推送） |
+
+**注意**：把 Alt+X 当"阶段性换工具"用，别当 tab 键反复横跳——每次 claude→codex 若有新内容就要重新 transfer，成本随会话增长；转移进行中连按会被拦截。
 
 ### 组归档
 
