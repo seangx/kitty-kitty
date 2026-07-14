@@ -87,9 +87,10 @@ const transferring = new Set<string>()
 
 /**
  * 全量 import 的对话量上限(估算 token)。官方 import 不做窗口截断,超窗导入的
- * thread 直接废(连 /compact 都发不出,实测卡死)。272k 窗口下 120k 留足余量。
+ * thread 直接废(连 /compact 都发不出,实测卡死)。用户实测窗口 ≈258k:120k 导入
+ * 后只剩一半,体感差 → 80k(导入后约剩 69%)。
  */
-const TRANSFER_TOKEN_CAP = 120_000
+const TRANSFER_TOKEN_CAP = 80_000
 /** jsonl 超过此值必超窗,跳过预扫直接降级。 */
 const TRANSFER_SIZE_SHORTCUT = 50 * 1024 * 1024
 

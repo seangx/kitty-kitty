@@ -107,10 +107,10 @@ export function buildCodexHandoff(threadId: string, sinceIso: string): CodexHand
 // 巨型 claude 会话(几十 MB jsonl)全量 import 会撑爆 codex 上下文。降级为:
 // 提取近期对话 + 项目文档指引,生成交接文档,起全新 codex thread 读它接手。
 
-// 按估算 token 截断(实测:字符预算对中文对话严重低估——中文 1 字 ≈0.85 token,
-// 30 万字符的中文重文档实测 ≈167k tokens,会吃掉 codex 窗口大半)。
-// 50k ≈ 272k 窗口的 18%,给 codex 留足读 spec/干活的空间。
-const RECENT_TOKEN_BUDGET = 50_000
+// 按估算 token 截断(实测:字符预算对中文对话严重低估——中文 1 字 ≈0.85 token)。
+// 用户实测 codex CLI 窗口 ≈258k,且 50k 文档落地后只剩 ~50%(叠加 AGENTS.md/
+// 记忆注入/intro/自主读 spec 等开销)→ 降到 30k,读完应剩 ~75% 干活空间。
+const RECENT_TOKEN_BUDGET = 30_000
 const JSONL_HARD_CAP = 500 * 1024 * 1024 // 超过 500MB 连解析都不做
 
 /** o200k 经验系数估 token:汉字 ≈0.85/字,ASCII ≈0.25/char,其他 ≈0.5。 */
