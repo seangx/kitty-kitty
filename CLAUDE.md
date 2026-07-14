@@ -53,7 +53,9 @@
 
 当用户输入中包含 `@目标` 且带有要转发的消息内容时，必须执行以下行为：
 
-1. 优先调用 MCP `talk` 工具发送消息，不允许只做普通文本代发
-2. `to` 参数允许直接使用 `@目标`（不要要求用户先手动跑 `peers`）
-3. 发送后必须返回投递回执（例如：`Delivered to <name> [<id>]`）
-4. 如果未找到目标，明确返回失败原因，并提示可用 `peers()` 查看成员
+1. 优先调用 kitty-hive 的 `hive-dm` 工具发送消息，不允许只做普通文本代发
+2. `to` 参数直接用目标名（agent id / display_name / team-nickname 均可，不要求用户先查成员）
+3. 发送后必须返回投递回执（例如：`Delivered to <name> [<id>], message_id N`）
+4. 如果未找到目标，明确返回失败原因，并提示可用 `hive-agents` 查看成员
+
+> 历史注：早期的 kitty-talk MCP（写 .mcp.json + kitty-bus）已废弃并清理，协作消息一律走 hive。
