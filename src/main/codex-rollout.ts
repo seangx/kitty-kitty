@@ -172,6 +172,58 @@ function listProjectDocs(cwd: string): string[] {
 }
 
 /**
+ * 预扫 jsonl 的对话消息量(估算 token),用于变身前判断能否全量 import。
+ * 官方 import 只精简格式(丢工具调用)不做窗口截断,超窗导入的 thread 会
+ * 直接废掉(上下文超 API 硬限 → 连 /compact 请求都发不出,死锁不可恢复)。
+ * 超过 stopAt 提前终止(结果只用于阈值判断,不需要精确总量)。
+ */
+export function scanClaudeMessageTokens(jsonlPath: string, stopAt: number): number {
+  let raw: string
+  try {
+    if (statSync(jsonlPath).size > JSONL_HARD_CAP) return Number.MAX_SAFE_INTEGER
+    raw = readFileSync(jsonlPath, 'utf-8')
+  } catch { return Number.MAX_SAFE_INTEGER }
+  let total = 0
+  for (const line of raw.split('\n')) {
+    if (!line.trim()) continue
+    let d: { type?: string; message?: { content?: unknown } }
+    try { d = JSON.parse(line) } catch { continue }
+    if (d?.type !== 'user' && d?.type !== 'assistant') continue
+    total += importedTokensOfLine(d)
+    if (total > stopAt) return total
+  }
+  return total
+}
+
+/**
+ * 按官方 import 的口径估一行的 token:实测(monkeys-slave 案例)官方把
+ * tool_result 内容转写成 assistant 消息一并导入([external_agent_tool_result]
+ * 前缀,占导入量大头),只丢调用参数。预扫必须对齐这个口径——之前只算纯对话
+ * 低估一个数量级,80 万 token 的会话被放行导致 thread 废掉。宁高勿低。
+ */
+function importedTokensOfLine(d: { message?: { content?: unknown } }): number {
+  const ct = d?.message?.content
+  if (typeof ct === 'string') return estimateTokens(ct)
+  if (!Array.isArray(ct)) return 0
+  let total = 0
+  for (const b of ct) {
+    if (!b || typeof b !== 'object') continue
+    const blk = b as { type?: string; text?: string; content?: unknown }
+    if (typeof blk.text === 'string') total += estimateTokens(blk.text)
+    if (blk.type === 'tool_result') {
+      if (typeof blk.content === 'string') total += estimateTokens(blk.content)
+      else if (Array.isArray(blk.content)) {
+        for (const cb of blk.content) {
+          const t = (cb as { text?: string })?.text
+          if (typeof t === 'string') total += estimateTokens(t)
+        }
+      }
+    }
+  }
+  return total
+}
+
+/**
  * 大会话降级交接:提取 claude jsonl 尾部 ~10 万 token 的对话 + 项目文档指引,
  * 生成交接文档。返回 null 表示无法生成(文件过大/无可用对话)。
  */

@@ -15,7 +15,7 @@ import * as ntfy from '../ntfy'
 import { getProvider } from '../sessions'
 import { clearNeedsInput, getPendingInput, isJsonlInCwd, claudeJsonlPath } from '../wakeup'
 import { markCleared, isCleared, clearMark } from '../session-clear-state'
-import { buildCodexHandoff, buildClaudeRecentHandoff } from '../codex-rollout'
+import { buildCodexHandoff, buildClaudeRecentHandoff, scanClaudeMessageTokens } from '../codex-rollout'
 import type { SessionInfo } from '@shared/types/session'
 
 /**
@@ -84,8 +84,13 @@ async function tryPrepareCodexRemoteScript(args: {
 /** Alt+X transfer 防重入(import 大 jsonl 可能要跑一阵)。 */
 const transferring = new Set<string>()
 
-/** jsonl 超过此值不走全量 import(会撑爆 codex 上下文),降级为近期上下文交接。 */
-const TRANSFER_FULL_CAP = 10 * 1024 * 1024
+/**
+ * 全量 import 的对话量上限(估算 token)。官方 import 不做窗口截断,超窗导入的
+ * thread 直接废(连 /compact 都发不出,实测卡死)。272k 窗口下 120k 留足余量。
+ */
+const TRANSFER_TOKEN_CAP = 120_000
+/** jsonl 超过此值必超窗,跳过预扫直接降级。 */
+const TRANSFER_SIZE_SHORTCUT = 50 * 1024 * 1024
 
 /**
  * 变身后同步项目级规则:目标工具的规则文件(AGENTS.md/CLAUDE.md)不存在时,
@@ -627,8 +632,13 @@ export function registerSessionHandlers(): void {
         }
       } catch { /* 指纹损坏当不匹配 */ }
 
-      // —— 大会话降级:全量 import 会撑爆 codex 上下文 → 近期对话+项目文档交接 ——
-      if (!threadId && jsonlStat && jsonlStat.size > TRANSFER_FULL_CAP) {
+      // —— 大会话降级:全量 import 会废掉 codex thread → 近期对话+项目文档交接 ——
+      // 判定按消息 token 预扫(文件大小是弱指标:工具噪音占比因会话而异)
+      const tooBig = !threadId && jsonlStat && (
+        jsonlStat.size > TRANSFER_SIZE_SHORTCUT ||
+        scanClaudeMessageTokens(jsonl, TRANSFER_TOKEN_CAP) > TRANSFER_TOKEN_CAP
+      )
+      if (tooBig) {
         const recent = buildClaudeRecentHandoff(jsonl, session.cwd)
         if (!recent) return { success: false, message: '会话过大且无法生成交接文档' }
         sessionRepo.updateSessionTransferOrigin(id, JSON.stringify({
