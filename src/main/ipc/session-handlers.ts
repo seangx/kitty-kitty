@@ -82,6 +82,25 @@ async function tryPrepareCodexRemoteScript(args: {
  * In that case kill only this row's own pane; only fall back to kill-session
  * when this is the last/only occupant of that tmux session.
  */
+/**
+ * 按会话当前 tool 解析 per-session 启动参数。
+ * 新格式: JSON {"claude":"...","codex":"..."} —— Alt+X 变身后两套 CLI 的 flag
+ * 集完全不同(claude 的 --model/--dangerously-* 塞给 codex 会直接报错)。
+ * 旧格式(裸字符串)视为 claude 的参数(历史配置基本都是给 claude 配的)。
+ */
+function launchArgsFor(session: { tool: string; launchArgs: string }): string | undefined {
+  const raw = (session.launchArgs || '').trim()
+  if (!raw) return undefined
+  if (raw.startsWith('{')) {
+    try {
+      const parsed = JSON.parse(raw) as Record<string, string>
+      const v = (parsed?.[session.tool] || '').trim()
+      return v || undefined
+    } catch { return undefined }
+  }
+  return session.tool === 'claude' ? raw : undefined
+}
+
 /** Alt+X transfer 防重入(import 大 jsonl 可能要跑一阵)。 */
 const transferring = new Set<string>()
 
@@ -873,13 +892,21 @@ export function registerSessionHandlers(): void {
 
   // Get per-session launch args (CLI flags appended after global toolArgs)
   ipcMain.handle('session:get-launch-args', (_event, id: string) => {
-    const row = sessionRepo.listSessions().find(s => s.id === id)
-    return row?.launchArgs || ''
+    const raw = (sessionRepo.listSessions().find(s => s.id === id)?.launchArgs || '').trim()
+    if (raw.startsWith('{')) {
+      try {
+        const p = JSON.parse(raw) as Record<string, string>
+        return { claude: p?.claude || '', codex: p?.codex || '' }
+      } catch { return { claude: '', codex: '' } }
+    }
+    return { claude: raw, codex: '' } // 旧格式归 claude
   })
 
   // Set per-session launch args
-  ipcMain.handle('session:set-launch-args', (_event, id: string, args: string) => {
-    sessionRepo.updateSessionLaunchArgs(id, String(args || ''))
+  ipcMain.handle('session:set-launch-args', (_event, id: string, args: { claude?: string; codex?: string }) => {
+    const claude = String(args?.claude || '').trim()
+    const codex = String(args?.codex || '').trim()
+    sessionRepo.updateSessionLaunchArgs(id, claude || codex ? JSON.stringify({ claude, codex }) : '')
     return { success: true }
   })
 
@@ -1092,7 +1119,7 @@ export function registerSessionHandlers(): void {
         const sTool = session.tool
         const sTmuxName = session.tmuxName
         const gid = session.groupId
-        const sLaunchArgs = session.launchArgs || undefined
+        const sLaunchArgs = launchArgsFor(session)
         const sEnv = session.env
         setTimeout(() => {
           try {
@@ -1379,7 +1406,7 @@ function tryRestoreSession(row: sessionRepo.SessionRow): boolean {
   if (!row.cwd || !existsSync(row.cwd)) return false
   try {
     let script: string
-    const extraArgs = row.launchArgs || undefined
+    const extraArgs = launchArgsFor(row)
     if (row.externalSessionId) {
       // prebind 会在 jsonl 从未落盘时把 resume 降级为 new+同 id(--session-id),
       // 避免 claude --resume 报 "No conversation found"
@@ -1693,7 +1720,7 @@ async function restartSessionPane(session: sessionRepo.SessionRow): Promise<void
       } else {
         log('codex-bridge', `daemon reset failed (${reset.kind}): ${reset.kind === 'error' ? reset.message : 'timeout'}`)
         const mode = restartMode(session)
-        launch = generateLaunchScript(session.tool, mode, session.externalSessionId || undefined, session.cwd || undefined, undefined, session.launchArgs || undefined)
+        launch = generateLaunchScript(session.tool, mode, session.externalSessionId || undefined, session.cwd || undefined, undefined, launchArgsFor(session))
       }
     } else if (ws.status === 'ready' && ws.ws_url) {
       launch = generateCodexRemoteScript(ws.ws_url, ws.thread_id, session.cwd || undefined)
@@ -1701,11 +1728,11 @@ async function restartSessionPane(session: sessionRepo.SessionRow): Promise<void
     } else {
       log('codex-bridge', `restart fallback (ws status=${ws.status}): ${ws.error || ''}`)
       const mode = restartMode(session)
-      launch = generateLaunchScript(session.tool, mode, session.externalSessionId || undefined, session.cwd || undefined, undefined, session.launchArgs || undefined)
+      launch = generateLaunchScript(session.tool, mode, session.externalSessionId || undefined, session.cwd || undefined, undefined, launchArgsFor(session))
     }
   } else {
     const { sid, mode } = prebindClaudeRelaunch(session, restartMode(session))
-    launch = generateLaunchScript(session.tool, mode, session.externalSessionId || undefined, session.cwd || undefined, sid, session.launchArgs || undefined)
+    launch = generateLaunchScript(session.tool, mode, session.externalSessionId || undefined, session.cwd || undefined, sid, launchArgsFor(session))
   }
 
   // Parse per-session env and pass via respawn-pane -e KEY=VALUE

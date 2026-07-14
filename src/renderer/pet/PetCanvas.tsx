@@ -629,7 +629,8 @@ function EnvEditor({ sessionId, sessionTitle, onClose, onSaved }: {
   sessionId: string; sessionTitle: string; onClose: () => void; onSaved: () => void
 }) {
   const [text, setText] = useState('')
-  const [argsText, setArgsText] = useState('')
+  const [argsClaudeText, setArgsClaudeText] = useState('')
+  const [argsCodexText, setArgsCodexText] = useState('')
   const [loading, setLoading] = useState(true)
   const [saving, setSaving] = useState(false)
 
@@ -642,7 +643,8 @@ function EnvEditor({ sessionId, sessionTitle, onClose, onSaved }: {
         ? Object.entries(env).map(([k, v]) => `${k}=${v}`).join('\n')
         : ''
       setText(lines)
-      setArgsText(typeof args === 'string' ? args : '')
+      setArgsClaudeText(typeof args?.claude === 'string' ? args.claude : '')
+      setArgsCodexText(typeof args?.codex === 'string' ? args.codex : '')
       setLoading(false)
     }).catch(() => setLoading(false))
   }, [sessionId])
@@ -662,7 +664,7 @@ function EnvEditor({ sessionId, sessionTitle, onClose, onSaved }: {
       }
       await Promise.all([
         window.api.invoke('session:set-env', sessionId, env),
-        window.api.invoke('session:set-launch-args', sessionId, argsText.trim()),
+        window.api.invoke('session:set-launch-args', sessionId, { claude: argsClaudeText.trim(), codex: argsCodexText.trim() }),
       ])
       onSaved()
       onClose()
@@ -702,10 +704,10 @@ function EnvEditor({ sessionId, sessionTitle, onClose, onSaved }: {
       <div style={{ fontSize: 10, color: skinC.textDim, marginTop: 4 }}>
         每行一个 KEY=VALUE
       </div>
-      <div style={{ fontSize: 11, color: skinC.text, fontWeight: 600, margin: '12px 0 4px' }}>🚀 启动参数</div>
+      <div style={{ fontSize: 11, color: skinC.text, fontWeight: 600, margin: '12px 0 4px' }}>🚀 启动参数（claude）</div>
       <input
-        value={loading ? '加载中...' : argsText}
-        onChange={(e) => setArgsText(e.target.value)}
+        value={loading ? '加载中...' : argsClaudeText}
+        onChange={(e) => setArgsClaudeText(e.target.value)}
         placeholder="--model opus  --dangerously-skip-permissions"
         disabled={loading}
         style={{
@@ -718,8 +720,24 @@ function EnvEditor({ sessionId, sessionTitle, onClose, onSaved }: {
           outline: 'none',
         }}
       />
+      <div style={{ fontSize: 11, color: skinC.text, fontWeight: 600, margin: '10px 0 4px' }}>🚀 启动参数（codex）</div>
+      <input
+        value={loading ? '加载中...' : argsCodexText}
+        onChange={(e) => setArgsCodexText(e.target.value)}
+        placeholder="-c model_reasoning_effort=high"
+        disabled={loading}
+        style={{
+          width: '100%', boxSizing: 'border-box',
+          padding: '8px 10px', borderRadius: 8,
+          border: `1px solid ${skinC.outline}55`,
+          background: `${skinC.container}aa`,
+          color: skinC.text, fontSize: 12,
+          fontFamily: 'ui-monospace, SFMono-Regular, Menlo, monospace',
+          outline: 'none',
+        }}
+      />
       <div style={{ fontSize: 10, color: skinC.textDim, marginTop: 4 }}>
-        追加在全局 toolArgs 之后（后者覆盖前者）。环境变量 + 启动参数均需<b>重启会话</b>后生效
+        按会话当前工具生效（Alt+X 变身后自动用对应一栏），追加在全局 toolArgs 之后。均需<b>重启会话</b>后生效
       </div>
       <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 6, marginTop: 10 }}>
         <button onClick={onClose} style={{
