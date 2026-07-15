@@ -15,7 +15,7 @@ import * as ntfy from '../ntfy'
 import { getProvider } from '../sessions'
 import { clearNeedsInput, getPendingInput, isJsonlInCwd, claudeJsonlPath } from '../wakeup'
 import { markCleared, isCleared, clearMark } from '../session-clear-state'
-import { buildCodexHandoff, buildClaudeRecentHandoff, scanClaudeMessageTokens } from '../codex-rollout'
+import { buildCodexHandoff, buildClaudeRecentHandoff, scanClaudeMessageTokens, findRolloutFile } from '../codex-rollout'
 import { getPetWindow } from '../windows/pet-window'
 import type { SessionInfo } from '@shared/types/session'
 
@@ -1810,6 +1810,37 @@ function bindFreshCodexThread(sessionId: string): void {
   }, 2000)
 }
 
+const HIVE_BOOTSTRAP_MARKER = 'You are kitty-hive agent'
+
+/**
+ * hive daemon 只在"自己新建 thread"时注入身份开场白(You are kitty-hive
+ * agent … FIRST ACTION: hive_start)。TUI 自建的 thread(降级交接、/new)被
+ * set-thread 收养后没有这段指引 → codex 不知道自己的 hive 身份,推送处理
+ * 全靠事件里的 re-bind 提示。bridge 重启后检测 rollout 缺 marker 就补一条,
+ * 消息本身含 marker,天然幂等(下次 grep 命中不再发)。
+ */
+function maybeInjectHiveBootstrap(session: sessionRepo.SessionRow, agentId: string, threadId: string): void {
+  if (!agentId || !threadId) return
+  try {
+    const file = findRolloutFile(threadId)
+    if (!file) return
+    // grep 而非 readFileSync:全量 import 的 rollout 可上百 MB
+    try {
+      execSync(`grep -q -m1 -F "${HIVE_BOOTSTRAP_MARKER}" "${file}"`, { stdio: 'ignore' })
+      return // marker 已存在
+    } catch { /* 无 marker → 继续注入 */ }
+  } catch { return }
+  const msg = `${HIVE_BOOTSTRAP_MARKER} "${session.title}" (id: ${agentId}), running in a persistent codex thread driven by the kitty-hive codex-channel daemon. FIRST ACTION: call hive_start({ id: "${agentId}" }) to bind your MCP session to your hive identity — every hive_* call then runs as you. If you ever see a "[kitty-hive] daemon restarted" notice, call hive_start again (thread history is preserved). For each pushed event: fetch full content via the tool the daemon points to (hive_dm_read / hive_check / hive_team_events) BEFORE acting; when idle, wait silently for the next push.`
+  setTimeout(() => {
+    const now = sessionRepo.listSessions().find((s) => s.id === session.id)
+    if (!now || now.tool !== 'codex' || now.externalSessionId !== threadId) return
+    try {
+      tmux.sendKeys(session.tmuxName, msg)
+      log('session', `hive bootstrap injected: ${session.title} (thread ${threadId.slice(0, 8)} 缺身份指引)`)
+    } catch { /* pane gone — ignore */ }
+  }, 8000)
+}
+
 async function restartSessionPane(session: sessionRepo.SessionRow): Promise<void> {
   // Resolve the exact pane to respawn WITHOUT clobbering a sibling session's
   // pane. Falls back to mainPane only when the tmux session is gone entirely.
@@ -1854,11 +1885,13 @@ async function restartSessionPane(session: sessionRepo.SessionRow): Promise<void
       // 无条件调它导致每次重启都杀 daemon(my-game restart_count=89 事故):
       // daemon 重生走指数退避(封顶 60s),kitty 只等 30s → 永远 timeout 死循环。
       launch = generateCodexRemoteScript(ws.ws_url, ws.thread_id, session.cwd || undefined)
+      maybeInjectHiveBootstrap(session, agentId, ws.thread_id)
     } else if (agentId && requestedThreadId) {
       const reset = await codexSetThread(agentId, requestedThreadId)
       if (reset.kind === 'ok' || reset.kind === 'resumed_as_new') {
         sessionRepo.updateSessionExternalId(session.id, reset.threadId)
         launch = generateCodexRemoteScript(reset.wsUrl, reset.threadId, session.cwd || undefined)
+        maybeInjectHiveBootstrap(session, agentId, reset.threadId)
       } else {
         log('codex-bridge', `daemon reset failed (${reset.kind}): ${reset.kind === 'error' ? reset.message : 'timeout'}`)
         const mode = restartMode(session)
@@ -1866,7 +1899,10 @@ async function restartSessionPane(session: sessionRepo.SessionRow): Promise<void
       }
     } else if (ws.status === 'ready' && ws.ws_url) {
       launch = generateCodexRemoteScript(ws.ws_url, ws.thread_id, session.cwd || undefined)
-      if (ws.thread_id) sessionRepo.updateSessionExternalId(session.id, ws.thread_id)
+      if (ws.thread_id) {
+        sessionRepo.updateSessionExternalId(session.id, ws.thread_id)
+        maybeInjectHiveBootstrap(session, agentId, ws.thread_id)
+      }
     } else {
       log('codex-bridge', `restart fallback (ws status=${ws.status}): ${ws.error || ''}`)
       const mode = restartMode(session)
