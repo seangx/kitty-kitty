@@ -1,6 +1,6 @@
 import { ipcMain, dialog, BrowserWindow, shell } from 'electron'
 import { IPC } from '@shared/types/ipc'
-import { readdirSync, existsSync, statSync, mkdirSync, readFileSync, symlinkSync } from 'fs'
+import { readdirSync, existsSync, statSync, lstatSync, mkdirSync, readFileSync, symlinkSync } from 'fs'
 import { join, basename } from 'path'
 import { homedir } from 'os'
 import { execSync, spawn } from 'child_process'
@@ -148,6 +148,26 @@ function linkProjectRules(cwd: string, toTool: 'codex' | 'claude'): void {
       symlinkSync(basename(src), dst)
       log('transfer', `rules: linked ${basename(dst)} → ${basename(src)} (${cwd})`)
     }
+  } catch { /* ignore */ }
+  linkSkillsBridge(cwd, toTool)
+}
+
+/**
+ * skills 桥同步:skillsmgr 把 skill 部署进 <cwd>/.agents/skills,但只给部署
+ * 时选中的工具建桥(如 .claude/skills → .agents/skills)。变身后另一侧没桥,
+ * skill 全部隐身(管家 flyai/pptx 对 codex 不可见)。.agents/skills 存在而
+ * 目标侧桥缺失时补一条相对软链;已有任何东西(含悬空链)一律不碰。
+ */
+function linkSkillsBridge(cwd: string, toTool: 'codex' | 'claude'): void {
+  const agentsSkills = join(cwd, '.agents', 'skills')
+  try {
+    if (!existsSync(agentsSkills)) return
+    const bridgeDir = join(cwd, toTool === 'codex' ? '.codex' : '.claude')
+    const bridge = join(bridgeDir, 'skills')
+    try { lstatSync(bridge); return } catch { /* 不存在 → 补桥 */ }
+    mkdirSync(bridgeDir, { recursive: true })
+    symlinkSync(join('..', '.agents', 'skills'), bridge)
+    log('transfer', `skills: linked ${toTool}/skills → .agents/skills (${cwd})`)
   } catch { /* ignore */ }
 }
 
