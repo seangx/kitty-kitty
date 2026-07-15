@@ -710,9 +710,12 @@ export function registerSessionHandlers(): void {
         // 改为轮询 pane 实况,拿到真 thread 再绑定+解禁。
         if (!newThreadId) bindFreshCodexThread(id)
         setTimeout(() => {
-          const now = sessionRepo.listSessions().find((s) => s.id === id)
-          if (!now || now.tool !== 'codex') return
-          try { tmux.sendKeys(updatedD.tmuxName, `请读 ${recent.file} —— 原 Claude 会话过大未全量导入,这是近期对话与项目文档指引,读完接手。`) } catch { /* ignore */ }
+          void (async () => {
+            const now = sessionRepo.listSessions().find((s) => s.id === id)
+            if (!now || now.tool !== 'codex') return
+            const ok = await injectCodexMessage(id, updatedD.tmuxName, `请读 ${recent.file} —— 原 Claude 会话过大未全量导入,这是近期对话与项目文档指引,读完接手。`)
+            if (!ok) log('transfer', `${session.title}: 交接指引未落盘(输入框可能卡住)`)
+          })()
         }, 8000)
         log('transfer', `${session.title}: degraded handoff (${Math.round(jsonlStat.size / 1048576)}MB jsonl, ${recent.turns} turns)`)
         return { success: true, message: `会话较大,已用近期上下文交接 Codex(${recent.turns} 条)~ 再按 Alt+X 可变回` }
@@ -749,9 +752,12 @@ export function registerSessionHandlers(): void {
       const memIdx = claudeMemoryIndex(session.cwd)
       if (memIdx) {
         setTimeout(() => {
-          const now = sessionRepo.listSessions().find((s) => s.id === id)
-          if (!now || now.tool !== 'codex') return
-          try { tmux.sendKeys(updated.tmuxName, `项目记忆索引: ${memIdx} (Claude Code 持久记忆,只读参考)。做重大决策前可读相关条目;新发现无需写入,变回 claude 时会自动移交。`) } catch { /* ignore */ }
+          void (async () => {
+            const now = sessionRepo.listSessions().find((s) => s.id === id)
+            if (!now || now.tool !== 'codex') return
+            const ok = await injectCodexMessage(id, updated.tmuxName, `项目记忆索引: ${memIdx} (Claude Code 持久记忆,只读参考)。做重大决策前可读相关条目;新发现无需写入,变回 claude 时会自动移交。`)
+            if (!ok) log('transfer', `${session.title}: 记忆索引指引未落盘`)
+          })()
         }, 8000)
       }
       log('transfer', `${session.title}: → codex thread ${threadId.slice(0, 8)}${reused ? ' (reused)' : ''}`)
@@ -1810,6 +1816,40 @@ function bindFreshCodexThread(sessionId: string): void {
   }, 2000)
 }
 
+const sleepMs = (ms: number) => new Promise<void>((r) => setTimeout(r, ms))
+
+/**
+ * 向 codex pane 注入一条消息,并以 rollout 落盘为准验证"真的提交了"。
+ * 裸 paste+Enter 不可靠:TUI 尚未消化完粘贴时回车会被吞,文本滞留输入框
+ * (monkeys-slave 身份指引卡输入框事故)。没落盘就补 Enter,最多 5 次。
+ * 验证 marker 取文本中最长的无引号/反斜杠片段——rollout 存的是 JSON 转义
+ * 后的文本,带 " 的原文在文件里是 \" ,直接 grep 原文会永远 miss。
+ */
+async function injectCodexMessage(sessionId: string, tmuxName: string, text: string): Promise<boolean> {
+  const runs = text.split(/["\\]/).map((s) => s.trim()).filter((s) => s.length >= 12)
+  const marker = (runs.sort((a, b) => b.length - a.length)[0] || text.slice(0, 40)).slice(0, 60)
+  const landed = (): boolean => {
+    const s = sessionRepo.listSessions().find((x) => x.id === sessionId)
+    if (!s?.externalSessionId) return false
+    const file = findRolloutFile(s.externalSessionId)
+    if (!file) return false
+    try {
+      // -f - 从 stdin 读 pattern,绕开 shell 引号地狱
+      execSync(`grep -q -m1 -F -f - "${file}"`, { input: marker, stdio: ['pipe', 'ignore', 'ignore'] })
+      return true
+    } catch { return false }
+  }
+  try { tmux.sendKeys(tmuxName, text) } catch { return false }
+  for (let i = 0; i < 5; i++) {
+    await sleepMs(1500)
+    if (landed()) return true
+    // 空输入框上的 Enter 是 no-op,重发无副作用
+    try { execSync(`${tmux.TMUX} send-keys -t "${tmuxName}" Enter`, { stdio: 'ignore' }) } catch { return false }
+  }
+  await sleepMs(1500)
+  return landed()
+}
+
 const HIVE_BOOTSTRAP_MARKER = 'You are kitty-hive agent'
 
 /**
@@ -1832,12 +1872,12 @@ function maybeInjectHiveBootstrap(session: sessionRepo.SessionRow, agentId: stri
   } catch { return }
   const msg = `${HIVE_BOOTSTRAP_MARKER} "${session.title}" (id: ${agentId}), running in a persistent codex thread driven by the kitty-hive codex-channel daemon. FIRST ACTION: call hive_start({ id: "${agentId}" }) to bind your MCP session to your hive identity — every hive_* call then runs as you. If you ever see a "[kitty-hive] daemon restarted" notice, call hive_start again (thread history is preserved). For each pushed event: fetch full content via the tool the daemon points to (hive_dm_read / hive_check / hive_team_events) BEFORE acting; when idle, wait silently for the next push.`
   setTimeout(() => {
-    const now = sessionRepo.listSessions().find((s) => s.id === session.id)
-    if (!now || now.tool !== 'codex' || now.externalSessionId !== threadId) return
-    try {
-      tmux.sendKeys(session.tmuxName, msg)
-      log('session', `hive bootstrap injected: ${session.title} (thread ${threadId.slice(0, 8)} 缺身份指引)`)
-    } catch { /* pane gone — ignore */ }
+    void (async () => {
+      const now = sessionRepo.listSessions().find((s) => s.id === session.id)
+      if (!now || now.tool !== 'codex' || now.externalSessionId !== threadId) return
+      const ok = await injectCodexMessage(session.id, session.tmuxName, msg)
+      log('session', `hive bootstrap ${ok ? 'injected' : 'FAILED (未落盘)'}: ${session.title} (thread ${threadId.slice(0, 8)})`)
+    })()
   }, 8000)
 }
 
