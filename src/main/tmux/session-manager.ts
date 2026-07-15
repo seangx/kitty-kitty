@@ -550,6 +550,8 @@ function bindPaneActionKeys(): void {
     execSync(`${TMUX} bind-key -n M-t run-shell -b '${script} set-main-session'`, { stdio: 'ignore' })
     // Alt+X: transfer the focused claude session to codex (or toggle back).
     execSync(`${TMUX} bind-key -n M-x run-shell -b '${script} transfer-codex'`, { stdio: 'ignore' })
+    // Alt+R: restart the focused pane's session (same path as context menu).
+    execSync(`${TMUX} bind-key -n M-r run-shell -b '${script} restart'`, { stdio: 'ignore' })
   } catch { /* ignore */ }
 }
 

@@ -93,6 +93,7 @@ npm run dist
 | **Alt+C** | 清空当前 pane 会话的对话（同右键「清空对话」，先清输入框草稿再发 `/clear`） |
 | **Alt+T** | 把当前 pane 会话设为组的主窗口 |
 | **Alt+X** | 当前会话 claude ⇄ codex 变身（见 [会话变身](#会话变身claude--codex)） |
+| **Alt+R** | 重启当前 pane 会话（同右键「重启」，codex 会话重启前自动校正线程漂移） |
 | **Alt+←** | 关闭当前 pane |
 | **Alt+→** | 水平拆分新 pane |
 | **Alt+↓** | 垂直拆分新 pane |
