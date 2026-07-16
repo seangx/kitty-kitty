@@ -1,6 +1,6 @@
 import { ipcMain, dialog, BrowserWindow, shell } from 'electron'
 import { IPC } from '@shared/types/ipc'
-import { readdirSync, existsSync, statSync, lstatSync, mkdirSync, readFileSync, symlinkSync } from 'fs'
+import { readdirSync, existsSync, statSync, lstatSync, mkdirSync, symlinkSync } from 'fs'
 import { join, basename } from 'path'
 import { homedir } from 'os'
 import { execSync, spawn } from 'child_process'
@@ -16,6 +16,7 @@ import { getProvider } from '../sessions'
 import { clearNeedsInput, getPendingInput, isJsonlInCwd, claudeJsonlPath } from '../wakeup'
 import { markCleared, isCleared, clearMark } from '../session-clear-state'
 import { buildCodexHandoff, buildClaudeRecentHandoff, scanClaudeMessageTokens } from '../codex-rollout'
+import { buildClaudeMemoryStartupPrompt } from '../claude-memory'
 import { getPetWindow } from '../windows/pet-window'
 import type { SessionInfo } from '@shared/types/session'
 
@@ -128,16 +129,6 @@ function sendTransferProgress(sessionId: string, stage: 'scan' | 'transfer' | 'h
  * 全局规则(~/.claude/CLAUDE.md ↔ ~/.codex/AGENTS.md)是用户级配置,影响所有
  * 会话,不在变身时自动改动。
  */
-/** 该 cwd 的 claude 项目记忆索引(存在且非空才返回路径)。编码规则同 jsonl。 */
-function claudeMemoryIndex(cwd: string): string | null {
-  if (!cwd) return null
-  for (const enc of [cwd.replace(/[/.]/g, '-'), cwd.replace(/\//g, '-')]) {
-    const p = join(homedir(), '.claude', 'projects', enc, 'memory', 'MEMORY.md')
-    try { if (existsSync(p) && statSync(p).size > 0) return p } catch { /* ignore */ }
-  }
-  return null
-}
-
 function linkProjectRules(cwd: string, toTool: 'codex' | 'claude'): void {
   if (!cwd) return
   const claudeMd = join(cwd, 'CLAUDE.md')
@@ -709,10 +700,10 @@ export function registerSessionHandlers(): void {
         if (!newThreadId) markCleared(id)
         linkProjectRules(session.cwd, 'codex')
         const updatedD = sessionRepo.listSessions().find((s) => s.id === id)!
-        const memIdx = claudeMemoryIndex(session.cwd)
+        const memoryPrompt = buildClaudeMemoryStartupPrompt(jsonl, session.cwd)
         const initialPrompt = [
           `请读 ${recent.file} —— 原 Claude 会话过大未全量导入,这是近期对话与项目文档指引,读完接手。`,
-          memIdx ? `项目记忆索引: ${memIdx} (Claude Code 持久记忆,只读参考)。做重大决策前可读相关条目;新发现无需写入,变回 claude 时会自动移交。` : '',
+          memoryPrompt,
         ].filter(Boolean).join('\n\n')
         sendTransferProgress(id, 'restart')
         await restartSessionPane(updatedD, initialPrompt)
@@ -747,10 +738,7 @@ export function registerSessionHandlers(): void {
         await registerCodexAgent({ key: session.id, displayName: session.title, projectDir: session.cwd || undefined, switchTool: true })
       }
       const updated = sessionRepo.listSessions().find((s) => s.id === id)!
-      const memIdx = claudeMemoryIndex(session.cwd)
-      const initialPrompt = memIdx
-        ? `项目记忆索引: ${memIdx} (Claude Code 持久记忆,只读参考)。做重大决策前可读相关条目;新发现无需写入,变回 claude 时会自动移交。`
-        : undefined
+      const initialPrompt = buildClaudeMemoryStartupPrompt(jsonl, session.cwd)
       // bridge 开走 bridge(daemon setThread),关则 codex resume —— 全复用重启逻辑
       sendTransferProgress(id, 'restart')
       await restartSessionPane(updated, initialPrompt)

@@ -159,7 +159,7 @@ curl -H "Title: Deploy" -H "Tags: white_check_mark" \
 | 内容 | 处理 |
 |---|---|
 | 项目规则 | 目标工具的规则文件不存在时自动软链（`AGENTS.md ⇄ CLAUDE.md`，绝不覆盖已有） |
-| 项目记忆 | 变身 codex 时通过 CLI 启动首条消息携带 memory 索引路径（只读参考）；写入权留在 claude 侧，新知走移交回流 |
+| 项目记忆 | 变身 codex 时按源 JSONL + Git 仓库身份定位 Claude Auto Memory，并在 CLI 启动首条消息中携带有效只读快照（同 Claude 的 200 行/25KB 上限）；写入权留在 claude 侧，新知走移交回流 |
 | hive 身份 | 同一 agent_id 全程连续；配合 kitty-hive ≥0.7.7 的 `--switch-tool`，tool 标记双向切换、daemon 自动起/杀、推送路由跟随（旧版 hive 自动降级为直连，无推送） |
 
 **注意**：把 Alt+X 当"阶段性换工具"用，别当 tab 键反复横跳——每次 claude→codex 若有新内容就要重新 transfer，成本随会话增长；转移进行中连按会被拦截。
