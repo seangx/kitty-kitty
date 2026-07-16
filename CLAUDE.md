@@ -37,7 +37,7 @@
 1. 杀掉所有 kitty-kitty Electron 进程：`pkill -9 -f 'Kitty Kitty' 2>/dev/null; pkill -9 -f 'kitty-kitty' 2>/dev/null`（注意安装后的进程名是 "Kitty Kitty" 带空格，光 grep 'kitty-kitty' 会漏掉）
 2. `npm run build` 编译项目
 3. `npm run pack` 打包
-4. 找到打包产物中的 .app，先 `rm -rf` 旧 app 再复制到 /Applications/（`cp -R` 对 .app bundle 是合并而非替换，会保留旧文件）
+4. 用 rsync 同步产物到 /Applications/（**不要 `rm -rf` + `cp -R`**：rm 重建 bundle 会让 Dock 书签失效，「最近使用」区出现第二个 kitty 残影图标；rsync --delete 既清掉旧文件又保住 bundle 目录 inode）：`rsync -a --delete "dist/mac-arm64/Kitty Kitty.app/" "/Applications/Kitty Kitty.app/"`
 5. 启动安装后的应用：`open /Applications/Kitty\ Kitty.app`
 6. 报告结果
 
