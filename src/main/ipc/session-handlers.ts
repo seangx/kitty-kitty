@@ -15,8 +15,7 @@ import * as ntfy from '../ntfy'
 import { getProvider } from '../sessions'
 import { clearNeedsInput, getPendingInput, isJsonlInCwd, claudeJsonlPath } from '../wakeup'
 import { markCleared, isCleared, clearMark } from '../session-clear-state'
-import { buildCodexHandoff, buildClaudeRecentHandoff, scanClaudeMessageTokens, findRolloutFile } from '../codex-rollout'
-import { KeyedTaskQueue, runSerializedWithDedupe } from '../keyed-task-queue'
+import { buildCodexHandoff, buildClaudeRecentHandoff, scanClaudeMessageTokens } from '../codex-rollout'
 import { getPetWindow } from '../windows/pet-window'
 import type { SessionInfo } from '@shared/types/session'
 
@@ -607,17 +606,10 @@ export function registerSessionHandlers(): void {
   //             jsonl id back to DB after the user's next message. We also
   //             eagerly clear externalSessionId so any restart before the hook
   //             fires won't resume the old jsonl.
-  //   codex   : (short term) just send `/clear`. The codex TUI rolls to a new
-  //             thread, but the hive daemon is unaware — so under bridge mode
-  //             daemon still writes hive pushes into the OLD thread that the
-  //             TUI no longer shows. This trade-off is the reason the
-  //             /admin/codex-set-thread API is being added (kitty-hive side).
-  //             Once it lands, this branch becomes:
-  //               POST /admin/codex-set-thread {agent_id, thread_id: null}
-  //               → daemon resets thread → update DB ext → respawn pane
-  //             For now the short-term send-keys is documented to the user.
+  //   codex   : bridge 模式通过 /admin/codex-set-thread 原地新建 thread 并
+  //             重挂 pane；hive 不可用时才 fallback 到 TUI `/clear`。
   // Alt+X:claude 会话原地变身 codex(官方 transfer 导入完整历史);再按变回
-  // claude(resume 原 jsonl + 注入 codex 期间的增量工作记录)。
+  // claude(resume 原 jsonl + 通过 CLI 启动首条消息交接 codex 增量记录)。
   ipcMain.handle('session:transfer-codex', async (_event, id: string) => {
     const session = sessionRepo.listSessions().find((s) => s.id === id)
     if (!session) return { success: false, message: '会话不存在' }
@@ -639,7 +631,7 @@ export function registerSessionHandlers(): void {
         sessionRepo.updateSessionTool(id, origin.tool)
         sessionRepo.updateSessionExternalId(id, origin.externalSessionId)
         // 留下"变回时刻"的 jsonl 指纹:下次变身时若 jsonl 未变(claude 侧零新内容,
-        // 含 handoff 注入——注入会改 jsonl,自动导向重新 transfer),直接复用本轮
+        // 含 handoff 启动消息——消息会进入 jsonl,自动导向重新 transfer),直接复用本轮
         // codex thread,零 transfer 零新孤儿(防横跳滚雪球)。
         let backState = ''
         try {
@@ -658,20 +650,13 @@ export function registerSessionHandlers(): void {
           await registerCodexAgent({ key: session.id, displayName: session.title, projectDir: session.cwd || undefined, tool: 'claude', switchTool: true })
         }
         const updated = sessionRepo.listSessions().find((s) => s.id === id)!
+        const initialPrompt = handoff
+          ? `请读 ${handoff.file} —— 这是本会话转交 Codex 期间的工作记录(${handoff.turns} 条),读完继续接手。`
+          : undefined
         sendTransferProgress(id, 'restart')
-        await restartSessionPane(updated)
-        if (handoff) {
-          // claude resume 启动需要几秒;消息只有一行,即使偶发掉进 shell 也无害
-          const { file, turns } = handoff
-          setTimeout(() => {
-            // 8s 内用户可能又按 Alt+X 变回 codex——校验会话仍是 claude 才注入
-            const now = sessionRepo.listSessions().find((s) => s.id === id)
-            if (!now || now.tool !== 'claude') return
-            try { tmux.sendKeys(updated.tmuxName, `请读 ${file} —— 这是本会话转交 Codex 期间的工作记录(${turns} 条),读完继续接手。`) } catch { /* ignore */ }
-          }, 8000)
-        }
+        await restartSessionPane(updated, initialPrompt)
         log('transfer', `${session.title}: back to ${origin.tool} (${origin.externalSessionId.slice(0, 8)})${handoff ? ` +handoff(${handoff.turns})` : ''}`)
-        return { success: true, message: handoff ? `已变回 claude,Codex 记录(${handoff.turns} 条)稍后注入` : '已变回 claude 会话' }
+        return { success: true, message: handoff ? `已变回 claude,Codex 记录(${handoff.turns} 条)已随启动消息交接` : '已变回 claude 会话' }
       }
       // —— claude → codex ——
       if (session.tool !== 'claude') return { success: false, message: '只支持 claude 会话转给 codex' }
@@ -724,20 +709,17 @@ export function registerSessionHandlers(): void {
         if (!newThreadId) markCleared(id)
         linkProjectRules(session.cwd, 'codex')
         const updatedD = sessionRepo.listSessions().find((s) => s.id === id)!
+        const memIdx = claudeMemoryIndex(session.cwd)
+        const initialPrompt = [
+          `请读 ${recent.file} —— 原 Claude 会话过大未全量导入,这是近期对话与项目文档指引,读完接手。`,
+          memIdx ? `项目记忆索引: ${memIdx} (Claude Code 持久记忆,只读参考)。做重大决策前可读相关条目;新发现无需写入,变回 claude 时会自动移交。` : '',
+        ].filter(Boolean).join('\n\n')
         sendTransferProgress(id, 'restart')
-        await restartSessionPane(updatedD)
+        await restartSessionPane(updatedD, initialPrompt)
         // 不能立即 clearMark:新 TUI 的 rollout 未落盘前解禁,盲回填会按 mtime
         // 抢先认领 cwd 下的旧 thread(如刚废弃的全量 import)→ 重启 resume 错线程。
         // 改为轮询 pane 实况,拿到真 thread 再绑定+解禁。
         if (!newThreadId) bindFreshCodexThread(id)
-        setTimeout(() => {
-          void (async () => {
-            const now = sessionRepo.listSessions().find((s) => s.id === id)
-            if (!now || now.tool !== 'codex') return
-            const result = await injectCodexMessage(id, updatedD.tmuxName, `请读 ${recent.file} —— 原 Claude 会话过大未全量导入,这是近期对话与项目文档指引,读完接手。`)
-            if (result === 'failed') log('transfer', `${session.title}: 交接指引未落盘(输入框可能卡住)`)
-          })()
-        }, 8000)
         log('transfer', `${session.title}: degraded handoff (${Math.round(jsonlStat.size / 1048576)}MB jsonl, ${recent.turns} turns)`)
         return { success: true, message: `会话较大,已用近期上下文交接 Codex(${recent.turns} 条)~ 再按 Alt+X 可变回` }
       }
@@ -765,22 +747,13 @@ export function registerSessionHandlers(): void {
         await registerCodexAgent({ key: session.id, displayName: session.title, projectDir: session.cwd || undefined, switchTool: true })
       }
       const updated = sessionRepo.listSessions().find((s) => s.id === id)!
+      const memIdx = claudeMemoryIndex(session.cwd)
+      const initialPrompt = memIdx
+        ? `项目记忆索引: ${memIdx} (Claude Code 持久记忆,只读参考)。做重大决策前可读相关条目;新发现无需写入,变回 claude 时会自动移交。`
+        : undefined
       // bridge 开走 bridge(daemon setThread),关则 codex resume —— 全复用重启逻辑
       sendTransferProgress(id, 'restart')
-      await restartSessionPane(updated)
-      // 项目记忆指引:codex 无 memory 机制,告知只读路径。写入权留在 claude 侧
-      // (codex 期间的新知走 handoff 回流,由 claude 消化入库),避免双写污染索引。
-      const memIdx = claudeMemoryIndex(session.cwd)
-      if (memIdx) {
-        setTimeout(() => {
-          void (async () => {
-            const now = sessionRepo.listSessions().find((s) => s.id === id)
-            if (!now || now.tool !== 'codex') return
-            const result = await injectCodexMessage(id, updated.tmuxName, `项目记忆索引: ${memIdx} (Claude Code 持久记忆,只读参考)。做重大决策前可读相关条目;新发现无需写入,变回 claude 时会自动移交。`)
-            if (result === 'failed') log('transfer', `${session.title}: 记忆索引指引未落盘`)
-          })()
-        }, 8000)
-      }
+      await restartSessionPane(updated, initialPrompt)
       log('transfer', `${session.title}: → codex thread ${threadId.slice(0, 8)}${reused ? ' (reused)' : ''}`)
       return { success: true, message: reused ? '已切回 Codex(复用上次线程)~ 再按 Alt+X 可变回' : '已转交给 Codex 喵~ 再按 Alt+X 可变回' }
     } finally {
@@ -1837,118 +1810,7 @@ function bindFreshCodexThread(sessionId: string): void {
   }, 2000)
 }
 
-const sleepMs = (ms: number) => new Promise<void>((r) => setTimeout(r, ms))
-const codexInjectionQueue = new KeyedTaskQueue()
-
-type CodexInjectionResult = 'injected' | 'already-present' | 'failed'
-
-function injectionMarker(text: string): string {
-  const runs = text.split(/["\\]/).map((s) => s.trim()).filter((s) => s.length >= 12)
-  return (runs.sort((a, b) => b.length - a.length)[0] || text.slice(0, 40)).slice(0, 60)
-}
-
-function rolloutMarkerCount(file: string, marker: string): number {
-  try {
-    const output = execSync(`grep -c -F -f - "${file}"`, {
-      input: marker,
-      encoding: 'utf-8',
-      stdio: ['pipe', 'pipe', 'ignore'],
-    }).trim()
-    return Number.parseInt(output, 10) || 0
-  } catch {
-    return 0
-  }
-}
-
-function currentRolloutFile(sessionId: string): string {
-  const threadId = sessionRepo.listSessions().find((x) => x.id === sessionId)?.externalSessionId
-  return threadId ? findRolloutFile(threadId) || '' : ''
-}
-
-/**
- * 向 codex pane 注入一条消息,并以 rollout 落盘为准验证"真的提交了"。
- * 裸 paste+Enter 不可靠:TUI 尚未消化完粘贴时回车会被吞,文本滞留输入框
- * (monkeys-slave 身份指引卡输入框事故)。没落盘就补 Enter,最多 5 次。
- * 验证 marker 取文本中最长的无引号/反斜杠片段——rollout 存的是 JSON 转义
- * 后的文本,带 " 的原文在文件里是 \" ,直接 grep 原文会永远 miss。
- */
-async function injectCodexMessage(
-  sessionId: string,
-  tmuxName: string,
-  text: string,
-  dedupeMarker = '',
-): Promise<CodexInjectionResult> {
-  const queued = await runSerializedWithDedupe(
-    codexInjectionQueue,
-    sessionId,
-    () => {
-      if (!dedupeMarker) return false
-      const file = currentRolloutFile(sessionId)
-      return !!file && rolloutMarkerCount(file, dedupeMarker) > 0
-    },
-    async (): Promise<'injected' | 'failed'> => {
-      const marker = injectionMarker(text)
-      let injectionFile = currentRolloutFile(sessionId)
-      const initialCount = injectionFile ? rolloutMarkerCount(injectionFile, marker) : 0
-      const landed = (): boolean => {
-        const file = currentRolloutFile(sessionId)
-        if (!file) return false
-        // 降级交接的 TUI rollout 可能在 paste 后才落盘；首次看到时绑定它。
-        if (!injectionFile) injectionFile = file
-        return file === injectionFile && rolloutMarkerCount(file, marker) > initialCount
-      }
-
-      try { tmux.sendKeys(tmuxName, text) } catch { return 'failed' }
-      for (let i = 0; i < 5; i++) {
-        await sleepMs(1500)
-        if (landed()) return 'injected'
-        // 空输入框上的 Enter 是 no-op,重发无副作用
-        try { execSync(`${tmux.TMUX} send-keys -t "${tmuxName}" Enter`, { stdio: 'ignore' }) } catch { return 'failed' }
-      }
-      await sleepMs(1500)
-      return landed() ? 'injected' : 'failed'
-    },
-  )
-  return queued.kind === 'already-present' ? 'already-present' : queued.value
-}
-
-const HIVE_BOOTSTRAP_MARKER = 'You are kitty-hive agent'
-
-/**
- * hive daemon 只在"自己新建 thread"时注入身份开场白(You are kitty-hive
- * agent … FIRST ACTION: hive_start)。TUI 自建的 thread(降级交接、/new)被
- * set-thread 收养后没有这段指引 → codex 不知道自己的 hive 身份,推送处理
- * 全靠事件里的 re-bind 提示。bridge 重启后检测 rollout 缺 marker 就补一条,
- * 消息本身含 marker；真正发送前在同会话注入队列里二次检查，避免 daemon
- * 原生 intro 在 8 秒等待期内刚落盘、kitty 仍按旧快照重复补发。
- */
-function maybeInjectHiveBootstrap(session: sessionRepo.SessionRow, agentId: string, threadId: string): void {
-  if (!agentId || !threadId) return
-  try {
-    const file = findRolloutFile(threadId)
-    if (!file) return
-    // grep 而非 readFileSync:全量 import 的 rollout 可上百 MB
-    try {
-      execSync(`grep -q -m1 -F "${HIVE_BOOTSTRAP_MARKER}" "${file}"`, { stdio: 'ignore' })
-      return // marker 已存在
-    } catch { /* 无 marker → 继续注入 */ }
-  } catch { return }
-  const msg = `${HIVE_BOOTSTRAP_MARKER} "${session.title}" (id: ${agentId}), running in a persistent codex thread driven by the kitty-hive codex-channel daemon. FIRST ACTION: call hive_start({ id: "${agentId}" }) to bind your MCP session to your hive identity — every hive_* call then runs as you. If you ever see a "[kitty-hive] daemon restarted" notice, call hive_start again (thread history is preserved). For each pushed event: fetch full content via the tool the daemon points to (hive_dm_read / hive_check / hive_team_events) BEFORE acting; when idle, wait silently for the next push.`
-  setTimeout(() => {
-    void (async () => {
-      const now = sessionRepo.listSessions().find((s) => s.id === session.id)
-      if (!now || now.tool !== 'codex' || now.externalSessionId !== threadId) return
-      const result = await injectCodexMessage(session.id, session.tmuxName, msg, HIVE_BOOTSTRAP_MARKER)
-      if (result === 'already-present') {
-        log('session', `hive bootstrap skipped (already present): ${session.title} (thread ${threadId.slice(0, 8)})`)
-      } else {
-        log('session', `hive bootstrap ${result === 'injected' ? 'injected' : 'FAILED (未落盘)'}: ${session.title} (thread ${threadId.slice(0, 8)})`)
-      }
-    })()
-  }, 8000)
-}
-
-async function restartSessionPane(session: sessionRepo.SessionRow): Promise<void> {
+async function restartSessionPane(session: sessionRepo.SessionRow, initialPrompt?: string): Promise<void> {
   // Resolve the exact pane to respawn WITHOUT clobbering a sibling session's
   // pane. Falls back to mainPane only when the tmux session is gone entirely.
   const target = resolveRestartPaneTarget(session)
@@ -1991,33 +1853,30 @@ async function restartSessionPane(session: sessionRepo.SessionRow): Promise<void
       // set-thread 语义是"切换 thread",hive 端会 SIGTERM daemon 重生;之前
       // 无条件调它导致每次重启都杀 daemon(my-game restart_count=89 事故):
       // daemon 重生走指数退避(封顶 60s),kitty 只等 30s → 永远 timeout 死循环。
-      launch = generateCodexRemoteScript(ws.ws_url, ws.thread_id, session.cwd || undefined)
-      maybeInjectHiveBootstrap(session, agentId, ws.thread_id)
+      launch = generateCodexRemoteScript(ws.ws_url, ws.thread_id, session.cwd || undefined, undefined, initialPrompt)
     } else if (agentId && requestedThreadId) {
       const reset = await codexSetThread(agentId, requestedThreadId)
       if (reset.kind === 'ok' || reset.kind === 'resumed_as_new') {
         sessionRepo.updateSessionExternalId(session.id, reset.threadId)
-        launch = generateCodexRemoteScript(reset.wsUrl, reset.threadId, session.cwd || undefined)
-        maybeInjectHiveBootstrap(session, agentId, reset.threadId)
+        launch = generateCodexRemoteScript(reset.wsUrl, reset.threadId, session.cwd || undefined, undefined, initialPrompt)
       } else {
         log('codex-bridge', `daemon reset failed (${reset.kind}): ${reset.kind === 'error' ? reset.message : 'timeout'}`)
         const mode = restartMode(session)
-        launch = generateLaunchScript(session.tool, mode, session.externalSessionId || undefined, session.cwd || undefined, undefined, launchArgsFor(session))
+        launch = generateLaunchScript(session.tool, mode, session.externalSessionId || undefined, session.cwd || undefined, undefined, launchArgsFor(session), initialPrompt)
       }
     } else if (ws.status === 'ready' && ws.ws_url) {
-      launch = generateCodexRemoteScript(ws.ws_url, ws.thread_id, session.cwd || undefined)
+      launch = generateCodexRemoteScript(ws.ws_url, ws.thread_id, session.cwd || undefined, undefined, initialPrompt)
       if (ws.thread_id) {
         sessionRepo.updateSessionExternalId(session.id, ws.thread_id)
-        maybeInjectHiveBootstrap(session, agentId, ws.thread_id)
       }
     } else {
       log('codex-bridge', `restart fallback (ws status=${ws.status}): ${ws.error || ''}`)
       const mode = restartMode(session)
-      launch = generateLaunchScript(session.tool, mode, session.externalSessionId || undefined, session.cwd || undefined, undefined, launchArgsFor(session))
+      launch = generateLaunchScript(session.tool, mode, session.externalSessionId || undefined, session.cwd || undefined, undefined, launchArgsFor(session), initialPrompt)
     }
   } else {
     const { sid, mode } = prebindClaudeRelaunch(session, restartMode(session))
-    launch = generateLaunchScript(session.tool, mode, session.externalSessionId || undefined, session.cwd || undefined, sid, launchArgsFor(session))
+    launch = generateLaunchScript(session.tool, mode, session.externalSessionId || undefined, session.cwd || undefined, sid, launchArgsFor(session), initialPrompt)
   }
 
   // Parse per-session env and pass via respawn-pane -e KEY=VALUE

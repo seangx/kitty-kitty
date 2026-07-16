@@ -8,8 +8,8 @@ const EXTRA_BIN_DIRS = [
   '/opt/homebrew/bin',
   '/usr/local/bin',
   '/usr/bin',
-  join(require('os').homedir(), '.local', 'bin'),
-  join(require('os').homedir(), '.npm-global', 'bin'),
+  join(homedir(), '.local', 'bin'),
+  join(homedir(), '.npm-global', 'bin'),
 ]
 
 function findBinary(name: string): string | null {
@@ -161,6 +161,7 @@ export function generateLaunchScript(
   cwd?: string,
   sessionId?: string,
   extraArgs?: string,
+  initialPrompt?: string,
 ): string {
   const config = TOOLS[tool] || { cmd: tool }
   const scriptPath = join(tmpdir(), `kitty_launch_${Date.now()}.sh`)
@@ -169,16 +170,16 @@ export function generateLaunchScript(
 
   switch (mode) {
     case 'continue':
-      script = buildContinueScript(config, extraArgs)
+      script = buildContinueScript(config, extraArgs, initialPrompt)
       break
     case 'new':
-      script = buildNewScript(config, sessionId, extraArgs)
+      script = buildNewScript(config, sessionId, extraArgs, initialPrompt)
       break
     case 'resume':
-      script = buildResumeScript(config, resumeId!, extraArgs)
+      script = buildResumeScript(config, resumeId!, extraArgs, initialPrompt)
       break
     case 'restore':
-      script = buildRestoreScript(config, extraArgs)
+      script = buildRestoreScript(config, extraArgs, initialPrompt)
       break
   }
 
@@ -276,11 +277,18 @@ export function getToolCommand(tool: string): string {
  * the daemon has already pushed into its own thread. With `resume <threadId>
  * --remote <ws>` the TUI binds to the daemon's actual thread.
  */
-export function generateCodexRemoteScript(wsUrl: string, threadId?: string, cwd?: string, bannerText?: string): string {
+export function generateCodexRemoteScript(
+  wsUrl: string,
+  threadId?: string,
+  cwd?: string,
+  bannerText?: string,
+  initialPrompt?: string,
+): string {
   const scriptPath = join(tmpdir(), `kitty_launch_${Date.now()}.sh`)
+  const promptArg = initialPrompt ? ` ${shellQuoteForSh(initialPrompt)}` : ''
   const cmd = threadId
-    ? `codex resume ${shellQuoteForSh(threadId)} --remote ${shellQuoteForSh(wsUrl)}`
-    : `codex --remote ${shellQuoteForSh(wsUrl)}`
+    ? `codex resume ${shellQuoteForSh(threadId)} --remote ${shellQuoteForSh(wsUrl)}${promptArg}`
+    : `codex --remote ${shellQuoteForSh(wsUrl)}${promptArg}`
   // Banner: when set, runs before codex spawns. `clear` wipes the previous
   // pane content (e.g. the WebSocket reset error printed by the old codex
   // client when hive SIGTERM'd its daemon) so the user's first visible glimpse
@@ -329,30 +337,36 @@ export function needsDevChannelAutoAccept(tool: string): boolean {
   return userArgs.includes('--dangerously-load-development-channels')
 }
 
-function buildContinueScript(config: ToolConfig, extraArgs?: string): string {
-  if (!config.continueFlag) return buildNewScript(config, undefined, extraArgs)
+function promptArg(initialPrompt?: string): string {
+  return initialPrompt ? ` ${shellQuoteForSh(initialPrompt)}` : ''
+}
+
+function buildContinueScript(config: ToolConfig, extraArgs?: string, initialPrompt?: string): string {
+  if (!config.continueFlag) return buildNewScript(config, undefined, extraArgs, initialPrompt)
   const cmd = baseCmd(config, extraArgs)
+  const prompt = promptArg(initialPrompt)
 
   return `#!/bin/bash
 ${PATH_PREAMBLE}
 # Try to continue most recent session, fallback to new
-${cmd} ${config.continueFlag} 2>/dev/null
+${cmd} ${config.continueFlag}${prompt} 2>/dev/null
 EXIT=$?
 if [ $EXIT -ne 0 ]; then
   echo "No session to continue, starting new..."
-  ${cmd}
+  ${cmd}${prompt}
 fi
 # Keep shell alive if tool exits
 exec $SHELL
 `
 }
 
-function buildNewScript(config: ToolConfig, sessionId?: string, extraArgs?: string): string {
+function buildNewScript(config: ToolConfig, sessionId?: string, extraArgs?: string, initialPrompt?: string): string {
   let cmd = baseCmd(config, extraArgs)
   // Pre-bind the session id when the tool supports it (claude --session-id).
   // Lets kitty know the jsonl name up front instead of claiming by cwd later,
   // so multiple sessions can share one cwd without cross-assignment.
   if (sessionId && config.sessionIdFlag) cmd += ` ${config.sessionIdFlag} ${sessionId}`
+  cmd += promptArg(initialPrompt)
   return `#!/bin/bash
 ${PATH_PREAMBLE}
 ${cmd}
@@ -361,41 +375,46 @@ exec $SHELL
 `
 }
 
-function buildResumeScript(config: ToolConfig, resumeId: string, extraArgs?: string): string {
-  if (!config.resumeFlag) return buildNewScript(config, undefined, extraArgs)
+function buildResumeScript(config: ToolConfig, resumeId: string, extraArgs?: string, initialPrompt?: string): string {
+  if (!config.resumeFlag) return buildNewScript(config, undefined, extraArgs, initialPrompt)
   const cmd = baseCmd(config, extraArgs)
+  const prompt = promptArg(initialPrompt)
+  const fallback = config.continueFlag
+    ? `${cmd} ${config.continueFlag}${prompt}`
+    : `${cmd}${prompt}`
 
   return `#!/bin/bash
 ${PATH_PREAMBLE}
 # Resume specific session, fallback to continue, then new
-${cmd} ${config.resumeFlag} "${resumeId}" 2>/dev/null
+${cmd} ${config.resumeFlag} "${resumeId}"${prompt} 2>/dev/null
 EXIT=$?
 if [ $EXIT -ne 0 ]; then
   echo "Resume failed, trying continue..."
-  ${cmd} ${config.continueFlag || ''} 2>/dev/null || ${cmd}
+  ${fallback} 2>/dev/null || ${cmd}${prompt}
 fi
 # Keep shell alive if tool exits
 exec $SHELL
 `
 }
 
-function buildRestoreScript(config: ToolConfig, extraArgs?: string): string {
+function buildRestoreScript(config: ToolConfig, extraArgs?: string, initialPrompt?: string): string {
   const cmd = baseCmd(config, extraArgs)
+  const prompt = promptArg(initialPrompt)
   // Best-effort: try continue → new → shell
   if (!config.continueFlag) {
     return `#!/bin/bash
 ${PATH_PREAMBLE}
-${cmd} 2>/dev/null || exec $SHELL
+${cmd}${prompt} 2>/dev/null || exec $SHELL
 `
   }
 
   return `#!/bin/bash
 ${PATH_PREAMBLE}
 # Restore: try continue, then new, then fallback to shell
-${cmd} ${config.continueFlag} 2>/dev/null
+${cmd} ${config.continueFlag}${prompt} 2>/dev/null
 EXIT=$?
 if [ $EXIT -ne 0 ]; then
-  ${cmd} 2>/dev/null || true
+  ${cmd}${prompt} 2>/dev/null || true
 fi
 # Keep shell alive if tool exits
 exec $SHELL
