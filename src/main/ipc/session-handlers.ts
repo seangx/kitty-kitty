@@ -16,6 +16,7 @@ import { getProvider } from '../sessions'
 import { clearNeedsInput, getPendingInput, isJsonlInCwd, claudeJsonlPath } from '../wakeup'
 import { markCleared, isCleared, clearMark } from '../session-clear-state'
 import { buildCodexHandoff, buildClaudeRecentHandoff, scanClaudeMessageTokens, findRolloutFile } from '../codex-rollout'
+import { KeyedTaskQueue, runSerializedWithDedupe } from '../keyed-task-queue'
 import { getPetWindow } from '../windows/pet-window'
 import type { SessionInfo } from '@shared/types/session'
 
@@ -733,8 +734,8 @@ export function registerSessionHandlers(): void {
           void (async () => {
             const now = sessionRepo.listSessions().find((s) => s.id === id)
             if (!now || now.tool !== 'codex') return
-            const ok = await injectCodexMessage(id, updatedD.tmuxName, `请读 ${recent.file} —— 原 Claude 会话过大未全量导入,这是近期对话与项目文档指引,读完接手。`)
-            if (!ok) log('transfer', `${session.title}: 交接指引未落盘(输入框可能卡住)`)
+            const result = await injectCodexMessage(id, updatedD.tmuxName, `请读 ${recent.file} —— 原 Claude 会话过大未全量导入,这是近期对话与项目文档指引,读完接手。`)
+            if (result === 'failed') log('transfer', `${session.title}: 交接指引未落盘(输入框可能卡住)`)
           })()
         }, 8000)
         log('transfer', `${session.title}: degraded handoff (${Math.round(jsonlStat.size / 1048576)}MB jsonl, ${recent.turns} turns)`)
@@ -775,8 +776,8 @@ export function registerSessionHandlers(): void {
           void (async () => {
             const now = sessionRepo.listSessions().find((s) => s.id === id)
             if (!now || now.tool !== 'codex') return
-            const ok = await injectCodexMessage(id, updated.tmuxName, `项目记忆索引: ${memIdx} (Claude Code 持久记忆,只读参考)。做重大决策前可读相关条目;新发现无需写入,变回 claude 时会自动移交。`)
-            if (!ok) log('transfer', `${session.title}: 记忆索引指引未落盘`)
+            const result = await injectCodexMessage(id, updated.tmuxName, `项目记忆索引: ${memIdx} (Claude Code 持久记忆,只读参考)。做重大决策前可读相关条目;新发现无需写入,变回 claude 时会自动移交。`)
+            if (result === 'failed') log('transfer', `${session.title}: 记忆索引指引未落盘`)
           })()
         }, 8000)
       }
@@ -1837,6 +1838,32 @@ function bindFreshCodexThread(sessionId: string): void {
 }
 
 const sleepMs = (ms: number) => new Promise<void>((r) => setTimeout(r, ms))
+const codexInjectionQueue = new KeyedTaskQueue()
+
+type CodexInjectionResult = 'injected' | 'already-present' | 'failed'
+
+function injectionMarker(text: string): string {
+  const runs = text.split(/["\\]/).map((s) => s.trim()).filter((s) => s.length >= 12)
+  return (runs.sort((a, b) => b.length - a.length)[0] || text.slice(0, 40)).slice(0, 60)
+}
+
+function rolloutMarkerCount(file: string, marker: string): number {
+  try {
+    const output = execSync(`grep -c -F -f - "${file}"`, {
+      input: marker,
+      encoding: 'utf-8',
+      stdio: ['pipe', 'pipe', 'ignore'],
+    }).trim()
+    return Number.parseInt(output, 10) || 0
+  } catch {
+    return 0
+  }
+}
+
+function currentRolloutFile(sessionId: string): string {
+  const threadId = sessionRepo.listSessions().find((x) => x.id === sessionId)?.externalSessionId
+  return threadId ? findRolloutFile(threadId) || '' : ''
+}
 
 /**
  * 向 codex pane 注入一条消息,并以 rollout 落盘为准验证"真的提交了"。
@@ -1845,29 +1872,44 @@ const sleepMs = (ms: number) => new Promise<void>((r) => setTimeout(r, ms))
  * 验证 marker 取文本中最长的无引号/反斜杠片段——rollout 存的是 JSON 转义
  * 后的文本,带 " 的原文在文件里是 \" ,直接 grep 原文会永远 miss。
  */
-async function injectCodexMessage(sessionId: string, tmuxName: string, text: string): Promise<boolean> {
-  const runs = text.split(/["\\]/).map((s) => s.trim()).filter((s) => s.length >= 12)
-  const marker = (runs.sort((a, b) => b.length - a.length)[0] || text.slice(0, 40)).slice(0, 60)
-  const landed = (): boolean => {
-    const s = sessionRepo.listSessions().find((x) => x.id === sessionId)
-    if (!s?.externalSessionId) return false
-    const file = findRolloutFile(s.externalSessionId)
-    if (!file) return false
-    try {
-      // -f - 从 stdin 读 pattern,绕开 shell 引号地狱
-      execSync(`grep -q -m1 -F -f - "${file}"`, { input: marker, stdio: ['pipe', 'ignore', 'ignore'] })
-      return true
-    } catch { return false }
-  }
-  try { tmux.sendKeys(tmuxName, text) } catch { return false }
-  for (let i = 0; i < 5; i++) {
-    await sleepMs(1500)
-    if (landed()) return true
-    // 空输入框上的 Enter 是 no-op,重发无副作用
-    try { execSync(`${tmux.TMUX} send-keys -t "${tmuxName}" Enter`, { stdio: 'ignore' }) } catch { return false }
-  }
-  await sleepMs(1500)
-  return landed()
+async function injectCodexMessage(
+  sessionId: string,
+  tmuxName: string,
+  text: string,
+  dedupeMarker = '',
+): Promise<CodexInjectionResult> {
+  const queued = await runSerializedWithDedupe(
+    codexInjectionQueue,
+    sessionId,
+    () => {
+      if (!dedupeMarker) return false
+      const file = currentRolloutFile(sessionId)
+      return !!file && rolloutMarkerCount(file, dedupeMarker) > 0
+    },
+    async (): Promise<'injected' | 'failed'> => {
+      const marker = injectionMarker(text)
+      let injectionFile = currentRolloutFile(sessionId)
+      const initialCount = injectionFile ? rolloutMarkerCount(injectionFile, marker) : 0
+      const landed = (): boolean => {
+        const file = currentRolloutFile(sessionId)
+        if (!file) return false
+        // 降级交接的 TUI rollout 可能在 paste 后才落盘；首次看到时绑定它。
+        if (!injectionFile) injectionFile = file
+        return file === injectionFile && rolloutMarkerCount(file, marker) > initialCount
+      }
+
+      try { tmux.sendKeys(tmuxName, text) } catch { return 'failed' }
+      for (let i = 0; i < 5; i++) {
+        await sleepMs(1500)
+        if (landed()) return 'injected'
+        // 空输入框上的 Enter 是 no-op,重发无副作用
+        try { execSync(`${tmux.TMUX} send-keys -t "${tmuxName}" Enter`, { stdio: 'ignore' }) } catch { return 'failed' }
+      }
+      await sleepMs(1500)
+      return landed() ? 'injected' : 'failed'
+    },
+  )
+  return queued.kind === 'already-present' ? 'already-present' : queued.value
 }
 
 const HIVE_BOOTSTRAP_MARKER = 'You are kitty-hive agent'
@@ -1877,7 +1919,8 @@ const HIVE_BOOTSTRAP_MARKER = 'You are kitty-hive agent'
  * agent … FIRST ACTION: hive_start)。TUI 自建的 thread(降级交接、/new)被
  * set-thread 收养后没有这段指引 → codex 不知道自己的 hive 身份,推送处理
  * 全靠事件里的 re-bind 提示。bridge 重启后检测 rollout 缺 marker 就补一条,
- * 消息本身含 marker,天然幂等(下次 grep 命中不再发)。
+ * 消息本身含 marker；真正发送前在同会话注入队列里二次检查，避免 daemon
+ * 原生 intro 在 8 秒等待期内刚落盘、kitty 仍按旧快照重复补发。
  */
 function maybeInjectHiveBootstrap(session: sessionRepo.SessionRow, agentId: string, threadId: string): void {
   if (!agentId || !threadId) return
@@ -1895,8 +1938,12 @@ function maybeInjectHiveBootstrap(session: sessionRepo.SessionRow, agentId: stri
     void (async () => {
       const now = sessionRepo.listSessions().find((s) => s.id === session.id)
       if (!now || now.tool !== 'codex' || now.externalSessionId !== threadId) return
-      const ok = await injectCodexMessage(session.id, session.tmuxName, msg)
-      log('session', `hive bootstrap ${ok ? 'injected' : 'FAILED (未落盘)'}: ${session.title} (thread ${threadId.slice(0, 8)})`)
+      const result = await injectCodexMessage(session.id, session.tmuxName, msg, HIVE_BOOTSTRAP_MARKER)
+      if (result === 'already-present') {
+        log('session', `hive bootstrap skipped (already present): ${session.title} (thread ${threadId.slice(0, 8)})`)
+      } else {
+        log('session', `hive bootstrap ${result === 'injected' ? 'injected' : 'FAILED (未落盘)'}: ${session.title} (thread ${threadId.slice(0, 8)})`)
+      }
     })()
   }, 8000)
 }
