@@ -5,6 +5,7 @@ import { tmpdir, homedir } from 'os'
 import { v4 as uuid } from 'uuid'
 import { getDB } from '../db/database'
 import { injectHiveIdentity } from './cli-wrapper'
+import { formatPaneLabel } from './pane-label'
 
 /** Resolve tmux binary — GUI apps don't inherit homebrew PATH */
 function findTmux(): string {
@@ -476,12 +477,13 @@ export function applyKittyStatusBar(tmuxName: string): void {
       `set-option -t ${sq} pane-border-style "fg=#2a2a45"`,
       `set-option -t ${sq} pane-border-lines single`,
       `set-option -t ${sq} pane-border-status top`,
-      `set-option -t ${sq} pane-border-format "#[fg=#{?pane_active,#645efb,#46465c},bg=#1e1e36] #{pane_index} #{b:pane_current_path} "`,
+      `set-option -t ${sq} pane-border-format "#[fg=#{?pane_active,#645efb,#46465c},bg=#1e1e36] #{pane_index} #{?@kitty_label,#{@kitty_label},#{b:pane_current_path}} "`,
     ]
 
     for (const cmd of opts) {
       try { execSync(`${TMUX} ${cmd}`, { stdio: 'ignore' }) } catch { /* ignore */ }
     }
+    syncPaneLabels(tmuxName)
 
     const binds = [
       'bind-key n switch-client -n',
@@ -502,6 +504,46 @@ export function applyKittyStatusBar(tmuxName: string): void {
     // Key bindings are global (not per-session), only bind once via refreshAllStatusBars
     // to avoid race conditions between multiple applyKittyStatusBar calls
   } catch { /* ignore */ }
+}
+
+/**
+ * Copy Kitty's per-session title into a pane-local tmux option. The pane
+ * border can then show a stable custom name without relying on pane_title,
+ * which Claude/Codex/OpenCode may overwrite via terminal title escapes.
+ */
+function syncPaneLabels(tmuxName: string): void {
+  try {
+    const rows = getDB().prepare(`
+      SELECT title, cwd, COALESCE(pane_id, '') AS paneId
+      FROM sessions
+      WHERE tmux_name = ? AND COALESCE(hidden, 0) = 0
+    `).all(tmuxName) as Array<{ title: string; cwd: string; paneId: string }>
+
+    const output = execSync(
+      `${TMUX} list-panes -t ${shellQuote(tmuxName)} -F '#{pane_id}\t#{pane_current_path}'`,
+      { encoding: 'utf-8', stdio: ['ignore', 'pipe', 'ignore'] },
+    ).trim()
+    if (!output) return
+
+    for (const line of output.split('\n')) {
+      const separator = line.indexOf('\t')
+      const paneId = separator >= 0 ? line.slice(0, separator) : line
+      const paneCwd = separator >= 0 ? line.slice(separator + 1) : ''
+      let row = rows.find((candidate) => candidate.paneId === paneId)
+      if (!row) {
+        const cwdMatches = rows.filter((candidate) => candidate.cwd === paneCwd)
+        if (cwdMatches.length === 1) row = cwdMatches[0]
+      }
+      if (!row && rows.length === 1) row = rows[0]
+
+      if (row) {
+        const label = formatPaneLabel(row.title, row.cwd)
+        execSync(`${TMUX} set-option -p -t ${shellQuote(paneId)} @kitty_label ${shellQuote(label)}`, { stdio: 'ignore' })
+      } else {
+        try { execSync(`${TMUX} set-option -pu -t ${shellQuote(paneId)} @kitty_label`, { stdio: 'ignore' }) } catch { /* unset */ }
+      }
+    }
+  } catch { /* optional decoration must never block a session */ }
 }
 
 /**
@@ -622,6 +664,7 @@ export function refreshAllStatusBars(): void {
     try {
       execSync(`${TMUX} set-option -t ${shellQuote(s.name)} status 1`, { stdio: 'ignore' })
       execSync(`${TMUX} set-option -t ${shellQuote(s.name)} status-format[0] "#[bg=#1e1e36]#(${groupBarScript} #{session_name})#[fill=#1e1e36,align=right]#[fg=#aaa8c3] %H:%M "`, { stdio: 'ignore' })
+      syncPaneLabels(s.name)
     } catch { /* ignore */ }
   }
   try {

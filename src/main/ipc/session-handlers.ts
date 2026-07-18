@@ -506,6 +506,7 @@ export function registerSessionHandlers(): void {
   // Rename a session
   ipcMain.handle('session:rename', (_event, id: string, title: string) => {
     sessionRepo.updateSessionTitle(id, title)
+    tmux.refreshAllStatusBars()
     // Sync display_name to hive so agents keep the same id but show the new title
     if (title && title.trim()) {
       hiveCli(['agent', 'register', '--key', id, '--display-name', title])
