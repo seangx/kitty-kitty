@@ -9,6 +9,7 @@ import {
 test('places each pane label on its bottom-right border', () => {
   assert.equal(PANE_BORDER_STATUS, 'bottom')
   assert.match(PANE_BORDER_FORMAT, /align=right/)
+  assert.doesNotMatch(PANE_BORDER_FORMAT, /pane_index/)
 })
 
 test('shows a Kitty custom session name with its directory', () => {
