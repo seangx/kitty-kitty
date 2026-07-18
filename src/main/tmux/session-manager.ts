@@ -5,7 +5,7 @@ import { tmpdir, homedir } from 'os'
 import { v4 as uuid } from 'uuid'
 import { getDB } from '../db/database'
 import { injectHiveIdentity } from './cli-wrapper'
-import { formatPaneLabel } from './pane-label'
+import { formatPaneLabel, PANE_BORDER_FORMAT, PANE_BORDER_STATUS } from './pane-label'
 
 /** Resolve tmux binary — GUI apps don't inherit homebrew PATH */
 function findTmux(): string {
@@ -476,8 +476,8 @@ export function applyKittyStatusBar(tmuxName: string): void {
       `set-option -t ${sq} pane-active-border-style "fg=#645efb"`,
       `set-option -t ${sq} pane-border-style "fg=#2a2a45"`,
       `set-option -t ${sq} pane-border-lines single`,
-      `set-option -t ${sq} pane-border-status top`,
-      `set-option -t ${sq} pane-border-format "#[fg=#{?pane_active,#645efb,#46465c},bg=#1e1e36] #{pane_index} #{?@kitty_label,#{@kitty_label},#{b:pane_current_path}} "`,
+      `set-option -t ${sq} pane-border-status ${PANE_BORDER_STATUS}`,
+      `set-option -t ${sq} pane-border-format "${PANE_BORDER_FORMAT}"`,
     ]
 
     for (const cmd of opts) {

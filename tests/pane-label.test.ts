@@ -1,6 +1,15 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
-import { formatPaneLabel } from '../src/main/tmux/pane-label.ts'
+import {
+  formatPaneLabel,
+  PANE_BORDER_FORMAT,
+  PANE_BORDER_STATUS,
+} from '../src/main/tmux/pane-label.ts'
+
+test('places each pane label on its bottom-right border', () => {
+  assert.equal(PANE_BORDER_STATUS, 'bottom')
+  assert.match(PANE_BORDER_FORMAT, /align=right/)
+})
 
 test('shows a Kitty custom session name with its directory', () => {
   assert.equal(formatPaneLabel('frontend agent', '/repo/monkeys'), 'frontend agent (monkeys)')
