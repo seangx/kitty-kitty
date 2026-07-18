@@ -20,7 +20,8 @@ import './SessionDeck.css'
 interface Props {
   sessions: SessionInfo[]
   snapEdge: 'left' | 'right' | 'top' | null
-  onExpandedChange: (expanded: boolean) => void
+  closing?: boolean
+  onClose: () => void
   onCreate: () => void
   onAttach: (id: string) => void
   onKill: (id: string) => void
@@ -70,7 +71,8 @@ function GroupIcon() {
 export default function SessionDeck({
   sessions,
   snapEdge,
-  onExpandedChange,
+  closing = false,
+  onClose,
   onCreate,
   onAttach,
   onKill,
@@ -106,11 +108,6 @@ export default function SessionDeck({
   useEffect(() => { void loadGroups() }, [sessions, loadGroups])
 
   useEffect(() => {
-    setOpenPath([])
-    onExpandedChange(false)
-  }, [snapEdge, onExpandedChange])
-
-  useEffect(() => {
     const closeMenus = () => {
       setSessionMenu(null)
       setGroupMenu(null)
@@ -141,8 +138,7 @@ export default function SessionDeck({
 
   const setExpandedPath = useCallback((next: string[]) => {
     setOpenPath(next)
-    onExpandedChange(next.length > 0)
-  }, [onExpandedChange])
+  }, [])
 
   const toggleGroup = useCallback((
     groupId: string,
@@ -326,7 +322,7 @@ export default function SessionDeck({
 
   return (
     <div
-      className={`session-deck is-${edge}${snapEdge ? ' is-snapped' : ' is-floating'}`}
+      className={`session-deck is-${edge}${snapEdge ? ' is-snapped' : ' is-floating'}${closing ? ' is-closing' : ''}`}
       style={{ '--deck-accent': accent } as React.CSSProperties}
       data-drop="root"
       onClick={(event) => event.stopPropagation()}
@@ -339,9 +335,9 @@ export default function SessionDeck({
       <div className="session-deck__rail">
         <button
           className="session-deck__collapse"
-          onClick={() => setExpandedPath([])}
-          aria-label="收起所有分组"
-          title="收起所有分组"
+          onClick={onClose}
+          aria-label="收起边栏"
+          title="收起成猫"
         >{edge === 'left' ? '‹' : '›'}</button>
         <div className="session-deck__root-scroll" data-drop="root">
           {rootItems.map((item) => item.kind === 'session'

@@ -5,7 +5,7 @@ import { homedir } from 'os'
 import { is } from '@electron-toolkit/utils'
 import { PET_WINDOW } from '@shared/constants'
 import { log } from '../logger'
-import { getSideDeckBounds } from './deck-window-layout'
+import { ANIMATE_SIDE_DECK_BOUNDS, getSideDeckBounds } from './deck-window-layout'
 
 let petWindow: BrowserWindow | null = null
 let popupWindow: BrowserWindow | null = null
@@ -90,7 +90,7 @@ function computeSnapEdge(win: BrowserWindow): SnapEdge | null {
   return cands[0].edge
 }
 
-/** 把窗口吸附到指定边。左右边显示窄 Deck；顶部仍保留原来的探头隐藏。 */
+/** 把窗口吸附到指定边。左右边收成猫；顶部仍保留原来的探头隐藏。 */
 function snapTo(win: BrowserWindow, edge: SnapEdge): void {
   const b = win.getBounds()
   const wa = displayForWindow(b).workArea
@@ -99,7 +99,9 @@ function snapTo(win: BrowserWindow, edge: SnapEdge): void {
   let x = b.x
   let y = b.y
   if (edge === 'left' || edge === 'right') {
-    win.setBounds(getSideDeckBounds(edge, false, wa, y, b.height), true)
+    // 透明无边框窗口的原生 bounds 动画在 macOS 上会留下合成残影。
+    // 窗口尺寸立即切换，视觉过渡只交给 renderer 内部的 CSS 动画。
+    win.setBounds(getSideDeckBounds(edge, false, wa, y, b.height), ANIMATE_SIDE_DECK_BOUNDS)
   } else {
     y = wa.y - (b.height - SNAP_PEEK)
     win.setPosition(Math.round(x), Math.round(y))
@@ -120,7 +122,10 @@ function setSnapDeckExpanded(win: BrowserWindow, expanded: boolean): void {
   })
   const wa = display.workArea
   snapDeckExpanded = expanded
-  win.setBounds(getSideDeckBounds(snapState.edge, expanded, wa, b.y, b.height), true)
+  win.setBounds(
+    getSideDeckBounds(snapState.edge, expanded, wa, b.y, b.height),
+    ANIMATE_SIDE_DECK_BOUNDS,
+  )
   win.webContents.send('pet:deck-expanded', { expanded })
 }
 
@@ -143,7 +148,7 @@ function unsnap(win: BrowserWindow): void {
   win.setBounds({
     x: Math.round(x), y: Math.round(y),
     width: PET_WINDOW.WIDTH, height: PET_WINDOW.HEIGHT,
-  }, true)
+  }, ANIMATE_SIDE_DECK_BOUNDS)
   win.webContents.send('pet:unsnapped')
   win.webContents.send('pet:deck-expanded', { expanded: false })
 }

@@ -26,11 +26,14 @@ export default function PetCanvas() {
   const [speech, setSpeech] = useState<string | null>(null)
   const [envEditor, setEnvEditor] = useState<string | null>(null)
   const [snapEdge, setSnapEdge] = useState<'left' | 'right' | 'top' | null>(null)
+  const [deckOpen, setDeckOpen] = useState(false)
+  const [deckClosing, setDeckClosing] = useState(false)
   const [groupPrompt, setGroupPrompt] = useState(false)
   const [driftPrompt, setDriftPrompt] = useState<{ sessionId: string; drift: import('../lib/ipc').SessionDrift; kind: 'attach' | 'restart' } | null>(null)
   const isDragging = useRef(false)
   const clickTimer = useRef<ReturnType<typeof setTimeout> | null>(null)
   const dragOffset = useRef({ x: 0, y: 0 })
+  const deckCloseTimer = useRef<ReturnType<typeof setTimeout> | null>(null)
 
   const { sessions, loadSessions, createSession, attachSession, killSession, renameSession, needsInput, loadNeedsInput, markNeedsInput, clearNeedsInput } = useSessionStore()
   const { bubble, lastTool, setLastTool } = useConfigStore()
@@ -80,9 +83,25 @@ export default function PetCanvas() {
     const unsubProgress = window.api.on('transfer:progress', (msg: any) => {
       if (msg?.sessionId && msg?.stage) progressStageRef.current = { id: msg.sessionId, stage: msg.stage }
     })
-    const unsubSnap = window.api.on('pet:snapped', (msg: any) => setSnapEdge(msg?.edge ?? null))
-    const unsubUnsnap = window.api.on('pet:unsnapped', () => setSnapEdge(null))
-    return () => { scheduler.stop(); machine.destroy(); clearInterval(poll); unsub(); unsubProgress(); unsubSnap(); unsubUnsnap() }
+    const resetDeck = () => {
+      if (deckCloseTimer.current) clearTimeout(deckCloseTimer.current)
+      deckCloseTimer.current = null
+      setDeckClosing(false)
+      setDeckOpen(false)
+    }
+    const unsubSnap = window.api.on('pet:snapped', (msg: any) => {
+      resetDeck()
+      setSnapEdge(msg?.edge ?? null)
+    })
+    const unsubUnsnap = window.api.on('pet:unsnapped', () => {
+      resetDeck()
+      setSnapEdge(null)
+    })
+    return () => {
+      scheduler.stop(); machine.destroy(); clearInterval(poll)
+      if (deckCloseTimer.current) clearTimeout(deckCloseTimer.current)
+      unsub(); unsubProgress(); unsubSnap(); unsubUnsnap()
+    }
   }, [scheduler, machine, loadSessions, closeAll])
 
   // Wakeup ("xxx 在等你") IPC — bound ONCE, never re-binds on session updates,
@@ -418,11 +437,32 @@ export default function PetCanvas() {
     }
   }, [anyPopup])
 
-  const handleDeckExpandedChange = useCallback((expanded: boolean) => {
-    if (snapEdge === 'left' || snapEdge === 'right') {
-      window.api.invoke('pet:set-deck-expanded', expanded)
+  const openDeck = useCallback(async (event: React.MouseEvent) => {
+    event.stopPropagation()
+    if (isDragging.current || deckOpen || deckClosing) return
+    if (snapEdge === 'top') {
+      await window.api.invoke('pet:unsnap')
+      return
     }
-  }, [snapEdge])
+    if (snapEdge === 'left' || snapEdge === 'right') {
+      await window.api.invoke('pet:set-deck-expanded', true)
+    }
+    setDeckOpen(true)
+  }, [deckClosing, deckOpen, snapEdge])
+
+  const closeDeck = useCallback(() => {
+    if (!deckOpen || deckClosing) return
+    setDeckClosing(true)
+    deckCloseTimer.current = setTimeout(async () => {
+      if (snapEdge === 'left' || snapEdge === 'right') {
+        // 先让主进程瞬时收回窗口，再挂载猫，避免猫在宽窗口里横跳一帧。
+        await window.api.invoke('pet:set-deck-expanded', false)
+      }
+      setDeckOpen(false)
+      setDeckClosing(false)
+      deckCloseTimer.current = null
+    }, 150)
+  }, [deckClosing, deckOpen, snapEdge])
 
 
 
@@ -572,10 +612,11 @@ export default function PetCanvas() {
       onMouseDown={handleMouseDown} onClick={handleClick} onContextMenu={handleContextMenu}
       onMouseMove={handleMouseMove} onMouseLeave={handleMouseLeave}
     >
-      <SessionDeck
+      {deckOpen && <SessionDeck
         sessions={sessions}
         snapEdge={snapEdge}
-        onExpandedChange={handleDeckExpandedChange}
+        closing={deckClosing}
+        onClose={closeDeck}
         onCreate={() => setShowInput(true)}
         onAttach={handleAttach}
         onKill={killSession}
@@ -606,19 +647,19 @@ export default function PetCanvas() {
         }}
         onEditEnv={(id) => setEnvEditor(id)}
         onOpenSkills={(id) => window.api.invoke('popup-open', 'skills', id)}
-      />
-      <div
+      />}
+      {!deckOpen && <div
         style={{
           position: 'relative', flexShrink: 0, width: 128, height: 128,
-          pointerEvents: 'auto', cursor: snapEdge ? 'pointer' : undefined,
-          display: snapEdge === 'left' || snapEdge === 'right' ? 'none' : 'block',
+          pointerEvents: 'auto', cursor: 'pointer',
+          display: 'block',
         }}
-        onClick={(e) => { if (snapEdge === 'top') { e.stopPropagation(); window.api.invoke('pet:unsnap') } }}
-        title={snapEdge === 'top' ? '点我回来喵~' : undefined}
+        onClick={openDeck}
+        title={snapEdge === 'top' ? '点我回来喵~' : '打开会话边栏'}
       >
         {speech && <SpeechBubble text={speech} onDone={() => setSpeech(null)} />}
         <PetSprite state={animation} skin={bubble.skin} size={128} />
-      </div>
+      </div>}
       {contextMenu && (
         <ContextMenu x={contextMenu.x} y={contextMenu.y} onClose={() => setContextMenu(null)} items={menuItems} />
       )}

@@ -17,27 +17,39 @@
   position: absolute;
   top: 8px;
   bottom: 8px;
-  width: 72px;
+  width: 76px;
   display: flex;
   flex-direction: column;
   align-items: center;
   gap: 8px;
   box-sizing: border-box;
-  padding: 8px 6px;
+  padding: 10px 8px;
   pointer-events: auto;
   overflow: visible;
-  border: 1px solid var(--deck-border);
-  border-radius: 18px;
-  background: linear-gradient(180deg, rgba(38, 41, 57, 0.9), rgba(18, 20, 30, 0.92));
-  box-shadow: 0 16px 38px rgba(0, 0, 0, 0.38), inset 0 1px rgba(255, 255, 255, 0.06);
-  backdrop-filter: blur(28px) saturate(1.15);
-  -webkit-backdrop-filter: blur(28px) saturate(1.15);
+  border: 1px solid rgba(225, 230, 245, 0.16);
+  border-radius: 22px;
+  background: linear-gradient(180deg, rgba(44, 48, 62, 0.94), rgba(21, 23, 31, 0.96));
+  box-shadow: 0 18px 42px rgba(0, 0, 0, 0.42),
+    inset 0 1px rgba(255, 255, 255, 0.08),
+    inset 0 -1px rgba(0, 0, 0, 0.24);
+  backdrop-filter: blur(24px) saturate(1.08);
+  -webkit-backdrop-filter: blur(24px) saturate(1.08);
   animation: deck-rail-enter 240ms cubic-bezier(.2, .8, .2, 1) both;
 }
 
 .session-deck.is-left .session-deck__rail { left: 5px; }
 .session-deck.is-right .session-deck__rail { right: 5px; }
-.session-deck.is-floating .session-deck__rail { bottom: 136px; }
+.session-deck.is-floating .session-deck__rail { bottom: 8px; }
+.session-deck.is-closing .session-deck__rail {
+  pointer-events: none;
+  animation: deck-rail-exit 150ms cubic-bezier(.4, 0, 1, 1) both;
+}
+.session-deck.is-closing .session-deck__branch,
+.session-deck.is-closing .session-deck__menu,
+.session-deck.is-closing .session-deck__drag-preview {
+  pointer-events: none;
+  animation: deck-surface-exit 110ms ease-in both;
+}
 
 .session-deck__root-scroll {
   width: 100%;
@@ -88,7 +100,7 @@
 }
 
 .session-deck__add:hover {
-  transform: translateY(-2px) scale(1.04);
+  transform: translateY(-2px);
   background: color-mix(in srgb, var(--deck-accent) 22%, rgba(255, 255, 255, 0.04));
   box-shadow: 0 7px 18px color-mix(in srgb, var(--deck-accent) 20%, transparent);
 }
@@ -142,7 +154,7 @@
 }
 
 .session-deck__item:hover {
-  transform: translateY(-2px) scale(1.025);
+  transform: translateY(-2px);
   border-color: rgba(231, 235, 250, 0.26);
   background: linear-gradient(155deg, rgba(68, 72, 94, 0.86), rgba(31, 34, 48, 0.92));
   box-shadow: inset 0 1px rgba(255, 255, 255, 0.08), 0 10px 20px rgba(0, 0, 0, 0.28);
@@ -256,12 +268,14 @@
 }
 
 .session-deck__branch.is-horizontal.from-left {
+  --deck-branch-enter-x: -8px;
   left: calc(100% + 14px);
   transform: translateY(-50%);
   transform-origin: left center;
 }
 
 .session-deck__branch.is-horizontal.from-right {
+  --deck-branch-enter-x: 8px;
   right: calc(100% + 14px);
   transform: translateY(-50%);
   transform-origin: right center;
@@ -282,13 +296,17 @@
 }
 
 .session-deck__branch.is-vertical {
+  --deck-branch-enter-y: -8px;
   left: 50%;
   transform: translateX(-50%);
   transform-origin: center bottom;
   animation: deck-branch-vertical 210ms cubic-bezier(.16, .9, .25, 1) both;
 }
 
-.session-deck__branch.is-vertical.opens-up { bottom: calc(100% + 14px); }
+.session-deck__branch.is-vertical.opens-up {
+  --deck-branch-enter-y: 8px;
+  bottom: calc(100% + 14px);
+}
 .session-deck__branch.is-vertical.opens-down {
   top: calc(100% + 14px);
   transform-origin: center top;
@@ -392,21 +410,31 @@
 }
 
 @keyframes deck-rail-enter {
-  from { opacity: 0; transform: translateX(var(--deck-enter-x, 0)) scale(.98); }
-  to { opacity: 1; transform: translateX(0) scale(1); }
+  from { opacity: 0; translate: var(--deck-enter-x, 0) 0; }
+  to { opacity: 1; translate: 0 0; }
+}
+
+@keyframes deck-rail-exit {
+  from { opacity: 1; translate: 0 0; }
+  to { opacity: 0; translate: var(--deck-enter-x, 0) 0; }
+}
+
+@keyframes deck-surface-exit {
+  from { opacity: 1; }
+  to { opacity: 0; }
 }
 
 .session-deck.is-left { --deck-enter-x: -10px; }
 .session-deck.is-right { --deck-enter-x: 10px; }
 
 @keyframes deck-branch-horizontal {
-  from { opacity: 0; scale: .92 .96; }
-  to { opacity: 1; scale: 1; }
+  from { opacity: 0; translate: var(--deck-branch-enter-x, 0) 0; }
+  to { opacity: 1; translate: 0 0; }
 }
 
 @keyframes deck-branch-vertical {
-  from { opacity: 0; scale: .96 .9; }
-  to { opacity: 1; scale: 1; }
+  from { opacity: 0; translate: 0 var(--deck-branch-enter-y, 0); }
+  to { opacity: 1; translate: 0 0; }
 }
 
 @keyframes deck-menu-enter {
