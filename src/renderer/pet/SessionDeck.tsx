@@ -7,6 +7,7 @@ import {
   chooseVerticalDirection,
   countDeckDescendants,
   nextDeckAxis,
+  openDeckPath,
   toggleDeckPath,
   type DeckAxis,
   type DeckEdge,
@@ -19,7 +20,7 @@ import './SessionDeck.css'
 
 interface Props {
   sessions: SessionInfo[]
-  snapEdge: 'left' | 'right' | 'top' | null
+  edge: DeckEdge
   closing?: boolean
   onClose: () => void
   onCreate: () => void
@@ -70,7 +71,7 @@ function GroupIcon() {
 
 export default function SessionDeck({
   sessions,
-  snapEdge,
+  edge,
   closing = false,
   onClose,
   onCreate,
@@ -95,7 +96,6 @@ export default function SessionDeck({
   const [showMoveMenu, setShowMoveMenu] = useState(false)
   const [showHidden, setShowHidden] = useState(false)
 
-  const edge: DeckEdge = snapEdge === 'left' ? 'left' : 'right'
   const accent = /^#[0-9a-f]{6}$/i.test(bubble.deckAccentColor || '')
     ? bubble.deckAccentColor
     : '#6fd7c8'
@@ -161,6 +161,19 @@ export default function SessionDeck({
   const refresh = useCallback(async () => {
     await Promise.all([loadGroups(), loadSessions()])
   }, [loadGroups, loadSessions])
+
+  const createChildGroup = useCallback(async (groupId: string, depth?: number) => {
+    const name = window.prompt('子分组名称')?.trim()
+    if (!name) return
+    try {
+      await window.api.invoke('group:create', name, undefined, groupId)
+      await refresh()
+      if (depth !== undefined) setExpandedPath(openDeckPath(openPath, depth, groupId))
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error)
+      window.alert(`创建子分组失败：${message}`)
+    }
+  }, [openPath, refresh, setExpandedPath])
 
   const executeDrop = useCallback(async (state: DragState, target: string) => {
     try {
@@ -284,6 +297,16 @@ export default function SessionDeck({
         >
           <GroupIcon />
           <span className="session-deck__label">{node.group.name}</span>
+          <button
+            className="session-deck__group-add"
+            onMouseDown={(event) => event.stopPropagation()}
+            onClick={(event) => {
+              event.stopPropagation()
+              void createChildGroup(groupId, depth)
+            }}
+            aria-label={`在 ${node.group.name} 中新建子分组`}
+            title="新建子分组"
+          >＋</button>
           <span className="session-deck__count">{countDeckDescendants(node)}</span>
         </div>
         {isOpen && (
@@ -322,14 +345,12 @@ export default function SessionDeck({
 
   return (
     <div
-      className={`session-deck is-${edge}${snapEdge ? ' is-snapped' : ' is-floating'}${closing ? ' is-closing' : ''}`}
+      className={`session-deck is-${edge} is-floating${closing ? ' is-closing' : ''}`}
       style={{ '--deck-accent': accent } as React.CSSProperties}
       data-drop="root"
       onClick={(event) => event.stopPropagation()}
       onMouseDown={(event) => {
-        if ((event.target as HTMLElement).closest('button, .session-deck__item, .session-deck__branch')) {
-          event.stopPropagation()
-        }
+        event.stopPropagation()
       }}
     >
       <div className="session-deck__rail">
@@ -394,10 +415,8 @@ export default function SessionDeck({
         <DeckMenu x={groupMenu.x} y={groupMenu.y} onClose={() => setGroupMenu(null)}>
           <button onClick={async () => { await window.api.invoke('session:create-in-group', selectedGroup.id); setGroupMenu(null); await refresh() }}>在此组创建会话</button>
           <button onClick={async () => {
-            const name = window.prompt('子分组名称')?.trim()
-            if (name) await window.api.invoke('group:create', name, undefined, selectedGroup.id)
             setGroupMenu(null)
-            await refresh()
+            await createChildGroup(selectedGroup.id)
           }}>新建子分组</button>
           <button onClick={async () => {
             const name = window.prompt('分组名称', selectedGroup.name)?.trim()

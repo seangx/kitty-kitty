@@ -76,3 +76,7 @@ export function toggleDeckPath(path: string[], depth: number, groupId: string): 
   if (path[depth] === groupId) return prefix
   return [...prefix, groupId]
 }
+
+export function openDeckPath(path: string[], depth: number, groupId: string): string[] {
+  return [...path.slice(0, depth), groupId]
+}

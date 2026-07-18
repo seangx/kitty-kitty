@@ -236,6 +236,35 @@
   animation: deck-badge-pop 220ms cubic-bezier(.2, .9, .3, 1.25) both;
 }
 
+.session-deck__group-add {
+  position: absolute;
+  top: -6px;
+  left: -5px;
+  z-index: 2;
+  width: 19px;
+  height: 19px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0;
+  border: 2px solid rgba(20, 22, 32, .94);
+  border-radius: 50%;
+  color: rgba(244, 246, 255, .84);
+  background: rgba(76, 82, 99, .96);
+  box-shadow: 0 3px 9px rgba(0, 0, 0, .26);
+  font: 500 14px/1 inherit;
+  cursor: pointer;
+  opacity: .78;
+  transition: opacity 130ms ease, background 130ms ease, translate 130ms ease;
+}
+
+.session-deck__group-add:hover {
+  opacity: 1;
+  color: #fff;
+  background: var(--deck-accent);
+  translate: 0 -1px;
+}
+
 .session-deck__attention {
   background: #e95663;
   animation: deck-attention 1.6s ease-in-out infinite;

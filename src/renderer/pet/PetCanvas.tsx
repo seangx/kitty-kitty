@@ -25,7 +25,7 @@ export default function PetCanvas() {
   const [contextMenu, setContextMenu] = useState<{ x: number; y: number } | null>(null)
   const [speech, setSpeech] = useState<string | null>(null)
   const [envEditor, setEnvEditor] = useState<string | null>(null)
-  const [snapEdge, setSnapEdge] = useState<'left' | 'right' | 'top' | null>(null)
+  const [deckEdge, setDeckEdge] = useState<'left' | 'right'>('right')
   const [deckOpen, setDeckOpen] = useState(false)
   const [deckClosing, setDeckClosing] = useState(false)
   const [groupPrompt, setGroupPrompt] = useState(false)
@@ -79,7 +79,6 @@ export default function PetCanvas() {
     loadSessions()
     const poll = setInterval(() => loadSessions(), 10000)
     const unsub = window.api.on('window-blur', closeAll)
-    // 贴边隐藏(探头吸附):主进程 drag-end 判定后 push 吸附状态
     const unsubProgress = window.api.on('transfer:progress', (msg: any) => {
       if (msg?.sessionId && msg?.stage) progressStageRef.current = { id: msg.sessionId, stage: msg.stage }
     })
@@ -89,18 +88,11 @@ export default function PetCanvas() {
       setDeckClosing(false)
       setDeckOpen(false)
     }
-    const unsubSnap = window.api.on('pet:snapped', (msg: any) => {
-      resetDeck()
-      setSnapEdge(msg?.edge ?? null)
-    })
-    const unsubUnsnap = window.api.on('pet:unsnapped', () => {
-      resetDeck()
-      setSnapEdge(null)
-    })
+    const unsubDeckClosed = window.api.on('pet:deck-closed', resetDeck)
     return () => {
       scheduler.stop(); machine.destroy(); clearInterval(poll)
       if (deckCloseTimer.current) clearTimeout(deckCloseTimer.current)
-      unsub(); unsubProgress(); unsubSnap(); unsubUnsnap()
+      unsub(); unsubProgress(); unsubDeckClosed()
     }
   }, [scheduler, machine, loadSessions, closeAll])
 
@@ -440,29 +432,22 @@ export default function PetCanvas() {
   const openDeck = useCallback(async (event: React.MouseEvent) => {
     event.stopPropagation()
     if (isDragging.current || deckOpen || deckClosing) return
-    if (snapEdge === 'top') {
-      await window.api.invoke('pet:unsnap')
-      return
-    }
-    if (snapEdge === 'left' || snapEdge === 'right') {
-      await window.api.invoke('pet:set-deck-expanded', true)
-    }
+    const result = await window.api.invoke('pet:set-deck-open', true) as { edge?: string }
+    setDeckEdge(result?.edge === 'left' ? 'left' : 'right')
     setDeckOpen(true)
-  }, [deckClosing, deckOpen, snapEdge])
+  }, [deckClosing, deckOpen])
 
   const closeDeck = useCallback(() => {
     if (!deckOpen || deckClosing) return
     setDeckClosing(true)
     deckCloseTimer.current = setTimeout(async () => {
-      if (snapEdge === 'left' || snapEdge === 'right') {
-        // 先让主进程瞬时收回窗口，再挂载猫，避免猫在宽窗口里横跳一帧。
-        await window.api.invoke('pet:set-deck-expanded', false)
-      }
+      // 先让主进程瞬时收回窗口，再挂载猫，避免猫在宽窗口里横跳一帧。
+      await window.api.invoke('pet:set-deck-open', false)
       setDeckOpen(false)
       setDeckClosing(false)
       deckCloseTimer.current = null
     }, 150)
-  }, [deckClosing, deckOpen, snapEdge])
+  }, [deckClosing, deckOpen])
 
 
 
@@ -608,13 +593,13 @@ export default function PetCanvas() {
 
     {/* Pet area — cat, tagcloud, context menu */}
     <div
-      style={{ width: '100%', height: '100%', display: 'flex', flexDirection: 'column', alignItems: snapEdge === 'left' ? 'flex-end' : snapEdge === 'right' ? 'flex-start' : 'center', justifyContent: 'flex-end', userSelect: 'none', position: 'relative' }}
+      style={{ width: '100%', height: '100%', display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'flex-end', userSelect: 'none', position: 'relative' }}
       onMouseDown={handleMouseDown} onClick={handleClick} onContextMenu={handleContextMenu}
       onMouseMove={handleMouseMove} onMouseLeave={handleMouseLeave}
     >
       {deckOpen && <SessionDeck
         sessions={sessions}
-        snapEdge={snapEdge}
+        edge={deckEdge}
         closing={deckClosing}
         onClose={closeDeck}
         onCreate={() => setShowInput(true)}
@@ -655,7 +640,7 @@ export default function PetCanvas() {
           display: 'block',
         }}
         onClick={openDeck}
-        title={snapEdge === 'top' ? '点我回来喵~' : '打开会话边栏'}
+        title="打开会话边栏"
       >
         {speech && <SpeechBubble text={speech} onDone={() => setSpeech(null)} />}
         <PetSprite state={animation} skin={bubble.skin} size={128} />

@@ -5,6 +5,7 @@ import {
   chooseVerticalDirection,
   countDeckDescendants,
   nextDeckAxis,
+  openDeckPath,
   toggleDeckPath,
 } from '../src/renderer/pet/deck-tree.ts'
 import type { GroupInfo, SessionInfo } from '../src/shared/types/session.ts'
@@ -58,4 +59,8 @@ test('Deck axes alternate and vertical branches choose the side with room', () =
 test('toggleDeckPath keeps one active group per hierarchy depth', () => {
   assert.deepEqual(toggleDeckPath(['monkey', 'workers'], 1, 'qa'), ['monkey', 'qa'])
   assert.deepEqual(toggleDeckPath(['monkey', 'workers'], 1, 'workers'), ['monkey'])
+})
+
+test('openDeckPath opens a parent after creating its child group', () => {
+  assert.deepEqual(openDeckPath(['monkey', 'old-child'], 1, 'workers'), ['monkey', 'workers'])
 })

@@ -5,11 +5,17 @@ import { homedir } from 'os'
 import { is } from '@electron-toolkit/utils'
 import { PET_WINDOW } from '@shared/constants'
 import { log } from '../logger'
-import { ANIMATE_SIDE_DECK_BOUNDS, getSideDeckBounds } from './deck-window-layout'
+import {
+  ANIMATE_FLOATING_DECK_BOUNDS,
+  getFloatingDeckLayout,
+  type DeckWindowEdge,
+} from './deck-window-layout'
 
 let petWindow: BrowserWindow | null = null
 let popupWindow: BrowserWindow | null = null
 let mouseHandlerRegistered = false
+let deckRestoreBounds: Electron.Rectangle | null = null
+let deckEdge: DeckWindowEdge = 'right'
 
 const POS_FILE = join(homedir(), '.kitty-kitty', 'window-pos.json')
 
@@ -36,18 +42,9 @@ function savePosition(x: number, y: number): void {
   } catch { /* ignore */ }
 }
 
-// ─── 贴边隐藏(探头吸附) ───────────────────
-type SnapEdge = 'left' | 'right' | 'top'
-const SNAP_PEEK = 64      // 顶部吸附后屏内留出的一截(px)
-const SNAP_THRESHOLD = 24 // 窗口边缘距屏幕 workArea < 此值(或越界)即吸附
-let snapState: { edge: SnapEdge; restore: { x: number; y: number } } | null = null
-let snapDeckExpanded = false
-
 /**
  * 窗口中心点所在的显示器。
- * 不用 getDisplayMatching(重叠面积法):拖动越过屏间边界时,窗口探进相邻屏的
- * 面积一超过一半,matching 就突然切到相邻屏,吸附会用错屏的 workArea 计算,
- * 把窗口推出整个虚拟桌面(多屏丢猫 bug 的根因)。中心点法稳定且符合直觉。
+ * 不用 getDisplayMatching(重叠面积法)，避免窗口跨屏时因重叠面积突变而选错屏。
  */
 function displayForWindow(b: Electron.Rectangle): Electron.Display {
   return screen.getDisplayNearestPoint({
@@ -56,133 +53,43 @@ function displayForWindow(b: Electron.Rectangle): Electron.Display {
   })
 }
 
-/**
- * 该显示器 edge 方向外侧、窗口正对的位置上,是否还有相邻显示器。
- * 内边(屏与屏之间的过渡)不允许吸附——把窗口推出这种边不是"藏进边缘",
- * 而是塞进相邻屏。只有虚拟桌面的外边缘才能吸附隐藏。
- */
-function hasAdjacentDisplay(disp: Electron.Display, edge: SnapEdge, b: Electron.Rectangle): boolean {
-  const db = disp.bounds
-  // 探测点:屏物理边界(bounds,非 workArea——workArea 顶部让出的 menubar 仍属本屏)
-  // 外侧 8px,在窗口中线对应的位置上
-  const probe = edge === 'left' ? { x: db.x - 8, y: Math.round(b.y + b.height / 2) }
-    : edge === 'right' ? { x: db.x + db.width + 8, y: Math.round(b.y + b.height / 2) }
-    : { x: Math.round(b.x + b.width / 2), y: db.y - 8 }
-  return screen.getAllDisplays().some((d) =>
-    d.id !== disp.id &&
-    probe.x >= d.bounds.x && probe.x < d.bounds.x + d.bounds.width &&
-    probe.y >= d.bounds.y && probe.y < d.bounds.y + d.bounds.height)
-}
-
-/** 拖动松手时判定该吸附到哪条边(left/right/top),都不满足返回 null。下边不支持。 */
-function computeSnapEdge(win: BrowserWindow): SnapEdge | null {
-  const b = win.getBounds()
-  const disp = displayForWindow(b)
-  const wa = disp.workArea
-  const candidates: Array<{ edge: SnapEdge; d: number }> = [
-    { edge: 'left', d: b.x - wa.x },
-    { edge: 'right', d: (wa.x + wa.width) - (b.x + b.width) },
-    { edge: 'top', d: b.y - wa.y },
-  ]
-  const cands = candidates.filter((c) => c.d < SNAP_THRESHOLD && !hasAdjacentDisplay(disp, c.edge, b))
-  if (!cands.length) return null
-  cands.sort((a, c) => a.d - c.d) // 最越界/最近的一条边优先
-  return cands[0].edge
-}
-
-/** 把窗口吸附到指定边。左右边收成猫；顶部仍保留原来的探头隐藏。 */
-function snapTo(win: BrowserWindow, edge: SnapEdge): void {
-  const b = win.getBounds()
-  const wa = displayForWindow(b).workArea
-  snapState = { edge, restore: { x: b.x, y: b.y } }
-  snapDeckExpanded = false
-  let x = b.x
-  let y = b.y
-  if (edge === 'left' || edge === 'right') {
-    // 透明无边框窗口的原生 bounds 动画在 macOS 上会留下合成残影。
-    // 窗口尺寸立即切换，视觉过渡只交给 renderer 内部的 CSS 动画。
-    win.setBounds(getSideDeckBounds(edge, false, wa, y, b.height), ANIMATE_SIDE_DECK_BOUNDS)
-  } else {
-    y = wa.y - (b.height - SNAP_PEEK)
-    win.setPosition(Math.round(x), Math.round(y))
+function setFloatingDeckOpen(win: BrowserWindow, open: boolean): { edge: DeckWindowEdge } {
+  if (open) {
+    if (!deckRestoreBounds) {
+      const current = win.getBounds()
+      const layout = getFloatingDeckLayout(current, displayForWindow(current).workArea)
+      deckRestoreBounds = current
+      deckEdge = layout.edge
+      win.setBounds(layout.bounds, ANIMATE_FLOATING_DECK_BOUNDS)
+    }
+    return { edge: deckEdge }
   }
-  win.webContents.send('pet:snapped', { edge })
-  win.webContents.send('pet:deck-expanded', { expanded: false })
-}
-
-/** 左右吸附时让 Deck 从所在屏幕边缘向内展开或收回。 */
-function setSnapDeckExpanded(win: BrowserWindow, expanded: boolean): void {
-  if (!snapState || snapState.edge === 'top') return
-  if (snapDeckExpanded === expanded) return
-  const b = win.getBounds()
-  const { x: rx, y: ry } = snapState.restore
-  const display = screen.getDisplayNearestPoint({
-    x: Math.round(rx + PET_WINDOW.WIDTH / 2),
-    y: Math.round(ry + PET_WINDOW.HEIGHT / 2),
-  })
-  const wa = display.workArea
-  snapDeckExpanded = expanded
-  win.setBounds(
-    getSideDeckBounds(snapState.edge, expanded, wa, b.y, b.height),
-    ANIMATE_SIDE_DECK_BOUNDS,
-  )
-  win.webContents.send('pet:deck-expanded', { expanded })
-}
-
-/** 解除吸附,滑回吸附前位置(clamp 进屏内保证完整可见)。 */
-function unsnap(win: BrowserWindow): void {
-  if (!snapState) return
-  // clamp 用 restore 点所在的屏:吸附时窗口大部分在屏外,当前 bounds 的
-  // 中心可能已不落在原屏(甚至任何屏)内,不能拿它定屏
-  const { x: rx, y: ry } = snapState.restore
-  const wa = screen.getDisplayNearestPoint({
-    x: Math.round(rx + PET_WINDOW.WIDTH / 2),
-    y: Math.round(ry + PET_WINDOW.HEIGHT / 2),
-  }).workArea
-  let x = rx
-  let y = ry
-  x = Math.max(wa.x, Math.min(x, wa.x + wa.width - PET_WINDOW.WIDTH))
-  y = Math.max(wa.y, Math.min(y, wa.y + wa.height - PET_WINDOW.HEIGHT))
-  snapState = null
-  snapDeckExpanded = false
-  win.setBounds({
-    x: Math.round(x), y: Math.round(y),
-    width: PET_WINDOW.WIDTH, height: PET_WINDOW.HEIGHT,
-  }, ANIMATE_SIDE_DECK_BOUNDS)
-  win.webContents.send('pet:unsnapped')
-  win.webContents.send('pet:deck-expanded', { expanded: false })
+  if (deckRestoreBounds) {
+    const restore = deckRestoreBounds
+    deckRestoreBounds = null
+    win.setBounds(restore, ANIMATE_FLOATING_DECK_BOUNDS)
+  }
+  return { edge: deckEdge }
 }
 
 /**
  * 显示器布局变化(插拔屏/换扩展坞/切投影)后的自愈:
- * - 若处于吸附态,窗口大部分在旧屏的屏外坐标,新布局下极易失效(丢猫) →
- *   一律解除吸附,把猫拽回吸附前位置(clamp 进主屏可见区)。
- * - 若非吸附但窗口中心已不在任何屏的可见区(所在屏被拔掉) → 拽回主屏可见。
- * 两种情况都把归位后的可见坐标写进位置文件,重启也不会再卡屏外。
+ * 显示器布局变化后关闭 Deck，并把普通宠物窗口拽回主屏可见区。
  */
 function ensureOnScreen(): void {
   const win = petWindow
   if (!win || win.isDestroyed()) return
-  const b = win.getBounds()
+  const b = deckRestoreBounds ?? win.getBounds()
   const primary = screen.getPrimaryDisplay().workArea
   const clampToPrimary = (px: number, py: number): [number, number] => [
     Math.round(Math.max(primary.x, Math.min(px, primary.x + primary.width - PET_WINDOW.WIDTH))),
     Math.round(Math.max(primary.y, Math.min(py, primary.y + primary.height - PET_WINDOW.HEIGHT))),
   ]
 
-  if (snapState) {
-    // 吸附态:用吸附前位置归位(它也可能在已拔掉的屏上,故 clamp 到主屏)
-    const { x: rx, y: ry } = snapState.restore
-    snapState = null
-    snapDeckExpanded = false
-    win.webContents.send('pet:unsnapped')
-    const [x, y] = clampToPrimary(rx, ry)
-    win.setBounds({ x, y, width: PET_WINDOW.WIDTH, height: PET_WINDOW.HEIGHT })
-    savePosition(x, y)
-    return
+  if (deckRestoreBounds) {
+    deckRestoreBounds = null
+    win.webContents.send('pet:deck-closed')
   }
-
-  // 非吸附:窗口中心是否还落在某块屏的可见区内
   const cx = b.x + b.width / 2
   const cy = b.y + b.height / 2
   const centerVisible = screen.getAllDisplays().some((d) => {
@@ -191,8 +98,10 @@ function ensureOnScreen(): void {
   })
   if (!centerVisible) {
     const [x, y] = clampToPrimary(b.x, b.y)
-    win.setPosition(x, y)
+    win.setBounds({ x, y, width: PET_WINDOW.WIDTH, height: PET_WINDOW.HEIGHT })
     savePosition(x, y)
+  } else if (win.getBounds().width !== PET_WINDOW.WIDTH) {
+    win.setBounds(b, ANIMATE_FLOATING_DECK_BOUNDS)
   }
 }
 
@@ -249,29 +158,21 @@ export function createPetWindow(): BrowserWindow {
       const win = getPetWindow()
       if (!win || win.isDestroyed()) return
       win.setAlwaysOnTop(true, 'screen-saver')
-      // 拖动已吸附的猫 → 先隐式解除吸附(窗口跟手,不移动),让 renderer 退出探头模式
-      if (snapState) {
-        unsnap(win)
-      }
     })
     ipcMain.handle('drag-end', () => {
       const win = getPetWindow()
       if (!win || win.isDestroyed()) return
       win.setAlwaysOnTop(true, 'floating')
-      const edge = computeSnapEdge(win)
-      if (edge) snapTo(win, edge)
+      const [x, y] = win.getPosition()
+      savePosition(x, y)
     })
-    ipcMain.handle('pet:unsnap', () => {
+    ipcMain.handle('pet:set-deck-open', (_e, open: boolean) => {
       const win = getPetWindow()
-      if (win && !win.isDestroyed()) unsnap(win)
-    })
-    ipcMain.handle('pet:set-deck-expanded', (_e, expanded: boolean) => {
-      const win = getPetWindow()
-      if (win && !win.isDestroyed()) setSnapDeckExpanded(win, !!expanded)
+      if (!win || win.isDestroyed()) return { edge: deckEdge }
+      return setFloatingDeckOpen(win, !!open)
     })
 
-    // 显示器布局变化自愈:插拔屏/换扩展坞后若猫卡在失效坐标(尤其吸附态换屏),
-    // 自动拽回主屏可见区。debounce + 缓冲,等系统重排稳定再读 bounds。
+    // 显示器布局变化后关闭 Deck 并自动拽回主屏可见区。
     let displayChangeTimer: ReturnType<typeof setTimeout> | null = null
     const onDisplayChange = (): void => {
       if (displayChangeTimer) clearTimeout(displayChangeTimer)
@@ -288,7 +189,8 @@ export function createPetWindow(): BrowserWindow {
       }
       const pet = getPetWindow()
       if (!pet) return
-      const [px, py] = pet.getPosition()
+      const petBounds = pet.getBounds()
+      const { x: px, y: py } = petBounds
       const popupW = 480
       const popupH = 520
       // Position to the left of the pet window
@@ -297,7 +199,7 @@ export function createPetWindow(): BrowserWindow {
       // If goes off-screen left, place to the right
       const display = screen.getDisplayMatching(pet.getBounds())
       if (popupX < display.workArea.x) {
-        popupX = px + PET_WINDOW.WIDTH + 12
+        popupX = px + petBounds.width + 12
       }
       // Clamp Y
       popupY = Math.max(display.workArea.y, Math.min(popupY, display.workArea.y + display.workArea.height - popupH))
@@ -347,9 +249,9 @@ export function createPetWindow(): BrowserWindow {
     })
   }
 
-  // Save position when window moves (吸附期间不存,避免把屏外坐标写进位置文件)
+  // Deck 展开时保存的是临时大窗口坐标，不能覆盖猫的普通位置。
   petWindow.on('moved', () => {
-    if (petWindow && !petWindow.isDestroyed() && !snapState) {
+    if (petWindow && !petWindow.isDestroyed() && !deckRestoreBounds) {
       const [x, y] = petWindow.getPosition()
       savePosition(x, y)
     }
@@ -398,6 +300,7 @@ export function createPetWindow(): BrowserWindow {
 
   petWindow.on('closed', () => {
     petWindow = null
+    deckRestoreBounds = null
   })
 
   return petWindow
