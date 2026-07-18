@@ -5,7 +5,13 @@ import { tmpdir, homedir } from 'os'
 import { v4 as uuid } from 'uuid'
 import { getDB } from '../db/database'
 import { injectHiveIdentity } from './cli-wrapper'
-import { formatPaneLabel, PANE_BORDER_FORMAT, PANE_BORDER_STATUS } from './pane-label'
+import {
+  formatPaneLabel,
+  PANE_BORDER_FORMAT,
+  PANE_BORDER_STATUS,
+  resolveSessionPaneId,
+} from './pane-label'
+import type { PaneLocation } from './pane-label'
 
 /** Resolve tmux binary — GUI apps don't inherit homebrew PATH */
 function findTmux(): string {
@@ -519,16 +525,10 @@ function syncPaneLabels(tmuxName: string): void {
       WHERE tmux_name = ? AND COALESCE(hidden, 0) = 0
     `).all(tmuxName) as Array<{ title: string; cwd: string; paneId: string }>
 
-    const output = execSync(
-      `${TMUX} list-panes -t ${shellQuote(tmuxName)} -F '#{pane_id}\t#{pane_current_path}'`,
-      { encoding: 'utf-8', stdio: ['ignore', 'pipe', 'ignore'] },
-    ).trim()
-    if (!output) return
+    const panes = listPaneLocations(tmuxName)
+    if (panes.length === 0) return
 
-    for (const line of output.split('\n')) {
-      const separator = line.indexOf('\t')
-      const paneId = separator >= 0 ? line.slice(0, separator) : line
-      const paneCwd = separator >= 0 ? line.slice(separator + 1) : ''
+    for (const { paneId, cwd: paneCwd } of panes) {
       let row = rows.find((candidate) => candidate.paneId === paneId)
       if (!row) {
         const cwdMatches = rows.filter((candidate) => candidate.cwd === paneCwd)
@@ -544,6 +544,40 @@ function syncPaneLabels(tmuxName: string): void {
       }
     }
   } catch { /* optional decoration must never block a session */ }
+}
+
+function listPaneLocations(tmuxName: string): PaneLocation[] {
+  const output = execSync(
+    `${TMUX} list-panes -t ${shellQuote(tmuxName)} -F '#{pane_id}\t#{pane_current_path}'`,
+    { encoding: 'utf-8', stdio: ['ignore', 'pipe', 'ignore'] },
+  ).trim()
+  if (!output) return []
+  return output.split('\n').map((line) => {
+    const separator = line.indexOf('\t')
+    return {
+      paneId: separator >= 0 ? line.slice(0, separator) : line,
+      cwd: separator >= 0 ? line.slice(separator + 1) : '',
+    }
+  })
+}
+
+/** Immediately update one known session's pane label after a Kitty rename. */
+export function refreshPaneLabelForSession(session: {
+  tmuxName: string
+  paneId: string
+  cwd: string
+  title: string
+}): boolean {
+  try {
+    const paneId = resolveSessionPaneId(session, listPaneLocations(session.tmuxName))
+    if (!paneId) return false
+    const label = formatPaneLabel(session.title, session.cwd)
+    execSync(`${TMUX} set-option -p -t ${shellQuote(paneId)} @kitty_label ${shellQuote(label)}`, { stdio: 'ignore' })
+    try { execSync(`${TMUX} refresh-client -S`, { stdio: 'ignore' }) } catch { /* no attached client */ }
+    return true
+  } catch {
+    return false
+  }
 }
 
 /**
