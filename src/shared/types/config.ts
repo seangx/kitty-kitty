@@ -3,6 +3,7 @@ export interface BubbleConfig {
   layout: 'cloud' | 'arc' | 'stack'  // cloud=organic scatter, arc=弧形, stack=堆叠
   colorTheme: 'indigo' | 'emerald' | 'rose' | 'amber' | 'custom'
   customColor?: string    // hex color when colorTheme='custom'
+  deckAccentColor: string // selected path / drop target accent
   skin: 'calico' | 'sheep' | 'chicken'
 }
 
@@ -10,6 +11,7 @@ export const DEFAULT_BUBBLE_CONFIG: BubbleConfig = {
   sizeScale: 1.0,
   layout: 'cloud',
   colorTheme: 'indigo',
+  deckAccentColor: '#6fd7c8',
   skin: 'calico',
 }
 

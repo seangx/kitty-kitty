@@ -1064,11 +1064,11 @@ export function registerSessionHandlers(): void {
     return sessionRepo.listGroups()
   })
 
-  ipcMain.handle('group:create', (_event, name: string, color?: string) => {
+  ipcMain.handle('group:create', (_event, name: string, color?: string, parentGroupId?: string) => {
 
     const id = uuid().slice(0, 8)
-    sessionRepo.createGroup(id, name, color)
-    return { id, name, color }
+    sessionRepo.createGroup(id, name, color, parentGroupId)
+    return { id, name, color, parentGroupId }
   })
 
   ipcMain.handle('group:delete', (_event, groupId: string) => {
@@ -1083,27 +1083,39 @@ export function registerSessionHandlers(): void {
     sessionRepo.updateGroupColor(groupId, color)
   })
 
+  ipcMain.handle('group:set-parent', (_event, groupId: string, parentGroupId: string | null) => {
+    sessionRepo.updateGroupParent(groupId, parentGroupId)
+    return { success: true }
+  })
+
   // 归档:kill 组内全部 tmux(保留 DB 记录,status→dead),标记 archived。
   // group:list 只返回未归档 → 主界面自动收起;数据完整可恢复。
   ipcMain.handle('group:archive', (_event, groupId: string) => {
     const group = sessionRepo.getGroupById(groupId)
     if (!group) throw new Error('Group not found')
-    const rows = sessionRepo.listSessionsByGroup(groupId)
-    for (const s of rows) {
-      try { killSessionTmux(s) } catch { /* tmux 可能已死 */ }
-      sessionRepo.updateSessionStatus(s.id, 'dead')
+    const subtree = sessionRepo.listGroupSubtreeIds(groupId)
+    let count = 0
+    for (const id of subtree) {
+      const rows = sessionRepo.listSessionsByGroup(id)
+      count += rows.length
+      for (const s of rows) {
+        try { killSessionTmux(s) } catch { /* tmux 可能已死 */ }
+        sessionRepo.updateSessionStatus(s.id, 'dead')
+      }
+      sessionRepo.setGroupArchived(id, true)
     }
-    sessionRepo.setGroupArchived(groupId, true)
-    log('group', `archived: ${group.name} (${rows.length} sessions)`)
-    return { success: true, count: rows.length }
+    log('group', `archived subtree: ${group.name} (${count} sessions, ${subtree.length} groups)`)
+    return { success: true, count }
   })
 
   // 取消归档:清标记 + 组内 dead→detached(dead 在主界面不渲染,detached 可见;
   // 点击 detached 会话时走现有 attach 的 on-the-fly restore 重建 tmux)
   ipcMain.handle('group:unarchive', (_event, groupId: string) => {
-    sessionRepo.setGroupArchived(groupId, false)
-    for (const s of sessionRepo.listSessionsByGroup(groupId)) {
-      if (s.status === 'dead') sessionRepo.updateSessionStatus(s.id, 'detached')
+    for (const id of sessionRepo.listGroupSubtreeIds(groupId)) {
+      sessionRepo.setGroupArchived(id, false)
+      for (const s of sessionRepo.listSessionsByGroup(id)) {
+        if (s.status === 'dead') sessionRepo.updateSessionStatus(s.id, 'detached')
+      }
     }
     return { success: true }
   })
@@ -1111,7 +1123,8 @@ export function registerSessionHandlers(): void {
   ipcMain.handle('group:list-archived', () => {
     return sessionRepo.listArchivedGroups().map((g) => ({
       ...g,
-      sessionCount: sessionRepo.listSessionsByGroup(g.id).length,
+      sessionCount: sessionRepo.listGroupSubtreeIds(g.id)
+        .reduce((total, id) => total + sessionRepo.listSessionsByGroup(id).length, 0),
     }))
   })
 

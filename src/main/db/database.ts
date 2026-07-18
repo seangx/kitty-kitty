@@ -91,6 +91,11 @@ function runMigrations(database: Database.Database): void {
       database.exec("ALTER TABLE groups ADD COLUMN archived INTEGER NOT NULL DEFAULT 0")
     } catch { /* column already exists */ }
     try {
+      // Visual hierarchy only: sessions still belong to one concrete tmux group,
+      // while groups can be nested for Deck organisation.
+      database.exec("ALTER TABLE groups ADD COLUMN parent_group_id TEXT REFERENCES groups(id) ON DELETE SET NULL")
+    } catch { /* column already exists */ }
+    try {
       // Alt+X 变身前的状态快照(JSON {tool, externalSessionId}),用于变回去
       database.exec("ALTER TABLE sessions ADD COLUMN transfer_origin TEXT DEFAULT ''")
     } catch { /* column already exists */ }

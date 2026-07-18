@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import PetSprite from './PetSprite'
-import TagCloud from './TagCloud'
+import SessionDeck from './SessionDeck'
 import InputPopup from './InputPopup'
 import ContextMenu from './ContextMenu'
 import SettingsPanel from './SettingsPanel'
@@ -87,7 +87,7 @@ export default function PetCanvas() {
 
   // Wakeup ("xxx 在等你") IPC — bound ONCE, never re-binds on session updates,
   // otherwise the 10s sessions poll would tear down + re-bind every cycle and
-  // make TagCloud re-render via loadNeedsInput's fresh Set, stuttering drags.
+  // make SessionDeck re-render via loadNeedsInput's fresh Set, stuttering drags.
   const sessionsRef = useRef(sessions)
   useEffect(() => { sessionsRef.current = sessions }, [sessions])
   useEffect(() => {
@@ -384,7 +384,7 @@ export default function PetCanvas() {
     }
   }, [anyPopup])
 
-  // TagCloud dispatches these custom events when a bubble is being dragged so
+  // SessionDeck dispatches these custom events when a card is being dragged so
   // we can lock the window into interactive mode (set-ignore-mouse false) for
   // the full drag duration — otherwise transparent-area mousemove would flip
   // ignore-mouse back to true and the drag would be broken mid-way.
@@ -417,6 +417,12 @@ export default function PetCanvas() {
       window.api.invoke('set-ignore-mouse', true)
     }
   }, [anyPopup])
+
+  const handleDeckExpandedChange = useCallback((expanded: boolean) => {
+    if (snapEdge === 'left' || snapEdge === 'right') {
+      window.api.invoke('pet:set-deck-expanded', expanded)
+    }
+  }, [snapEdge])
 
 
 
@@ -566,50 +572,49 @@ export default function PetCanvas() {
       onMouseDown={handleMouseDown} onClick={handleClick} onContextMenu={handleContextMenu}
       onMouseMove={handleMouseMove} onMouseLeave={handleMouseLeave}
     >
-      {/* Layout wrapper is pointer-events:none so empty space inside it
-          doesn't intercept mousemove (which would flip the window into
-          interactive mode and block click-through to underlying windows).
-          Children with real UI must opt back in via pointerEvents:auto. */}
-      <div style={{ flex: '1 1 auto', minHeight: 0, width: '100%', overflow: 'auto', display: snapEdge ? 'none' : 'flex', flexDirection: 'column', justifyContent: 'flex-end', pointerEvents: 'none' }}>
-        <div style={{ pointerEvents: 'auto' }}>
-          <TagCloud
-            sessions={sessions}
-            onAttach={handleAttach}
-            onKill={killSession}
-            onRename={renameSession}
-            onRestart={async (id) => {
-              try {
-                const { checkSessionDrift } = await import('../lib/ipc')
-                const drift = await checkSessionDrift(id)
-                if (drift) {
-                  setDriftPrompt({ sessionId: id, drift, kind: 'restart' })
-                  return
-                }
-              } catch { /* drift failure shouldn't block restart */ }
-              void doRestart(id)
-            }}
-            onClearConversation={async (id) => {
-              try {
-                const { clearConversation } = await import('../lib/ipc')
-                const res = await clearConversation(id)
-                say(res?.message || (res?.success ? '已清空' : '清空失败'), 4000)
-                if (res?.success) machine.forceState('happy', 1500)
-                else machine.forceState('sad', 1500)
-                await loadSessions()
-              } catch (err: any) {
-                say(err?.message || '清空失败', 4000)
-                machine.forceState('sad', 1500)
-              }
-            }}
-            onEditEnv={(id) => setEnvEditor(id)}
-            onOpenSkills={(id) => window.api.invoke('popup-open', 'skills', id)}
-          />
-        </div>
-      </div>
+      <SessionDeck
+        sessions={sessions}
+        snapEdge={snapEdge}
+        onExpandedChange={handleDeckExpandedChange}
+        onCreate={() => setShowInput(true)}
+        onAttach={handleAttach}
+        onKill={killSession}
+        onRename={renameSession}
+        onRestart={async (id) => {
+          try {
+            const { checkSessionDrift } = await import('../lib/ipc')
+            const drift = await checkSessionDrift(id)
+            if (drift) {
+              setDriftPrompt({ sessionId: id, drift, kind: 'restart' })
+              return
+            }
+          } catch { /* drift failure shouldn't block restart */ }
+          void doRestart(id)
+        }}
+        onClearConversation={async (id) => {
+          try {
+            const { clearConversation } = await import('../lib/ipc')
+            const res = await clearConversation(id)
+            say(res?.message || (res?.success ? '已清空' : '清空失败'), 4000)
+            if (res?.success) machine.forceState('happy', 1500)
+            else machine.forceState('sad', 1500)
+            await loadSessions()
+          } catch (err: any) {
+            say(err?.message || '清空失败', 4000)
+            machine.forceState('sad', 1500)
+          }
+        }}
+        onEditEnv={(id) => setEnvEditor(id)}
+        onOpenSkills={(id) => window.api.invoke('popup-open', 'skills', id)}
+      />
       <div
-        style={{ position: 'relative', flexShrink: 0, width: 128, height: 128, pointerEvents: 'auto', cursor: snapEdge ? 'pointer' : undefined }}
-        onClick={(e) => { if (snapEdge) { e.stopPropagation(); window.api.invoke('pet:unsnap') } }}
-        title={snapEdge ? '点我回来喵~' : undefined}
+        style={{
+          position: 'relative', flexShrink: 0, width: 128, height: 128,
+          pointerEvents: 'auto', cursor: snapEdge ? 'pointer' : undefined,
+          display: snapEdge === 'left' || snapEdge === 'right' ? 'none' : 'block',
+        }}
+        onClick={(e) => { if (snapEdge === 'top') { e.stopPropagation(); window.api.invoke('pet:unsnap') } }}
+        title={snapEdge === 'top' ? '点我回来喵~' : undefined}
       >
         {speech && <SpeechBubble text={speech} onDone={() => setSpeech(null)} />}
         <PetSprite state={animation} skin={bubble.skin} size={128} />

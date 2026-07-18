@@ -30,6 +30,7 @@ export interface GroupRow {
   name: string
   color: string | null
   mainSessionId: string | null
+  parentGroupId: string | null
   archived: number
 }
 
@@ -164,16 +165,18 @@ export function getSessionByTmuxName(tmuxName: string): SessionRow | undefined {
 
 // --- Groups ---
 
-export function createGroup(id: string, name: string, color?: string): void {
+export function createGroup(id: string, name: string, color?: string, parentGroupId?: string): void {
   const db = getDB()
-  db.prepare('INSERT INTO groups (id, name, color) VALUES (?, ?, ?)').run(id, name, color || null)
+  db.prepare('INSERT INTO groups (id, name, color, parent_group_id) VALUES (?, ?, ?, ?)')
+    .run(id, name, color || null, parentGroupId || null)
 }
 
 export function listGroups(): GroupRow[] {
   const db = getDB()
-  // 主界面列表:归档的 group 不返回(TagCloud 因此自动不渲染它们)
+  // 主界面列表：归档的 group 不返回，SessionDeck 因此自动不渲染它们。
   return db.prepare(`
     SELECT id, name, color, main_session_id as mainSessionId,
+           parent_group_id as parentGroupId,
            COALESCE(archived, 0) as archived
     FROM groups
     WHERE COALESCE(archived, 0) = 0
@@ -184,11 +187,14 @@ export function listGroups(): GroupRow[] {
 export function listArchivedGroups(): GroupRow[] {
   const db = getDB()
   return db.prepare(`
-    SELECT id, name, color, main_session_id as mainSessionId,
-           COALESCE(archived, 0) as archived
-    FROM groups
-    WHERE COALESCE(archived, 0) = 1
-    ORDER BY created_at
+    SELECT g.id, g.name, g.color, g.main_session_id as mainSessionId,
+           g.parent_group_id as parentGroupId,
+           COALESCE(g.archived, 0) as archived
+    FROM groups g
+    LEFT JOIN groups parent ON parent.id = g.parent_group_id
+    WHERE COALESCE(g.archived, 0) = 1
+      AND (g.parent_group_id IS NULL OR COALESCE(parent.archived, 0) = 0)
+    ORDER BY g.created_at
   `).all() as GroupRow[]
 }
 
@@ -201,6 +207,7 @@ export function getGroupById(id: string): GroupRow | undefined {
   const db = getDB()
   return db.prepare(`
     SELECT id, name, color, main_session_id as mainSessionId,
+           parent_group_id as parentGroupId,
            COALESCE(archived, 0) as archived
     FROM groups
     WHERE id = ?
@@ -245,4 +252,45 @@ export function renameGroup(id: string, name: string): void {
 export function updateGroupColor(id: string, color: string | null): void {
   const db = getDB()
   db.prepare('UPDATE groups SET color = ? WHERE id = ?').run(color, id)
+}
+
+export function updateGroupParent(id: string, parentGroupId: string | null): void {
+  const db = getDB()
+  if (parentGroupId === id) throw new Error('分组不能放进自己')
+  if (parentGroupId) {
+    const target = getGroupById(parentGroupId)
+    if (!target) throw new Error('目标分组不存在')
+
+    // Walk upwards from the target. If we meet `id`, the move would create a cycle.
+    let cursor: GroupRow | undefined = target
+    const visited = new Set<string>()
+    while (cursor) {
+      if (cursor.id === id) throw new Error('不能把分组放进自己的子分组')
+      if (visited.has(cursor.id)) throw new Error('分组层级已存在循环')
+      visited.add(cursor.id)
+      cursor = cursor.parentGroupId ? getGroupById(cursor.parentGroupId) : undefined
+    }
+  }
+  db.prepare('UPDATE groups SET parent_group_id = ? WHERE id = ?').run(parentGroupId, id)
+}
+
+export function listGroupSubtreeIds(rootId: string): string[] {
+  const db = getDB()
+  const rows = db.prepare('SELECT id, parent_group_id as parentGroupId FROM groups').all() as Array<{
+    id: string
+    parentGroupId: string | null
+  }>
+  const result: string[] = []
+  const queue = [rootId]
+  const visited = new Set<string>()
+  while (queue.length > 0) {
+    const id = queue.shift()!
+    if (visited.has(id)) continue
+    visited.add(id)
+    result.push(id)
+    for (const row of rows) {
+      if (row.parentGroupId === id) queue.push(row.id)
+    }
+  }
+  return result
 }

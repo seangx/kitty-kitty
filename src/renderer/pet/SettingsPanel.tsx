@@ -11,6 +11,8 @@ const C = {
   primaryDim: '#645efb', outline: '#46465c',
 }
 
+const DECK_ACCENT_PRESETS = ['#6fd7c8', '#78a9ff', '#a78bfa', '#fb7185', '#f0b45a']
+
 interface ArchivedGroup {
   id: string
   name: string
@@ -131,26 +133,34 @@ export default function SettingsPanel({ onClose }: Props) {
 
       <div style={{ height: 1, background: `${C.outline}33`, margin: '12px 0' }} />
 
-      {/* Bubble section header */}
-      <div style={{ fontSize: 11, color: C.textDim, marginBottom: 8, fontWeight: 500 }}>气泡</div>
+      {/* Deck section header */}
+      <div style={{ fontSize: 11, color: C.textDim, marginBottom: 8, fontWeight: 500 }}>Deck</div>
 
-      {/* Size */}
       <div style={{ marginBottom: 14 }}>
-        <div style={{ fontSize: 11, color: C.textDim, marginBottom: 6 }}>大小</div>
+        <div style={{ fontSize: 11, color: C.textDim, marginBottom: 7 }}>选中颜色</div>
         <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-          <span style={{ fontSize: 10, color: C.textDim }}>A</span>
-          <input type="range" min="0.6" max="1.8" step="0.1" value={bubble.sizeScale}
-            onChange={(e) => setBubble({ sizeScale: parseFloat(e.target.value) })}
-            style={{ flex: 1, accentColor: C.primaryDim }} />
-          <span style={{ fontSize: 14, color: C.textDim }}>A</span>
-          <span style={{ fontSize: 11, color: C.text, minWidth: 28, textAlign: 'right' }}>{bubble.sizeScale.toFixed(1)}</span>
+          <input
+            type="color"
+            value={bubble.deckAccentColor}
+            onChange={(e) => setBubble({ deckAccentColor: e.target.value })}
+            aria-label="Deck 选中颜色"
+            style={{ width: 32, height: 26, padding: 0, border: `1px solid ${C.outline}55`, borderRadius: 7, background: 'transparent', cursor: 'pointer' }}
+          />
+          <div style={{ display: 'flex', gap: 6 }}>
+            {DECK_ACCENT_PRESETS.map((color) => (
+              <button
+                key={color}
+                onClick={() => setBubble({ deckAccentColor: color })}
+                aria-label={`选择 ${color}`}
+                style={{
+                  width: 20, height: 20, borderRadius: '50%', background: color, cursor: 'pointer',
+                  border: bubble.deckAccentColor === color ? '2px solid #fff' : '1px solid rgba(255,255,255,.22)',
+                  boxShadow: bubble.deckAccentColor === color ? `0 0 0 2px ${color}55` : 'none',
+                }}
+              />
+            ))}
+          </div>
         </div>
-      </div>
-
-
-      {/* Hint */}
-      <div style={{ fontSize: 10, color: C.textDim, opacity: 0.7, textAlign: 'center', marginBottom: 8 }}>
-        💡 右键单个气泡可修改颜色
       </div>
 
       <div style={{ textAlign: 'center' }}>

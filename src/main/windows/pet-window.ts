@@ -5,6 +5,7 @@ import { homedir } from 'os'
 import { is } from '@electron-toolkit/utils'
 import { PET_WINDOW } from '@shared/constants'
 import { log } from '../logger'
+import { getSideDeckBounds } from './deck-window-layout'
 
 let petWindow: BrowserWindow | null = null
 let popupWindow: BrowserWindow | null = null
@@ -37,9 +38,10 @@ function savePosition(x: number, y: number): void {
 
 // ─── 贴边隐藏(探头吸附) ───────────────────
 type SnapEdge = 'left' | 'right' | 'top'
-const SNAP_PEEK = 64      // 吸附后屏内留出的一截(px)
+const SNAP_PEEK = 64      // 顶部吸附后屏内留出的一截(px)
 const SNAP_THRESHOLD = 24 // 窗口边缘距屏幕 workArea < 此值(或越界)即吸附
 let snapState: { edge: SnapEdge; restore: { x: number; y: number } } | null = null
+let snapDeckExpanded = false
 
 /**
  * 窗口中心点所在的显示器。
@@ -77,48 +79,73 @@ function computeSnapEdge(win: BrowserWindow): SnapEdge | null {
   const b = win.getBounds()
   const disp = displayForWindow(b)
   const wa = disp.workArea
-  const cands: Array<{ edge: SnapEdge; d: number }> = [
+  const candidates: Array<{ edge: SnapEdge; d: number }> = [
     { edge: 'left', d: b.x - wa.x },
     { edge: 'right', d: (wa.x + wa.width) - (b.x + b.width) },
     { edge: 'top', d: b.y - wa.y },
-  ].filter((c) => c.d < SNAP_THRESHOLD && !hasAdjacentDisplay(disp, c.edge, b))
+  ]
+  const cands = candidates.filter((c) => c.d < SNAP_THRESHOLD && !hasAdjacentDisplay(disp, c.edge, b))
   if (!cands.length) return null
   cands.sort((a, c) => a.d - c.d) // 最越界/最近的一条边优先
   return cands[0].edge
 }
 
-/** 把窗口移到指定边、只留 SNAP_PEEK 一截在屏内,并记录吸附前位置。 */
+/** 把窗口吸附到指定边。左右边显示窄 Deck；顶部仍保留原来的探头隐藏。 */
 function snapTo(win: BrowserWindow, edge: SnapEdge): void {
   const b = win.getBounds()
   const wa = displayForWindow(b).workArea
   snapState = { edge, restore: { x: b.x, y: b.y } }
+  snapDeckExpanded = false
   let x = b.x
   let y = b.y
-  if (edge === 'left') x = wa.x - (b.width - SNAP_PEEK)
-  else if (edge === 'right') x = wa.x + wa.width - SNAP_PEEK
-  else if (edge === 'top') y = wa.y - (b.height - SNAP_PEEK)
-  win.setPosition(Math.round(x), Math.round(y))
+  if (edge === 'left' || edge === 'right') {
+    win.setBounds(getSideDeckBounds(edge, false, wa, y, b.height), true)
+  } else {
+    y = wa.y - (b.height - SNAP_PEEK)
+    win.setPosition(Math.round(x), Math.round(y))
+  }
   win.webContents.send('pet:snapped', { edge })
+  win.webContents.send('pet:deck-expanded', { expanded: false })
+}
+
+/** 左右吸附时让 Deck 从所在屏幕边缘向内展开或收回。 */
+function setSnapDeckExpanded(win: BrowserWindow, expanded: boolean): void {
+  if (!snapState || snapState.edge === 'top') return
+  if (snapDeckExpanded === expanded) return
+  const b = win.getBounds()
+  const { x: rx, y: ry } = snapState.restore
+  const display = screen.getDisplayNearestPoint({
+    x: Math.round(rx + PET_WINDOW.WIDTH / 2),
+    y: Math.round(ry + PET_WINDOW.HEIGHT / 2),
+  })
+  const wa = display.workArea
+  snapDeckExpanded = expanded
+  win.setBounds(getSideDeckBounds(snapState.edge, expanded, wa, b.y, b.height), true)
+  win.webContents.send('pet:deck-expanded', { expanded })
 }
 
 /** 解除吸附,滑回吸附前位置(clamp 进屏内保证完整可见)。 */
 function unsnap(win: BrowserWindow): void {
   if (!snapState) return
-  const b = win.getBounds()
   // clamp 用 restore 点所在的屏:吸附时窗口大部分在屏外,当前 bounds 的
   // 中心可能已不落在原屏(甚至任何屏)内,不能拿它定屏
   const { x: rx, y: ry } = snapState.restore
   const wa = screen.getDisplayNearestPoint({
-    x: Math.round(rx + b.width / 2),
-    y: Math.round(ry + b.height / 2),
+    x: Math.round(rx + PET_WINDOW.WIDTH / 2),
+    y: Math.round(ry + PET_WINDOW.HEIGHT / 2),
   }).workArea
   let x = rx
   let y = ry
-  x = Math.max(wa.x, Math.min(x, wa.x + wa.width - b.width))
-  y = Math.max(wa.y, Math.min(y, wa.y + wa.height - b.height))
+  x = Math.max(wa.x, Math.min(x, wa.x + wa.width - PET_WINDOW.WIDTH))
+  y = Math.max(wa.y, Math.min(y, wa.y + wa.height - PET_WINDOW.HEIGHT))
   snapState = null
-  win.setPosition(Math.round(x), Math.round(y))
+  snapDeckExpanded = false
+  win.setBounds({
+    x: Math.round(x), y: Math.round(y),
+    width: PET_WINDOW.WIDTH, height: PET_WINDOW.HEIGHT,
+  }, true)
   win.webContents.send('pet:unsnapped')
+  win.webContents.send('pet:deck-expanded', { expanded: false })
 }
 
 /**
@@ -134,17 +161,18 @@ function ensureOnScreen(): void {
   const b = win.getBounds()
   const primary = screen.getPrimaryDisplay().workArea
   const clampToPrimary = (px: number, py: number): [number, number] => [
-    Math.round(Math.max(primary.x, Math.min(px, primary.x + primary.width - b.width))),
-    Math.round(Math.max(primary.y, Math.min(py, primary.y + primary.height - b.height))),
+    Math.round(Math.max(primary.x, Math.min(px, primary.x + primary.width - PET_WINDOW.WIDTH))),
+    Math.round(Math.max(primary.y, Math.min(py, primary.y + primary.height - PET_WINDOW.HEIGHT))),
   ]
 
   if (snapState) {
     // 吸附态:用吸附前位置归位(它也可能在已拔掉的屏上,故 clamp 到主屏)
     const { x: rx, y: ry } = snapState.restore
     snapState = null
+    snapDeckExpanded = false
     win.webContents.send('pet:unsnapped')
     const [x, y] = clampToPrimary(rx, ry)
-    win.setPosition(x, y)
+    win.setBounds({ x, y, width: PET_WINDOW.WIDTH, height: PET_WINDOW.HEIGHT })
     savePosition(x, y)
     return
   }
@@ -218,8 +246,7 @@ export function createPetWindow(): BrowserWindow {
       win.setAlwaysOnTop(true, 'screen-saver')
       // 拖动已吸附的猫 → 先隐式解除吸附(窗口跟手,不移动),让 renderer 退出探头模式
       if (snapState) {
-        snapState = null
-        win.webContents.send('pet:unsnapped')
+        unsnap(win)
       }
     })
     ipcMain.handle('drag-end', () => {
@@ -232,6 +259,10 @@ export function createPetWindow(): BrowserWindow {
     ipcMain.handle('pet:unsnap', () => {
       const win = getPetWindow()
       if (win && !win.isDestroyed()) unsnap(win)
+    })
+    ipcMain.handle('pet:set-deck-expanded', (_e, expanded: boolean) => {
+      const win = getPetWindow()
+      if (win && !win.isDestroyed()) setSnapDeckExpanded(win, !!expanded)
     })
 
     // 显示器布局变化自愈:插拔屏/换扩展坞后若猫卡在失效坐标(尤其吸附态换屏),

@@ -21,4 +21,5 @@ export interface GroupInfo {
   name: string
   color?: string
   mainSessionId?: string
+  parentGroupId?: string
 }
