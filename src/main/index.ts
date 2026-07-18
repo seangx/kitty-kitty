@@ -10,6 +10,7 @@ import * as ntfy from './ntfy'
 import { startWakeupServer, stopWakeupServer } from './wakeup'
 import { ensureClaudeNotificationHook } from './hook-installer'
 import { ensureOpenCodePlugin } from './opencode-plugin-installer'
+import { ensureOpenCodeHiveMcp } from './opencode-hive'
 
 app.whenReady().then(() => {
   initLogger()
@@ -40,6 +41,9 @@ app.whenReady().then(() => {
   try { startWakeupServer(); log('app', 'wakeup server started') } catch (e) { log('app', 'wakeup error:', e) }
   try { ensureClaudeNotificationHook(); log('app', 'claude hook ensured') } catch (e) { log('app', 'hook installer error:', e) }
   try { ensureOpenCodePlugin(); log('app', 'opencode plugin ensured') } catch (e) { log('app', 'opencode plugin error:', e) }
+  const openCodeHive = ensureOpenCodeHiveMcp()
+  if (openCodeHive.success) log('app', 'opencode hive MCP ensured')
+  else log('app', 'opencode hive MCP unavailable:', openCodeHive.error)
 })
 
 app.on('window-all-closed', () => {
