@@ -7,7 +7,7 @@ export function registerMcpsHandlers(): void {
   ipcMain.handle(IPC.MCPS_LIST, async (_event, sessionId: string) => {
     const available = await mcps.isAvailable()
     const session = sessionRepo.listSessions().find((s) => s.id === sessionId)
-    const { central, deployed } = await mcps.listMcps(session?.cwd)
+    const { central, deployed } = await mcps.listMcps(session?.cwd, session?.tool)
     return { available, central, deployed }
   })
 

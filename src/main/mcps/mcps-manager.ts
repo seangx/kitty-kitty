@@ -14,6 +14,15 @@ import { homedir } from 'os'
 import { log } from '../logger'
 import type { McpServerInfo } from '@shared/types/mcps'
 import { parseCodexMcpToml, parseJsonc, toClaudeMcp, toCodexMcp, toOpenCodeMcp } from './config-converters'
+import {
+  cliFailureMessage,
+  findReportedDeployments,
+  findRequiredEnvPrompts,
+  findSavedServers,
+  runCli,
+  type CliResult,
+} from './cli-runner'
+import { listDeployed, listDeployedForTool, readConfiguredServers } from './deployment-scanner'
 
 export { parseCodexMcpToml, parseJsonc, toClaudeMcp, toCodexMcp, toOpenCodeMcp } from './config-converters'
 
@@ -30,12 +39,6 @@ function validateName(name: string): string {
 }
 
 // ─── CLI Runner ─────────────────────────────────────────
-
-interface CliResult {
-  success: boolean
-  stdout: string
-  stderr: string
-}
 
 let mcpsMgrPath: string | null = null
 let lastAvailableCheck = 0
@@ -59,25 +62,18 @@ export async function isAvailable(): Promise<boolean> {
   return (await resolveMcpsMgr()) !== null
 }
 
-async function runMcpsMgr(args: string[], cwd?: string): Promise<CliResult> {
+async function runMcpsMgr(args: string[], cwd?: string, input?: string): Promise<CliResult> {
   const bin = await resolveMcpsMgr()
   if (!bin) {
     return { success: false, stdout: '', stderr: 'mcpsmgr 未安装。请运行: npm install -g mcpsmgr' }
   }
-  try {
-    const { stdout, stderr } = await execFileAsync(bin, args, {
-      cwd,
-      encoding: 'utf-8',
-      timeout: 60_000,
-    })
+  const result = await runCli(bin, args, { cwd, input })
+  if (result.success) {
     log('mcps', `ok: mcpsmgr ${args.join(' ')}`)
-    return { success: true, stdout: stdout || '', stderr: stderr || '' }
-  } catch (err: any) {
-    const stdout = String(err?.stdout || '')
-    const stderr = String(err?.stderr || err?.message || 'Unknown error')
-    log('mcps', `fail: mcpsmgr ${args.join(' ')} → ${stderr.slice(0, 200)}`)
-    return { success: false, stdout, stderr }
+  } else {
+    log('mcps', `fail: mcpsmgr ${args.join(' ')} → ${cliFailureMessage(result, 'Unknown error').slice(0, 400)}`)
   }
+  return result
 }
 
 // ─── Central repository scanner ─────────────────────────
@@ -132,114 +128,6 @@ const TOOL_AGENT_MAP: Record<string, string> = {
   shell: 'claude-code',
 }
 
-function readOpenCodeMcpNames(cwd: string): string[] {
-  for (const filename of ['opencode.json', 'opencode.jsonc']) {
-    const file = join(cwd, filename)
-    if (!existsSync(file)) continue
-    try {
-      const data = parseJsonc(readFileSync(file, 'utf-8'))
-      return Object.keys(data?.mcp || {})
-    } catch { /* try the other supported filename */ }
-  }
-  return []
-}
-
-/**
- * Best-effort "what MCP servers are wired up in this project?" lookup.
- *
- * mcpsmgr writes to multiple per-agent config files (.mcp.json /
- * .codex/config.toml / .cursor/mcp.json / etc.). We only need the union of
- * server names to drive the panel's deployed-marker, so we read the two main
- * formats kitty-kitty cares about (claude-code .mcp.json and codex
- * .codex/config.toml) and merge them. If neither exists we fall back to a
- * mcpsmgr CLI call.
- */
-export async function listDeployed(cwd: string): Promise<string[]> {
-  if (!cwd) return []
-  const names = new Set<string>()
-
-  const mcpJson = join(cwd, '.mcp.json')
-  if (existsSync(mcpJson)) {
-    try {
-      const data = JSON.parse(readFileSync(mcpJson, 'utf-8'))
-      for (const k of Object.keys(data?.mcpServers || {})) names.add(k)
-    } catch { /* ignore */ }
-  }
-
-  const codexToml = join(cwd, '.codex', 'config.toml')
-  if (existsSync(codexToml)) {
-    try {
-      const text = readFileSync(codexToml, 'utf-8')
-      // Match `[mcp_servers.<name>]` / `[mcp_servers."<name>"]`
-      const re = /^\s*\[mcp_servers\.(?:"([^"]+)"|([A-Za-z0-9_.-]+))\]/gm
-      let m: RegExpExecArray | null
-      while ((m = re.exec(text)) !== null) {
-        const name = m[1] ?? m[2]
-        if (name) names.add(name)
-      }
-    } catch { /* ignore */ }
-  }
-
-  for (const name of readOpenCodeMcpNames(cwd)) names.add(name)
-
-  return [...names].sort()
-}
-
-function listDeployedForTool(cwd: string, tool: string): string[] {
-  if (tool === 'opencode') return readOpenCodeMcpNames(cwd)
-  if (tool === 'codex') {
-    const file = join(cwd, '.codex', 'config.toml')
-    if (!existsSync(file)) return []
-    try {
-      const text = readFileSync(file, 'utf-8')
-      const names: string[] = []
-      const re = /^\s*\[mcp_servers\.(?:"([^"]+)"|([A-Za-z0-9_.-]+))\]/gm
-      let match: RegExpExecArray | null
-      while ((match = re.exec(text)) !== null) names.push(match[1] ?? match[2])
-      return names.filter(Boolean)
-    } catch { return [] }
-  }
-  const file = join(cwd, '.mcp.json')
-  try {
-    const data = JSON.parse(readFileSync(file, 'utf-8'))
-    return Object.keys(data?.mcpServers || {})
-  } catch { return [] }
-}
-
-function readConfiguredServers(cwd: string): Record<string, Record<string, any>> {
-  const servers: Record<string, Record<string, any>> = {}
-  const claudeFile = join(cwd, '.mcp.json')
-  if (existsSync(claudeFile)) {
-    try {
-      const data = JSON.parse(readFileSync(claudeFile, 'utf-8'))
-      for (const [name, cfg] of Object.entries(data?.mcpServers || {})) {
-        if (cfg && typeof cfg === 'object') servers[name] = cfg as Record<string, any>
-      }
-    } catch { /* continue with other tool configs */ }
-  }
-  for (const filename of ['opencode.json', 'opencode.jsonc']) {
-    const file = join(cwd, filename)
-    if (!existsSync(file)) continue
-    try {
-      const data = parseJsonc(readFileSync(file, 'utf-8'))
-      for (const [name, cfg] of Object.entries(data?.mcp || {})) {
-        if (!(name in servers) && cfg && typeof cfg === 'object') servers[name] = cfg as Record<string, any>
-      }
-      break
-    } catch { /* JSONC with comments is left to central mcpsmgr fallback */ }
-  }
-  const codexFile = join(cwd, '.codex', 'config.toml')
-  if (existsSync(codexFile)) {
-    try {
-      const parsed = parseCodexMcpToml(readFileSync(codexFile, 'utf-8'))
-      for (const [name, cfg] of Object.entries(parsed)) {
-        if (!(name in servers)) servers[name] = cfg
-      }
-    } catch { /* ignore invalid TOML subset */ }
-  }
-  return servers
-}
-
 /** Copy the project's existing MCP set into a newly selected tool. */
 export async function syncManagedMcpsToTool(cwd: string, tool: string): Promise<void> {
   const agent = TOOL_AGENT_MAP[tool]
@@ -270,9 +158,9 @@ export async function syncManagedMcpsToTool(cwd: string, tool: string): Promise<
 
 // ─── Operations (all async) ─────────────────────────────
 
-export async function listMcps(cwd?: string): Promise<{ central: McpServerInfo[]; deployed: string[] }> {
+export async function listMcps(cwd?: string, tool?: string): Promise<{ central: McpServerInfo[]; deployed: string[] }> {
   const central = listCentralFromFs()
-  const deployed = cwd ? await listDeployed(cwd) : []
+  const deployed = cwd ? (tool ? listDeployedForTool(cwd, tool) : listDeployed(cwd)) : []
   return { central, deployed }
 }
 
@@ -286,11 +174,28 @@ export async function listMcps(cwd?: string): Promise<{ central: McpServerInfo[]
 export async function addMcp(cwd: string, source: string, tool: string): Promise<{ success: boolean; message: string }> {
   const safe = validateName(source)
   const agent = TOOL_AGENT_MAP[tool] || 'claude-code'
-  const result = await runMcpsMgr(['add', safe, '-a', agent, '-y'], cwd)
-  if (result.success) {
-    return { success: true, message: `${safe} 已部署到 ${agent}` }
+  const before = new Set(listDeployedForTool(cwd, tool))
+  // mcpsmgr 0.4.10 still prompts to trust README-derived configs even with
+  // `-y`. The Add button is the user's authorization, so answer only that
+  // confirmation through stdin. Any further prompt is left unanswered and the
+  // postcondition check below prevents a prompt-only exit from becoming a
+  // false success.
+  const result = await runMcpsMgr(['add', safe, '-a', agent, '-y'], cwd, 'y\n')
+  const after = listDeployedForTool(cwd, tool)
+  const reported = new Set(findReportedDeployments(`${result.stdout}\n${result.stderr}`))
+  const deployedName = after.find((name) => !before.has(name))
+    ?? after.find((name) => reported.has(name))
+  if (deployedName) {
+    return { success: true, message: `${deployedName} 已部署到 ${agent}` }
   }
-  return { success: false, message: result.stderr.trim() || result.stdout.trim() || '部署失败' }
+  const requiredEnv = findRequiredEnvPrompts(`${result.stdout}\n${result.stderr}`)
+  if (requiredEnv.length > 0) {
+    return {
+      success: false,
+      message: `安装需要环境变量 ${requiredEnv.join(', ')}，尚未写入项目配置`,
+    }
+  }
+  return { success: false, message: cliFailureMessage(result, '部署失败') }
 }
 
 export async function removeMcp(cwd: string, name: string): Promise<{ success: boolean; message: string }> {
@@ -313,11 +218,25 @@ export async function removeMcp(cwd: string, name: string): Promise<{ success: b
 /** `install` — pull source into the central repository WITHOUT deploying. */
 export async function installMcp(source: string): Promise<{ success: boolean; message: string }> {
   const safe = validateName(source)
-  const result = await runMcpsMgr(['install', safe, '-y'])
-  if (result.success) {
-    return { success: true, message: `${safe} 已入仓` }
+  const before = new Set(listCentralFromFs().map((server) => server.name))
+  // `install` has no -y flag in mcpsmgr 0.4.10, but uses the same README trust
+  // prompt as `add`. Feed the explicit UI authorization through stdin.
+  const result = await runMcpsMgr(['install', safe], undefined, 'y\n')
+  const after = listCentralFromFs().map((server) => server.name)
+  const reported = new Set(findSavedServers(`${result.stdout}\n${result.stderr}`))
+  const installedName = after.find((name) => !before.has(name))
+    ?? after.find((name) => reported.has(name))
+  if (installedName) {
+    return { success: true, message: `${installedName} 已入仓` }
   }
-  return { success: false, message: result.stderr.trim() || result.stdout.trim() || '安装失败' }
+  const requiredEnv = findRequiredEnvPrompts(`${result.stdout}\n${result.stderr}`)
+  if (requiredEnv.length > 0) {
+    return {
+      success: false,
+      message: `安装需要环境变量 ${requiredEnv.join(', ')}，尚未写入中央仓库`,
+    }
+  }
+  return { success: false, message: cliFailureMessage(result, '安装失败') }
 }
 
 export async function uninstallMcp(name: string): Promise<{ success: boolean; message: string }> {
@@ -326,7 +245,7 @@ export async function uninstallMcp(name: string): Promise<{ success: boolean; me
   if (result.success) {
     return { success: true, message: `${safe} 已从中央仓库移除` }
   }
-  return { success: false, message: result.stderr.trim() || result.stdout.trim() || '卸载失败' }
+  return { success: false, message: cliFailureMessage(result, '卸载失败') }
 }
 
 // ─── Manual paste-JSON writer ───────────────────────────
