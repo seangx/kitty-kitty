@@ -1,5 +1,6 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
+import { readFile } from 'node:fs/promises'
 import {
   buildDeckForest,
   chooseVerticalDirection,
@@ -63,4 +64,11 @@ test('toggleDeckPath keeps one active group per hierarchy depth', () => {
 
 test('openDeckPath opens a parent after creating its child group', () => {
   assert.deepEqual(openDeckPath(['monkey', 'old-child'], 1, 'workers'), ['monkey', 'workers'])
+})
+
+test('child group creation uses the in-app name dialog instead of Electron window.prompt', async () => {
+  const source = await readFile(new URL('../src/renderer/pet/SessionDeck.tsx', import.meta.url), 'utf8')
+  assert.doesNotMatch(source, /window\.prompt\(['"]子分组名称/)
+  assert.match(source, /openChildGroupDialog\(groupId, depth, event\.clientX, event\.clientY\)/)
+  assert.match(source, /<DeckNameDialog/)
 })

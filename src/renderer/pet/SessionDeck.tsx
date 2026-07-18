@@ -47,6 +47,13 @@ interface DragState {
   target: string | null
 }
 
+interface ChildGroupDialogState {
+  groupId: string
+  depth?: number
+  x: number
+  y: number
+}
+
 const DRAG_THRESHOLD = 5
 
 function childItems(node: DeckGroupNode): DeckItem[] {
@@ -95,6 +102,9 @@ export default function SessionDeck({
   const [groupMenu, setGroupMenu] = useState<{ id: string; x: number; y: number } | null>(null)
   const [showMoveMenu, setShowMoveMenu] = useState(false)
   const [showHidden, setShowHidden] = useState(false)
+  const [childGroupDialog, setChildGroupDialog] = useState<ChildGroupDialogState | null>(null)
+  const [childGroupCreating, setChildGroupCreating] = useState(false)
+  const [childGroupError, setChildGroupError] = useState('')
 
   const accent = /^#[0-9a-f]{6}$/i.test(bubble.deckAccentColor || '')
     ? bubble.deckAccentColor
@@ -162,18 +172,33 @@ export default function SessionDeck({
     await Promise.all([loadGroups(), loadSessions()])
   }, [loadGroups, loadSessions])
 
-  const createChildGroup = useCallback(async (groupId: string, depth?: number) => {
-    const name = window.prompt('子分组名称')?.trim()
-    if (!name) return
+  const openChildGroupDialog = useCallback((
+    groupId: string,
+    depth: number | undefined,
+    x: number,
+    y: number,
+  ) => {
+    setChildGroupError('')
+    setChildGroupDialog({ groupId, depth, x, y })
+  }, [])
+
+  const createChildGroup = useCallback(async (name: string) => {
+    if (!childGroupDialog) return
+    const { groupId, depth } = childGroupDialog
     try {
+      setChildGroupCreating(true)
+      setChildGroupError('')
       await window.api.invoke('group:create', name, undefined, groupId)
       await refresh()
-      if (depth !== undefined) setExpandedPath(openDeckPath(openPath, depth, groupId))
+      if (depth !== undefined) setOpenPath((current) => openDeckPath(current, depth, groupId))
+      setChildGroupDialog(null)
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error)
-      window.alert(`创建子分组失败：${message}`)
+      setChildGroupError(`创建失败：${message}`)
+    } finally {
+      setChildGroupCreating(false)
     }
-  }, [openPath, refresh, setExpandedPath])
+  }, [childGroupDialog, refresh])
 
   const executeDrop = useCallback(async (state: DragState, target: string) => {
     try {
@@ -302,7 +327,7 @@ export default function SessionDeck({
             onMouseDown={(event) => event.stopPropagation()}
             onClick={(event) => {
               event.stopPropagation()
-              void createChildGroup(groupId, depth)
+              openChildGroupDialog(groupId, depth, event.clientX, event.clientY)
             }}
             aria-label={`在 ${node.group.name} 中新建子分组`}
             title="新建子分组"
@@ -383,6 +408,20 @@ export default function SessionDeck({
         </div>
       )}
 
+      {childGroupDialog && (
+        <DeckNameDialog
+          x={childGroupDialog.x}
+          y={childGroupDialog.y}
+          title={`在 ${groups.find((group) => group.id === childGroupDialog.groupId)?.name || '分组'} 中新建子分组`}
+          busy={childGroupCreating}
+          error={childGroupError}
+          onClose={() => {
+            if (!childGroupCreating) setChildGroupDialog(null)
+          }}
+          onSubmit={(name) => { void createChildGroup(name) }}
+        />
+      )}
+
       {sessionMenu && selectedSession && (
         <DeckMenu x={sessionMenu.x} y={sessionMenu.y} onClose={() => { setSessionMenu(null); setShowMoveMenu(false) }}>
           <button onClick={() => { attach(selectedSession); setSessionMenu(null) }}>打开会话</button>
@@ -416,7 +455,7 @@ export default function SessionDeck({
           <button onClick={async () => { await window.api.invoke('session:create-in-group', selectedGroup.id); setGroupMenu(null); await refresh() }}>在此组创建会话</button>
           <button onClick={async () => {
             setGroupMenu(null)
-            await createChildGroup(selectedGroup.id)
+            openChildGroupDialog(selectedGroup.id, undefined, groupMenu.x, groupMenu.y)
           }}>新建子分组</button>
           <button onClick={async () => {
             const name = window.prompt('分组名称', selectedGroup.name)?.trim()
@@ -431,6 +470,80 @@ export default function SessionDeck({
           <button className="is-danger" onClick={async () => { await window.api.invoke('group:archive', selectedGroup.id); setGroupMenu(null); await refresh() }}>归档分组</button>
         </DeckMenu>
       )}
+    </div>
+  )
+}
+
+function DeckNameDialog({ x, y, title, busy, error, onClose, onSubmit }: {
+  x: number
+  y: number
+  title: string
+  busy: boolean
+  error: string
+  onClose: () => void
+  onSubmit: (name: string) => void
+}) {
+  const dialogRef = useRef<HTMLDivElement | null>(null)
+  const inputRef = useRef<HTMLInputElement | null>(null)
+  const [name, setName] = useState('')
+  const [position, setPosition] = useState({ left: x, top: y })
+
+  const submit = useCallback(() => {
+    const value = name.trim()
+    if (value && !busy) onSubmit(value)
+  }, [busy, name, onSubmit])
+
+  const reposition = useCallback(() => {
+    const node = dialogRef.current
+    if (!node) return
+    const rect = node.getBoundingClientRect()
+    setPosition(clampMenuPosition(x, y, rect.width, rect.height, window.innerWidth, window.innerHeight))
+  }, [x, y])
+
+  useLayoutEffect(reposition, [reposition])
+  useEffect(() => {
+    inputRef.current?.focus()
+    const onMouseDown = (event: MouseEvent) => {
+      if (!dialogRef.current?.contains(event.target as Node)) onClose()
+    }
+    const onResize = () => reposition()
+    document.addEventListener('mousedown', onMouseDown)
+    window.addEventListener('resize', onResize)
+    return () => {
+      document.removeEventListener('mousedown', onMouseDown)
+      window.removeEventListener('resize', onResize)
+    }
+  }, [onClose, reposition])
+
+  return (
+    <div
+      ref={dialogRef}
+      className="session-deck__name-dialog"
+      style={position}
+      role="dialog"
+      aria-modal="true"
+      aria-label={title}
+      onMouseDown={(event) => event.stopPropagation()}
+    >
+      <div className="session-deck__name-dialog-title">{title}</div>
+      <input
+        ref={inputRef}
+        value={name}
+        disabled={busy}
+        placeholder="子分组名称"
+        onChange={(event) => setName(event.target.value)}
+        onKeyDown={(event) => {
+          if (event.key === 'Enter') submit()
+          if (event.key === 'Escape' && !busy) onClose()
+        }}
+      />
+      {error && <div className="session-deck__name-dialog-error">{error}</div>}
+      <div className="session-deck__name-dialog-actions">
+        <button onClick={onClose} disabled={busy}>取消</button>
+        <button className="is-primary" onClick={submit} disabled={busy || !name.trim()}>
+          {busy ? '创建中…' : '创建'}
+        </button>
+      </div>
     </div>
   )
 }
