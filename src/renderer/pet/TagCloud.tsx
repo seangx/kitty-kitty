@@ -1,10 +1,11 @@
-import { useState, useMemo, useCallback, useEffect, useRef } from 'react'
+import { useState, useMemo, useCallback, useEffect, useLayoutEffect, useRef } from 'react'
 import type { SessionInfo } from '@shared/types/session'
 import { useConfigStore } from '../store/config-store'
 import { useSessionStore } from '../store/session-store'
 import { COLOR_THEMES } from '@shared/types/config'
 import { useAutoClose } from './useAutoClose'
 import AgentMetadataPopup from './AgentMetadataPopup'
+import { clampMenuPosition } from './menu-position'
 
 interface Props {
   sessions: SessionInfo[]
@@ -977,30 +978,32 @@ function TagCtxMenu({ x, y, glass, onClose, children }: {
   const autoCloseRef = useAutoClose(true, onClose)
   const nodeRef = useRef<HTMLDivElement | null>(null)
   const [pos, setPos] = useState({ left: x, top: y })
-  const [maxH, setMaxH] = useState<number | undefined>(undefined)
 
-  // Reposition menu to stay within viewport, called on mount and resize
+  // Measure before paint so an edge menu never renders once at the raw click
+  // point and then jumps into the viewport on the next frame.
   const reposition = useCallback(() => {
     const node = nodeRef.current
     if (!node) return
     const rect = node.getBoundingClientRect()
-    const vw = window.innerWidth
-    const vh = window.innerHeight
-    let left = x
-    let top = y
-    if (rect.right > vw) left = Math.max(4, vw - rect.width - 4)
-    if (rect.bottom > vh) top = Math.max(4, vh - rect.height - 4)
-    if (top < 4) top = 4
-    const available = vh - top - 4
-    setMaxH(rect.height > available ? available : undefined)
-    setPos({ left, top })
+    const next = clampMenuPosition(
+      x,
+      y,
+      rect.width,
+      rect.height,
+      window.innerWidth,
+      window.innerHeight,
+    )
+    setPos((current) => (
+      current.left === next.left && current.top === next.top ? current : next
+    ))
   }, [x, y])
 
   const setRef = useCallback((node: HTMLDivElement | null) => {
     (autoCloseRef as any).current = node
     nodeRef.current = node
-    if (node) reposition()
-  }, [autoCloseRef, reposition])
+  }, [autoCloseRef])
+
+  useLayoutEffect(() => { reposition() }, [reposition])
 
   // Re-measure when children change size (e.g. group submenu expands)
   useEffect(() => {
@@ -1008,17 +1011,19 @@ function TagCtxMenu({ x, y, glass, onClose, children }: {
     if (!node) return
     const ro = new ResizeObserver(() => reposition())
     ro.observe(node)
-    return () => ro.disconnect()
+    window.addEventListener('resize', reposition)
+    return () => {
+      ro.disconnect()
+      window.removeEventListener('resize', reposition)
+    }
   }, [reposition])
-
-  useEffect(() => { setPos({ left: x, top: y }); setMaxH(undefined) }, [x, y])
 
   return (
     <div ref={setRef} style={{
       position: 'fixed', left: pos.left, top: pos.top, zIndex: 200,
       background: `${glass}f0`, backdropFilter: 'blur(24px)', WebkitBackdropFilter: 'blur(24px)',
       borderRadius: 12, padding: '4px 0', minWidth: 150,
-      maxHeight: maxH ?? '85vh', overflowY: 'auto',
+      maxHeight: 'calc(100vh - 8px)', overflowY: 'auto',
       boxShadow: '0 8px 32px rgba(0,0,0,0.5)', fontFamily: "'Plus Jakarta Sans', -apple-system, sans-serif"
     }}>
       {children}
