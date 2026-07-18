@@ -1,10 +1,12 @@
 import assert from 'node:assert/strict'
 import { execFileSync } from 'node:child_process'
-import { readFileSync, unlinkSync } from 'node:fs'
+import { readFileSync, statSync, unlinkSync } from 'node:fs'
 import test from 'node:test'
 import {
   generateCodexRemoteScript,
   generateLaunchScript,
+  generateOpenCodeAttachScript,
+  injectHiveIdentity,
   injectOpenCodeMemory,
 } from '../src/main/tmux/cli-wrapper.ts'
 
@@ -103,4 +105,23 @@ test('resumes an exact OpenCode session and injects its project memory path', ()
   assert.ok(script.includes(`cd '/tmp/project'`))
   assert.ok(script.includes(`opencode --agent build --session "ses_opencode_123" --prompt '继续处理'`))
   assert.ok(script.includes(`export KITTY_CLAUDE_MEMORY_FILE='/tmp/project'\\''s-memory/MEMORY.md'`))
+})
+
+test('attaches OpenCode to the exact Hive-supervised server and session', () => {
+  const path = generateOpenCodeAttachScript({
+    serverUrl: 'http://127.0.0.1:43123',
+    sessionId: 'ses_hive_123',
+    username: 'opencode',
+    password: "secret'quote",
+  }, '/tmp/project', '--mini')
+  injectOpenCodeMemory(path, '/tmp/project-memory/MEMORY.md')
+  injectHiveIdentity(path, 'kitty-session-id', 'Kitty session')
+  assert.equal(statSync(path).mode & 0o777, 0o700)
+  const script = readGenerated(path)
+
+  assert.ok(script.includes(`cd '/tmp/project'`))
+  assert.ok(script.includes(
+    `opencode attach 'http://127.0.0.1:43123' --session 'ses_hive_123' --username 'opencode' --password 'secret'\\''quote' --mini`,
+  ))
+  assert.doesNotMatch(script, /opencode --prompt/)
 })

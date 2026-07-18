@@ -8,8 +8,9 @@ import { execSync, spawn } from 'child_process'
 import { v4 as uuid } from 'uuid'
 import { log } from '../logger'
 import * as tmux from '../tmux/session-manager'
-import { generateLaunchScript, type LaunchMode, isToolInstalled, getInstallHint, getNtfyTopic, setNtfyTopic, getCodexHiveBridge, setCodexHiveBridge, needsDevChannelAutoAccept, generateCodexRemoteScript, injectHiveIdentity, injectSessionEnv, injectOpenCodeMemory } from '../tmux/cli-wrapper'
+import { generateLaunchScript, type LaunchMode, isToolInstalled, getInstallHint, getNtfyTopic, setNtfyTopic, getCodexHiveBridge, setCodexHiveBridge, needsDevChannelAutoAccept, generateCodexRemoteScript, generateOpenCodeAttachScript, injectHiveIdentity, injectSessionEnv, injectOpenCodeMemory } from '../tmux/cli-wrapper'
 import { registerCodexAgent, codexPaneWs, codexSetThread, renameAgent, hiveSupportsSwitchTool } from '../hive-codex'
+import { openCodePaneServer, openCodePromptAsync, openCodeSetSession, type OpenCodePaneServerResult } from '../hive-opencode'
 import * as sessionRepo from '../db/session-repo'
 import { getDB } from '../db/database'
 import * as ntfy from '../ntfy'
@@ -74,6 +75,77 @@ async function tryPrepareCodexRemoteScript(args: {
     return { script: generateCodexRemoteScript(ws.ws_url, ws.thread_id, args.projectDir), hiveAgentId: reg.agentId, threadId: ws.thread_id }
   } catch (err) {
     log('codex-bridge', 'unexpected:', err)
+    return null
+  }
+}
+
+/**
+ * Register an OpenCode agent with Hive and attach Kitty's visible TUI to the
+ * exact supervised session that receives push events. A plain remote MCP is
+ * insufficient: OpenCode does not turn MCP logging notifications into chat.
+ */
+async function tryPrepareOpenCodeAttachScript(args: {
+  kittyId: string
+  title: string
+  projectDir: string
+  desiredSessionId?: string | null
+  initialPrompt?: string
+  launchArgs?: string
+  switchTool?: boolean
+}): Promise<{ script: string; hiveAgentId: string; sessionId: string } | null> {
+  try {
+    const reg = await registerCodexAgent({
+      key: args.kittyId,
+      displayName: args.title,
+      projectDir: args.projectDir,
+      tool: 'opencode',
+      switchTool: args.switchTool,
+    })
+    if (!reg.success || !reg.agentId) {
+      log('opencode-bridge', `register failed: ${reg.error}`)
+      return null
+    }
+
+    let pane: OpenCodePaneServerResult = await openCodePaneServer({ key: args.kittyId, timeoutMs: 15_000 })
+    if (pane.status !== 'ready') {
+      log('opencode-bridge', `server not ready (status=${pane.status}): ${pane.error || ''}`)
+      return null
+    }
+
+    const shouldSwitch = args.desiredSessionId === null
+      || (typeof args.desiredSessionId === 'string' && args.desiredSessionId !== pane.session_id)
+    if (shouldSwitch) {
+      const switched = await openCodeSetSession(reg.agentId, args.desiredSessionId ?? null)
+      if (switched.kind !== 'ok') {
+        log('opencode-bridge', `session switch failed (${switched.kind}): ${switched.message}`)
+        return null
+      }
+      pane = switched.pane
+    }
+
+    if (!pane.server_url || !pane.session_id || !pane.server_username || !pane.server_password) {
+      log('opencode-bridge', 'server returned incomplete attach credentials')
+      return null
+    }
+    if (args.initialPrompt) {
+      const sent = await openCodePromptAsync(pane, args.initialPrompt)
+      if (!sent.success) {
+        log('opencode-bridge', `initial prompt failed: ${sent.error}`)
+        return null
+      }
+    }
+    return {
+      script: generateOpenCodeAttachScript({
+        serverUrl: pane.server_url,
+        sessionId: pane.session_id,
+        username: pane.server_username,
+        password: pane.server_password,
+      }, args.projectDir, args.launchArgs),
+      hiveAgentId: reg.agentId,
+      sessionId: pane.session_id,
+    }
+  } catch (err) {
+    log('opencode-bridge', 'unexpected:', err)
     return null
   }
 }
@@ -298,11 +370,33 @@ export function registerSessionHandlers(): void {
         return toSessionInfo(session)
       }
     }
+    if (t === 'opencode') {
+      const provisional = uuid().slice(0, 8)
+      const projectDir = join(homedir(), '.kitty-kitty', 'sessions', provisional)
+      mkdirSync(projectDir, { recursive: true })
+      const title = firstMessage?.slice(0, 40) || provisional
+      const bridged = await tryPrepareOpenCodeAttachScript({
+        kittyId: provisional,
+        title,
+        projectDir,
+        initialPrompt: firstMessage,
+      })
+      if (bridged) {
+        script = bridged.script
+        prepareProjectForTool(projectDir, t, script)
+        const session = tmux.createTmuxSession(t, firstMessage, projectDir, script, provisional)
+        sessionRepo.saveSession(session)
+        sessionRepo.updateSessionHiveAgentId(session.id, bridged.hiveAgentId)
+        sessionRepo.updateSessionExternalId(session.id, bridged.sessionId)
+        tmux.attachSession(session.tmuxName)
+        return toSessionInfo(session)
+      }
+    }
     // Pre-bind a session id for claude so its jsonl is identifiable up front
     // (lets multiple claude sessions share one cwd without cross-assignment).
     const claudeSid = t === 'claude' ? uuid() : undefined
-    // OpenCode supports an initial prompt as a real CLI flag; do not paste it
-    // into the live TUI after startup.
+    // Bare OpenCode fallback supports an initial prompt as a real CLI flag;
+    // do not paste it into the live TUI after startup.
     script = generateLaunchScript(t, 'new', undefined, undefined, claudeSid, undefined, t === 'opencode' ? firstMessage : undefined)
     const session = tmux.createTmuxSession(t, firstMessage, undefined, script)
     sessionRepo.saveSession(session)
@@ -357,6 +451,29 @@ export function registerSessionHandlers(): void {
         presetId = provisional
       } else {
         script = generateLaunchScript(t, mode)
+      }
+    } else if (t === 'opencode') {
+      const provisional = uuid().slice(0, 8)
+      // Resolve continue BEFORE registering: registration starts a fresh Hive
+      // session, which would otherwise become OpenCode's newest local row.
+      const desiredSessionId = mode === 'resume'
+        ? resumeId
+        : mode === 'continue'
+          ? findExternalSessions('opencode', dir)[0]?.id
+          : undefined
+      const bridged = await tryPrepareOpenCodeAttachScript({
+        kittyId: provisional,
+        title: basename(dir),
+        projectDir: dir,
+        desiredSessionId,
+      })
+      if (bridged) {
+        script = bridged.script
+        hiveAgentId = bridged.hiveAgentId
+        bridgedThreadId = bridged.sessionId
+        presetId = provisional
+      } else {
+        script = generateLaunchScript(t, mode, resumeId === '__new__' ? undefined : resumeId || undefined)
       }
     } else {
       // Pre-bind a session id only for a genuinely NEW claude session.
@@ -579,7 +696,7 @@ export function registerSessionHandlers(): void {
     sessionRepo.updateSessionExternalId(id, nextExternalId)
     try {
       if (tmux.isSessionAlive(session.tmuxName)) {
-        restartSessionTool({ ...session, tool: nextTool, externalSessionId: nextExternalId }, nextTool)
+        await restartSessionTool({ ...session, tool: nextTool, externalSessionId: nextExternalId }, nextTool)
       }
     } catch (err) {
       sessionRepo.updateSessionTool(id, session.tool)
@@ -1856,6 +1973,7 @@ async function restartSessionPane(session: sessionRepo.SessionRow, initialPrompt
   // the app-server is intentional: it refreshes Codex's MCP tool registry.
   let launch: string
   let bridgedHiveAgentId = ''
+  let bridgedExternalId = ''
   if (session.tool === 'codex' && getCodexHiveBridge()) {
     // ALWAYS register on restart, not just when hiveAgentId is empty.
     // The stored hiveAgentId may point to a deleted/orphaned hive row
@@ -1898,6 +2016,29 @@ async function restartSessionPane(session: sessionRepo.SessionRow, initialPrompt
       const mode = restartMode(session)
       launch = generateLaunchScript(session.tool, mode, session.externalSessionId || undefined, session.cwd || undefined, undefined, launchArgsFor(session), initialPrompt)
     }
+  } else if (session.tool === 'opencode') {
+    const mode = restartMode(session)
+    const desiredSessionId = mode === 'new'
+      ? null
+      : mode === 'resume'
+        ? session.externalSessionId
+        : undefined
+    const bridged = await tryPrepareOpenCodeAttachScript({
+      kittyId: session.id,
+      title: session.title,
+      projectDir: session.cwd,
+      desiredSessionId,
+      initialPrompt,
+      launchArgs: launchArgsFor(session),
+      switchTool: await hiveSupportsSwitchTool(),
+    })
+    if (bridged) {
+      launch = bridged.script
+      bridgedHiveAgentId = bridged.hiveAgentId
+      bridgedExternalId = bridged.sessionId
+    } else {
+      launch = generateLaunchScript(session.tool, mode, session.externalSessionId || undefined, session.cwd || undefined, undefined, launchArgsFor(session), initialPrompt)
+    }
   } else {
     const { sid, mode } = prebindClaudeRelaunch(session, restartMode(session))
     launch = generateLaunchScript(session.tool, mode, session.externalSessionId || undefined, session.cwd || undefined, sid, launchArgsFor(session), initialPrompt)
@@ -1930,6 +2071,10 @@ async function restartSessionPane(session: sessionRepo.SessionRow, initialPrompt
   if (bridgedHiveAgentId && bridgedHiveAgentId !== session.hiveAgentId) {
     sessionRepo.updateSessionHiveAgentId(session.id, bridgedHiveAgentId)
   }
+  if (bridgedExternalId) {
+    sessionRepo.updateSessionExternalId(session.id, bridgedExternalId)
+    clearMark(session.id)
+  }
   log('session', `restart: ${session.title}`)
 
   // For claude --dangerously-load-development-channels: auto-accept the prompt
@@ -1958,21 +2103,42 @@ function pollAndAcceptDevChannelPrompt(paneTarget: string): void {
   }, 200)
 }
 
-function restartSessionTool(session: sessionRepo.SessionRow, nextTool: string): void {
+async function restartSessionTool(session: sessionRepo.SessionRow, nextTool: string): Promise<void> {
   const target = resolveRestartPaneTarget(session)
     ?? resolvePaneTarget(session.tmuxName, session.mainPane || '0.0')
   const launchArgs = launchArgsFor({ tool: nextTool, launchArgs: session.launchArgs })
   // A generic tool switch does not convert conversation history (Alt+X owns
   // that contract), so start a fresh target-tool session. Pre-bind Claude to
   // avoid accidentally continuing a sibling session that shares the cwd.
-  const launch = generateLaunchScript(
-    nextTool,
-    'new',
-    undefined,
-    session.cwd,
-    nextTool === 'claude' ? session.externalSessionId : undefined,
-    launchArgs,
-  )
+  let launch: string
+  let bridgedHiveAgentId = ''
+  let bridgedExternalId = ''
+  if (nextTool === 'opencode') {
+    const bridged = await tryPrepareOpenCodeAttachScript({
+      kittyId: session.id,
+      title: session.title,
+      projectDir: session.cwd,
+      desiredSessionId: null,
+      launchArgs,
+      switchTool: await hiveSupportsSwitchTool(),
+    })
+    if (bridged) {
+      launch = bridged.script
+      bridgedHiveAgentId = bridged.hiveAgentId
+      bridgedExternalId = bridged.sessionId
+    } else {
+      launch = generateLaunchScript(nextTool, 'new', undefined, session.cwd, undefined, launchArgs)
+    }
+  } else {
+    launch = generateLaunchScript(
+      nextTool,
+      'new',
+      undefined,
+      session.cwd,
+      nextTool === 'claude' ? session.externalSessionId : undefined,
+      launchArgs,
+    )
+  }
   prepareProjectForTool(session.cwd, nextTool, launch)
   injectHiveIdentity(launch, session.id, session.title || '')
   injectSessionEnv(launch, session.env)
@@ -1993,6 +2159,8 @@ function restartSessionTool(session: sessionRepo.SessionRow, nextTool: string): 
     } catch { /* ignore invalid per-session env */ }
   }
   execSync(`${tmux.TMUX} respawn-pane -k${envFlags} -t "${target}" "${launch}"`, { stdio: 'ignore' })
+  if (bridgedHiveAgentId) sessionRepo.updateSessionHiveAgentId(session.id, bridgedHiveAgentId)
+  if (bridgedExternalId) sessionRepo.updateSessionExternalId(session.id, bridgedExternalId)
 }
 
 function resolvePaneTarget(tmuxName: string, mainPane: string): string {

@@ -240,7 +240,6 @@ export function injectHiveIdentity(scriptPath: string, key: string, name: string
       ? script.replace(PATH_PREAMBLE, `${PATH_PREAMBLE}\n${exportLines}`)
       : script.replace(/^#!\/bin\/bash\n/, `#!/bin/bash\n${exportLines}\n`)
     writeFileSync(scriptPath, script)
-    chmodSync(scriptPath, '755')
   } catch { /* best-effort:注入失败不阻断 spawn */ }
 }
 
@@ -268,7 +267,6 @@ export function injectSessionEnv(scriptPath: string, envJson: string): void {
       ? script.replace(PATH_PREAMBLE, `${PATH_PREAMBLE}\n${exportLines}`)
       : script.replace(/^#!\/bin\/bash\n/, `#!/bin/bash\n${exportLines}\n`)
     writeFileSync(scriptPath, script)
-    chmodSync(scriptPath, '755')
   } catch { /* best-effort */ }
 }
 
@@ -286,7 +284,6 @@ export function injectOpenCodeMemory(scriptPath: string, memoryFile: string | nu
       ? script.replace(PATH_PREAMBLE, `${PATH_PREAMBLE}\n${exportLine}`)
       : script.replace(/^#!\/bin\/bash\n/, `#!/bin/bash\n${exportLine}\n`)
     writeFileSync(scriptPath, script)
-    chmodSync(scriptPath, '755')
   } catch { /* best-effort: memory bridge must not block launching OpenCode */ }
 }
 
@@ -335,6 +332,33 @@ exec $SHELL
   if (cwd) script = prefixCwd(script, cwd)
   writeFileSync(scriptPath, script)
   chmodSync(scriptPath, '755')
+  return scriptPath
+}
+
+/** Launch a visible OpenCode TUI attached to the Hive-supervised session. */
+export function generateOpenCodeAttachScript(
+  pane: {
+    serverUrl: string
+    sessionId: string
+    username: string
+    password: string
+  },
+  cwd?: string,
+  extraArgs?: string,
+): string {
+  const scriptPath = join(tmpdir(), `kitty_launch_${Date.now()}.sh`)
+  const args = extraArgs?.trim() ? ` ${extraArgs.trim()}` : ''
+  let script = `#!/bin/bash
+${PATH_PREAMBLE}
+opencode attach ${shellQuoteForSh(pane.serverUrl)} --session ${shellQuoteForSh(pane.sessionId)} --username ${shellQuoteForSh(pane.username)} --password ${shellQuoteForSh(pane.password)}${args}
+# Keep shell alive when TUI exits so the pane doesn't vanish silently
+exec $SHELL
+`
+  if (cwd) script = prefixCwd(script, cwd)
+  writeFileSync(scriptPath, script)
+  // The attach password is embedded in this short-lived script. Keep it
+  // executable by the current user without exposing it to other local users.
+  chmodSync(scriptPath, '700')
   return scriptPath
 }
 

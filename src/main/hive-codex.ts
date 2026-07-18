@@ -12,38 +12,10 @@
  * the logger for diagnostics, stdout is parsed.
  */
 
-import { spawn } from 'child_process'
 import { log } from './logger'
+import { runHive } from './hive-cli'
 
-const HIVE_BIN = 'kitty-hive'
 const DEFAULT_TIMEOUT_MS = 10000
-
-function runHive(args: string[], opts: { timeoutMs?: number } = {}): Promise<{ code: number; stdout: string; stderr: string }> {
-  return new Promise((resolve) => {
-    const child = spawn(HIVE_BIN, args, {
-      stdio: ['ignore', 'pipe', 'pipe'],
-      env: {
-        ...process.env,
-        PATH: `/opt/homebrew/bin:/usr/local/bin:${process.env.PATH || ''}`,
-      },
-    })
-    let stdout = ''
-    let stderr = ''
-    child.stdout.on('data', (b: Buffer) => { stdout += b.toString() })
-    child.stderr.on('data', (b: Buffer) => { stderr += b.toString() })
-    const timer = opts.timeoutMs && opts.timeoutMs > 0
-      ? setTimeout(() => { try { child.kill() } catch { /* ignore */ } }, opts.timeoutMs)
-      : null
-    child.on('exit', (code) => {
-      if (timer) clearTimeout(timer)
-      resolve({ code: code ?? -1, stdout, stderr })
-    })
-    child.on('error', (err) => {
-      if (timer) clearTimeout(timer)
-      resolve({ code: -1, stdout, stderr: stderr + String(err) })
-    })
-  })
-}
 
 export interface RegisterCodexAgentInput {
   key: string
@@ -51,7 +23,7 @@ export interface RegisterCodexAgentInput {
   projectDir?: string
   roles?: string
   /** 注册为哪个工具(默认 codex)。Alt+X 变回 claude 时传 'claude'。 */
-  tool?: 'codex' | 'claude'
+  tool?: 'codex' | 'claude' | 'opencode' | 'shell'
   /** 显式允许切换已有 agent 的 tool(hive ≥0.7.7 的防护闸开口)。 */
   switchTool?: boolean
 }
