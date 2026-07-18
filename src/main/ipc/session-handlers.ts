@@ -1,5 +1,6 @@
 import { ipcMain, dialog, BrowserWindow, shell } from 'electron'
 import { IPC } from '@shared/types/ipc'
+import { createDirectoryPickResult } from '@shared/directory-session'
 import { readdirSync, existsSync, statSync, lstatSync, mkdirSync, symlinkSync } from 'fs'
 import { join, basename } from 'path'
 import { homedir } from 'os'
@@ -310,10 +311,9 @@ export function registerSessionHandlers(): void {
     return toSessionInfo(session)
   })
 
-  // Step 1: Pick directory and detect existing Claude sessions
-  ipcMain.handle(IPC.SESSION_CREATE_IN_DIR, async (_event, tool: string) => {
-    ensureReady(tool || 'claude')
-
+  // Step 1: Pick a directory. Tool readiness is checked only after the user
+  // explicitly selects a tool in the confirmation UI.
+  ipcMain.handle(IPC.SESSION_CREATE_IN_DIR, async () => {
     const win = BrowserWindow.getFocusedWindow() || BrowserWindow.getAllWindows()[0]
     const result = win
       ? await dialog.showOpenDialog(win, { title: '选择项目目录', properties: ['openDirectory', 'showHiddenFiles'] })
@@ -327,42 +327,7 @@ export function registerSessionHandlers(): void {
     const existingSessions = findAllExternalSessions(dir)
     const isGitRepo = isGitRepository(dir)
 
-    if (existingSessions.length > 0 || isGitRepo) {
-      return { type: 'pick' as const, dir, sessions: existingSessions, isGitRepo }
-    }
-
-    // No existing sessions — create new directly.
-    // For codex with bridge on, try path B (codex --remote ws).
-    const t = tool || 'claude'
-    await syncManagedMcpsToTool(dir, t)
-    let script: string
-    let hiveAgentId = ''
-    let presetId: string | undefined
-    let bridgedThreadId: string | undefined
-    let claudeSid: string | undefined
-    if (t === 'codex') {
-      const provisional = uuid().slice(0, 8)
-      const bridged = await tryPrepareCodexRemoteScript({ kittyId: provisional, title: basename(dir), projectDir: dir })
-      if (bridged) {
-        script = bridged.script
-        hiveAgentId = bridged.hiveAgentId
-        bridgedThreadId = bridged.threadId
-        presetId = provisional
-      } else {
-        script = generateLaunchScript(t, 'new')
-      }
-    } else {
-      claudeSid = t === 'claude' ? uuid() : undefined
-      script = generateLaunchScript(t, 'new', undefined, undefined, claudeSid)
-    }
-    prepareProjectForTool(dir, t, script)
-    const session = tmux.createTmuxSession(t, undefined, dir, script, presetId)
-    sessionRepo.saveSession(session)
-    if (hiveAgentId) sessionRepo.updateSessionHiveAgentId(session.id, hiveAgentId)
-    if (bridgedThreadId) sessionRepo.updateSessionExternalId(session.id, bridgedThreadId)
-    if (claudeSid) sessionRepo.updateSessionExternalId(session.id, claudeSid)
-    tmux.attachSession(session.tmuxName)
-    return { type: 'created' as const, session: toSessionInfo(session) }
+    return createDirectoryPickResult(dir, existingSessions, isGitRepo)
   })
 
   // Step 2: Start session in dir with optional resume

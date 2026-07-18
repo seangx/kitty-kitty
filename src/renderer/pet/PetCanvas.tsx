@@ -13,20 +13,15 @@ import { IPC } from '@shared/types/ipc'
 import { useSessionStore } from '../store/session-store'
 import { useConfigStore } from '../store/config-store'
 import type { ToolId } from '../store/config-store'
+import type { DirectoryPickResult } from '@shared/directory-session'
 
-interface DirPickResult {
-  type: 'pick'
-  dir: string
-  tool: ToolId  // user's last-tool — drives "新建" / "继续最近" buttons
-  sessions: Array<{ id: string; summary: string; date: string; tool?: string }>
-  isGitRepo: boolean
-}
+interface DirPickState extends DirectoryPickResult { defaultTool: ToolId }
 
 export default function PetCanvas() {
   const [animation, setAnimation] = useState<AnimationState>('idle')
   const [showInput, setShowInput] = useState(false)
   const [showSettings, setShowSettings] = useState(false)
-  const [dirPick, setDirPick] = useState<DirPickResult | null>(null)
+  const [dirPick, setDirPick] = useState<DirPickState | null>(null)
   const [contextMenu, setContextMenu] = useState<{ x: number; y: number } | null>(null)
   const [speech, setSpeech] = useState<string | null>(null)
   const [envEditor, setEnvEditor] = useState<string | null>(null)
@@ -326,11 +321,7 @@ export default function PetCanvas() {
       const result = await window.api.invoke('session:create-in-dir', lastTool) as any
       if (!result) { machine.forceState('idle'); return }
       if (result.type === 'pick') {
-        setDirPick({ ...result, tool: lastTool } as DirPickResult)
-      } else if (result.type === 'created') {
-        machine.forceState('happy', 2000)
-        say('在新目录开始啦~')
-        await loadSessions()
+        setDirPick({ ...result, defaultTool: lastTool } as DirPickState)
       }
     } catch (err) {
       console.error('[kitty] open in dir failed:', err)
@@ -499,7 +490,7 @@ export default function PetCanvas() {
       <DraggablePopup>
         <SessionPicker
           dir={dirPick.dir}
-          defaultTool={dirPick.tool}
+          defaultTool={dirPick.defaultTool}
           sessions={dirPick.sessions}
           onPick={handleDirConfirm}
           onClose={() => setDirPick(null)}

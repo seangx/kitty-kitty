@@ -1,11 +1,10 @@
 import { useState } from 'react'
-
-interface ExternalSession {
-  id: string
-  summary: string
-  date: string
-  tool?: string
-}
+import type { ToolId } from '../store/config-store'
+import {
+  DIRECTORY_TOOLS,
+  createDirectoryStartAction,
+} from '@shared/directory-session'
+import type { ExternalDirectorySession } from '@shared/directory-session'
 
 export type PickAction =
   | { type: 'new'; tool: string }
@@ -14,8 +13,8 @@ export type PickAction =
 
 interface Props {
   dir: string
-  defaultTool: string  // used for "新建" / "继续最近" buttons; per-row resume uses entry.tool
-  sessions: ExternalSession[]
+  defaultTool: ToolId
+  sessions: ExternalDirectorySession[]
   onPick: (action: PickAction) => void
   onClose: () => void
 }
@@ -35,6 +34,7 @@ const TOOL_BADGE: Record<string, { label: string; color: string }> = {
 export default function SessionPicker({ dir, defaultTool, sessions: initialSessions, onPick, onClose }: Props) {
   const dirName = dir.split('/').pop() || dir
   const [sessions, setSessions] = useState(initialSessions)
+  const [tool, setTool] = useState<ToolId>(defaultTool)
 
   const handleDelete = async (id: string, tool: string, e: React.MouseEvent) => {
     e.stopPropagation()
@@ -57,15 +57,37 @@ export default function SessionPicker({ dir, defaultTool, sessions: initialSessi
         <div>
           <div style={{ fontSize: 13, fontWeight: 600 }}>📂 {dirName}</div>
           <div style={{ fontSize: 10, color: C.textDim, marginTop: 2 }}>
-            选择继续或新建 · 默认工具 {TOOL_BADGE[defaultTool]?.label || defaultTool}
+            选择工具后继续或新建
           </div>
         </div>
         <button onClick={onClose} style={{ background: 'none', border: 'none', color: C.textDim, cursor: 'pointer', fontSize: 14 }}>✕</button>
       </div>
 
+      <div style={{ display: 'flex', gap: 4, marginBottom: 8 }}>
+        {DIRECTORY_TOOLS.map((toolOption) => {
+          const badge = TOOL_BADGE[toolOption]
+          const active = tool === toolOption
+          return (
+            <button
+              key={toolOption}
+              onClick={() => setTool(toolOption)}
+              style={{
+                flex: 1, padding: '6px 5px', borderRadius: 9999,
+                border: `1px solid ${active ? `${badge.color}88` : `${C.outline}33`}`,
+                background: active ? `${badge.color}22` : `${C.container}80`,
+                color: active ? badge.color : C.textDim,
+                fontSize: 10, fontWeight: 600, cursor: 'pointer', fontFamily: 'inherit',
+              }}
+            >
+              {badge.label}
+            </button>
+          )
+        })}
+      </div>
+
       <div style={{ display: 'flex', gap: 6, marginBottom: 6 }}>
         <button
-          onClick={() => onPick({ type: 'new', tool: defaultTool })}
+          onClick={() => onPick(createDirectoryStartAction('new', tool))}
           style={{
             flex: 1, padding: '8px 12px', borderRadius: 10,
             background: `${C.container}cc`, border: `1px solid ${C.outline}44`,
@@ -76,7 +98,7 @@ export default function SessionPicker({ dir, defaultTool, sessions: initialSessi
           🆕 新建
         </button>
         <button
-          onClick={() => onPick({ type: 'continue-latest', tool: defaultTool })}
+          onClick={() => onPick(createDirectoryStartAction('continue-latest', tool))}
           style={{
             flex: 1, padding: '8px 12px', borderRadius: 10,
             background: `linear-gradient(135deg, ${C.primary}, ${C.primaryDim})`,
