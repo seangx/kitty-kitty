@@ -760,6 +760,21 @@ export default function TagCloud({ sessions, onAttach, onKill, onRename, onResta
             {[
               { label: '✏️ 重命名', action: () => { const s = alive.find(x => x.id === ctxMenu.id); if (s) startRename(s) } },
               { label: '♻️ 重启会话', action: () => { onRestart(ctxMenu.id); setCtxMenu(null) } },
+              ...(['claude', 'codex', 'opencode'] as const)
+                .filter((tool) => sessions.find((s) => s.id === ctxMenu.id)?.tool !== tool)
+                .map((tool) => ({
+                  label: `⇄ 切到 ${tool === 'claude' ? 'Claude' : tool === 'codex' ? 'Codex' : 'OpenCode'}（不转换历史）`,
+                  action: async () => {
+                    const id = ctxMenu.id
+                    setCtxMenu(null)
+                    try {
+                      await window.api.invoke('session:set-tool', id, tool)
+                      await loadSessions()
+                    } catch (err: any) {
+                      window.alert(`切换失败: ${err?.message || err}`)
+                    }
+                  },
+                })),
               { label: '🧹 清空对话 (Alt+C)', action: () => { onClearConversation(ctxMenu.id); setCtxMenu(null) } },
               { label: '📂 打开目录', action: () => { const s = alive.find(x => x.id === ctxMenu.id); if (s?.cwd) window.api.invoke('shell:open-path', s.cwd); setCtxMenu(null) } },
               { label: '📦 技能', action: () => { onOpenSkills(ctxMenu.id); setCtxMenu(null) } },
@@ -778,7 +793,8 @@ export default function TagCloud({ sessions, onAttach, onKill, onRename, onResta
               { label: '✕ 退出', action: () => { onKill(ctxMenu.id); setCtxMenu(null) }, color: '#ff6e84' },
               { label: '🗑️ 退出并删除', action: async () => {
                 const s = alive.find(x => x.id === ctxMenu.id)
-                const ok = window.confirm(`确定删除「${s?.title || '会话'}」？\n会话目录和 ${s?.tool === 'codex' ? 'codex' : 'claude'} 对话文件将被清除，不可恢复。`)
+                const toolName = s?.tool === 'codex' ? 'codex' : s?.tool === 'opencode' ? 'opencode' : 'claude'
+                const ok = window.confirm(`确定删除「${s?.title || '会话'}」？\n会话目录和 ${toolName} 对话文件将被清除，不可恢复。`)
                 if (ok) {
                   await window.api.invoke('session:kill-and-delete', ctxMenu.id)
                 }

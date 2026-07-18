@@ -10,13 +10,14 @@
 
 - **像素宠物** — 像素风桌宠常驻屏幕，多种动画（idle/walk/think/talk/happy/sneak/roll/jump/stretch/dance），三套皮肤可换装（三花、绵悠悠、皮皮鸡）
 - **贴边吸附** — 拖桌宠到屏幕左/右/上边缘自动吸附成探头，只露一小截猫，点击唤回；多屏环境自动识别边界，切换显示器后自动归位
-- **会话管理** — 创建、切换、分组管理多个 AI agent 会话；每个 claude 会话预分配 `--session-id`，同一目录多会话历史不串
+- **会话管理** — 创建、切换、分组管理 Claude、Codex、OpenCode 会话；每个 claude 会话预分配 `--session-id`，同一目录多会话历史不串
 - **Pane 分组** — 同组会话自动合并为一个 tmux 窗口的多个 pane：主 pane 占左 35%，其余右侧均分；右键气泡"设为主窗口"调整
 - **组归档** — 右键组头「归档」把整组从主界面收起、结束组内 tmux 会话但保留全部记录；设置面板「已归档」区一键恢复
 - **状态栏** — 顶部 tmux 状态栏显示分组 tab；未分组会话拆开成独立 tab（每个会话一个 slot）
 - **一键重启** — 右键会话气泡或组头，重启单个 / 整组 / 全部会话，基于 `claude --resume <id>` 精确恢复（jsonl 未落盘时自动降级）
 - **会话设置** — 每个会话独立配置环境变量 + CLI 启动参数（如 `--model opus`），焊进 launch script 本体，重启/自动恢复都不丢
 - **会话变身** — Alt+X 把当前会话在 claude ⇄ codex 之间原地切换：历史随身携带、项目规则/记忆同步、hive 身份连续；大会话自动降级为近期上下文交接，变回时 codex 期间的增量自动移交
+- **OpenCode 支持** — 新建、继续、精确恢复及右键原地切换；项目 MCP、skills、`AGENTS.md` 规则与 Claude 项目记忆只读快照在启动时同步，首条消息通过 `--prompt` 传入，不向活跃 TUI 注键
 - **推送通知** — 订阅 ntfy.sh topic，部署状态等消息直接推送到桌宠气泡
 - **技能管理** — 搜索、安装、按分类批量部署 superpowers 技能到会话
 - **Hive 协作** — 会话身份自动同步到 [kitty-hive](https://github.com/seangx/kitty-hive)，改名/删除实时对齐，可选
@@ -29,7 +30,9 @@
 | **tmux** | 会话管理核心 | macOS: `brew install tmux` / Ubuntu: `sudo apt install tmux` |
 | **Ghostty** (可选) | 推荐终端模拟器 | [ghostty.org](https://ghostty.org) |
 | **skillsmgr** (可选) | 技能管理 CLI | [skills-manager](https://github.com/jtianling/skills-manager) |
+| **mcpsmgr** (可选) | Claude / Codex / OpenCode 的 MCP 配置同步 | [mcps-manager](https://github.com/jtianling/mcps-manager)；`npm i -g mcpsmgr` |
 | **codex CLI + 插件** (可选) | Alt+X 会话变身依赖：codex CLI 新版 + Claude Code 的 codex 插件 ≥1.0.6（提供官方 transfer） | `npm i -g @openai/codex` |
+| **OpenCode** (可选) | OpenCode 会话支持 | `brew install anomalyco/tap/opencode` 或 `npm i -g opencode-ai` |
 
 > 启动时会自动检测 tmux，未安装会弹窗提示。
 > 从 `/Applications` 启动时会自动查找 `/opt/homebrew/bin/tmux` 等常见路径，无需额外配置 PATH。
@@ -80,7 +83,7 @@ npm run dist
 - **拖拽** 桌宠 — 移动位置；拖到屏幕左/右/上边缘松手自动吸附成探头，点击探头唤回
 - **点击** 会话气泡 — attach 到该会话的 tmux 窗口
 - **悬停** 会话气泡 — 显示「重启」快捷按钮
-- **右键** 会话气泡 — 重命名、重启会话、打开目录、技能、会话设置（env + 启动参数）、设为主窗口、退出、退出并删除
+- **右键** 会话气泡 — 重命名、重启会话、切换运行工具、打开目录、技能、会话设置（env + 启动参数）、设为主窗口、退出、退出并删除
 - **右键** 组头 — 在此组创建会话、重启组内会话、重命名、设置颜色、📦 归档
 - **拖拽** 会话气泡 — 到分组头入组；到隐藏栏隐藏；从隐藏栏拖出取消隐藏
 

@@ -1,7 +1,7 @@
 /**
  * External CLI session provider abstraction.
  *
- * Each supported tool (claude / codex) has its own on-disk session storage.
+ * Each supported tool (claude / codex / opencode) has its own session storage.
  * Providers expose a uniform interface for: listing recent sessions in a cwd,
  * matching a freshly-created live session to its on-disk session id, and
  * deleting a session file when the session is killed-and-deleted.

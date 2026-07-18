@@ -13,6 +13,9 @@ import { join, dirname } from 'path'
 import { homedir } from 'os'
 import { log } from '../logger'
 import type { McpServerInfo } from '@shared/types/mcps'
+import { parseCodexMcpToml, parseJsonc, toClaudeMcp, toCodexMcp, toOpenCodeMcp } from './config-converters'
+
+export { parseCodexMcpToml, parseJsonc, toClaudeMcp, toCodexMcp, toOpenCodeMcp } from './config-converters'
 
 const execFileAsync = promisify(execFile)
 
@@ -82,10 +85,8 @@ async function runMcpsMgr(args: string[], cwd?: string): Promise<CliResult> {
 const CENTRAL_DIR = join(homedir(), '.mcps-manager', 'servers')
 
 /**
- * mcpsmgr stores each installed MCP server as a subdirectory under
- * ~/.mcps-manager/servers/<name>/. Each may contain a `mcpsmgr.json` or
- * README we can sniff for a short description. We scan the FS directly rather
- * than rely on `mcpsmgr list` because the CLI's text output format is
+ * mcpsmgr 0.4 stores one JSON definition per server; older releases used one
+ * directory per server. Support both layouts because the CLI's text output is
  * version-sensitive and harder to parse robustly.
  */
 function listCentralFromFs(): McpServerInfo[] {
@@ -96,18 +97,28 @@ function listCentralFromFs(): McpServerInfo[] {
   for (const name of entries) {
     if (name.startsWith('.')) continue
     const p = join(CENTRAL_DIR, name)
-    try {
-      if (!statSync(p).isDirectory()) continue
-    } catch { continue }
+    let infoName = name
     let description: string | undefined
-    const manifestPath = join(p, 'mcpsmgr.json')
-    if (existsSync(manifestPath)) {
-      try {
-        const json = JSON.parse(readFileSync(manifestPath, 'utf-8'))
+    try {
+      const stat = statSync(p)
+      if (stat.isFile() && name.endsWith('.json')) {
+        const json = JSON.parse(readFileSync(p, 'utf-8'))
+        infoName = typeof json?.name === 'string' ? json.name : name.slice(0, -5)
         if (typeof json?.description === 'string') description = json.description.slice(0, 160)
+      } else if (stat.isDirectory()) {
+        // Legacy mcpsmgr layout (<0.4): one directory per server.
+        const manifestPath = join(p, 'mcpsmgr.json')
+        if (existsSync(manifestPath)) {
+          const json = JSON.parse(readFileSync(manifestPath, 'utf-8'))
+          if (typeof json?.description === 'string') description = json.description.slice(0, 160)
+        }
+      } else continue
+    } catch { continue }
+    if (infoName) {
+      try {
+        out.push({ name: infoName, description, source: 'central' })
       } catch { /* ignore */ }
     }
-    out.push({ name, description, source: 'central' })
   }
   return out.sort((a, b) => a.name.localeCompare(b.name))
 }
@@ -117,7 +128,20 @@ function listCentralFromFs(): McpServerInfo[] {
 const TOOL_AGENT_MAP: Record<string, string> = {
   claude: 'claude-code',
   codex: 'codex',
+  opencode: 'opencode',
   shell: 'claude-code',
+}
+
+function readOpenCodeMcpNames(cwd: string): string[] {
+  for (const filename of ['opencode.json', 'opencode.jsonc']) {
+    const file = join(cwd, filename)
+    if (!existsSync(file)) continue
+    try {
+      const data = parseJsonc(readFileSync(file, 'utf-8'))
+      return Object.keys(data?.mcp || {})
+    } catch { /* try the other supported filename */ }
+  }
+  return []
 }
 
 /**
@@ -156,7 +180,92 @@ export async function listDeployed(cwd: string): Promise<string[]> {
     } catch { /* ignore */ }
   }
 
+  for (const name of readOpenCodeMcpNames(cwd)) names.add(name)
+
   return [...names].sort()
+}
+
+function listDeployedForTool(cwd: string, tool: string): string[] {
+  if (tool === 'opencode') return readOpenCodeMcpNames(cwd)
+  if (tool === 'codex') {
+    const file = join(cwd, '.codex', 'config.toml')
+    if (!existsSync(file)) return []
+    try {
+      const text = readFileSync(file, 'utf-8')
+      const names: string[] = []
+      const re = /^\s*\[mcp_servers\.(?:"([^"]+)"|([A-Za-z0-9_.-]+))\]/gm
+      let match: RegExpExecArray | null
+      while ((match = re.exec(text)) !== null) names.push(match[1] ?? match[2])
+      return names.filter(Boolean)
+    } catch { return [] }
+  }
+  const file = join(cwd, '.mcp.json')
+  try {
+    const data = JSON.parse(readFileSync(file, 'utf-8'))
+    return Object.keys(data?.mcpServers || {})
+  } catch { return [] }
+}
+
+function readConfiguredServers(cwd: string): Record<string, Record<string, any>> {
+  const servers: Record<string, Record<string, any>> = {}
+  const claudeFile = join(cwd, '.mcp.json')
+  if (existsSync(claudeFile)) {
+    try {
+      const data = JSON.parse(readFileSync(claudeFile, 'utf-8'))
+      for (const [name, cfg] of Object.entries(data?.mcpServers || {})) {
+        if (cfg && typeof cfg === 'object') servers[name] = cfg as Record<string, any>
+      }
+    } catch { /* continue with other tool configs */ }
+  }
+  for (const filename of ['opencode.json', 'opencode.jsonc']) {
+    const file = join(cwd, filename)
+    if (!existsSync(file)) continue
+    try {
+      const data = parseJsonc(readFileSync(file, 'utf-8'))
+      for (const [name, cfg] of Object.entries(data?.mcp || {})) {
+        if (!(name in servers) && cfg && typeof cfg === 'object') servers[name] = cfg as Record<string, any>
+      }
+      break
+    } catch { /* JSONC with comments is left to central mcpsmgr fallback */ }
+  }
+  const codexFile = join(cwd, '.codex', 'config.toml')
+  if (existsSync(codexFile)) {
+    try {
+      const parsed = parseCodexMcpToml(readFileSync(codexFile, 'utf-8'))
+      for (const [name, cfg] of Object.entries(parsed)) {
+        if (!(name in servers)) servers[name] = cfg
+      }
+    } catch { /* ignore invalid TOML subset */ }
+  }
+  return servers
+}
+
+/** Copy the project's existing MCP set into a newly selected tool. */
+export async function syncManagedMcpsToTool(cwd: string, tool: string): Promise<void> {
+  const agent = TOOL_AGENT_MAP[tool]
+  if (!cwd || !agent || tool === 'shell') return
+  const target = new Set(listDeployedForTool(cwd, tool))
+  const central = new Set(listCentralFromFs().map((item) => item.name))
+  const union = await listDeployed(cwd)
+  const configured = readConfiguredServers(cwd)
+  const direct: Record<string, Record<string, any>> = {}
+  for (const name of union) {
+    if (target.has(name)) continue
+    if (central.has(name)) {
+      const result = await runMcpsMgr(['add', name, '-a', agent, '-y'], cwd)
+      if (result.success) {
+        target.add(name)
+        continue
+      }
+      log('mcps', `sync ${name} → ${agent} via mcpsmgr failed: ${(result.stderr || result.stdout).slice(0, 160)}`)
+    }
+    if (configured[name]) direct[name] = configured[name]
+  }
+  if (!Object.keys(direct).length) return
+  if (tool === 'opencode') writeOpenCodeMcp(cwd, direct)
+  else if (tool === 'codex') writeTomlMcp(cwd, direct)
+  else writeJsonMcp(cwd, direct)
+  log('mcps', `direct sync → ${agent}: ${Object.keys(direct).join(', ')}`)
 }
 
 // ─── Operations (all async) ─────────────────────────────
@@ -186,11 +295,19 @@ export async function addMcp(cwd: string, source: string, tool: string): Promise
 
 export async function removeMcp(cwd: string, name: string): Promise<{ success: boolean; message: string }> {
   const safe = validateName(name)
-  const result = await runMcpsMgr(['remove', safe], cwd)
-  if (result.success) {
-    return { success: true, message: `${safe} 已从项目移除` }
+  try {
+    const removed = [
+      removeJsonMcp(cwd, safe),
+      removeTomlMcp(cwd, safe),
+      removeOpenCodeMcp(cwd, safe),
+    ].some(Boolean)
+    return {
+      success: true,
+      message: removed ? `${safe} 已从三套项目配置移除` : `${safe} 未部署在项目中`,
+    }
+  } catch (err: any) {
+    return { success: false, message: err?.message || '移除失败' }
   }
-  return { success: false, message: result.stderr.trim() || result.stdout.trim() || '移除失败' }
 }
 
 /** `install` — pull source into the central repository WITHOUT deploying. */
@@ -222,6 +339,9 @@ function unwrapServers(raw: any): Record<string, any> {
   if (raw && typeof raw === 'object' && raw.mcpServers && typeof raw.mcpServers === 'object') {
     return raw.mcpServers
   }
+  if (raw && typeof raw === 'object' && raw.mcp && typeof raw.mcp === 'object') {
+    return raw.mcp
+  }
   if (raw && typeof raw === 'object') return raw
   throw new Error('JSON 必须是 object')
 }
@@ -239,12 +359,23 @@ function writeJsonMcp(cwd: string, servers: Record<string, any>): string[] {
   if (!existing.mcpServers || typeof existing.mcpServers !== 'object') existing.mcpServers = {}
   const added: string[] = []
   for (const [name, cfg] of Object.entries(servers)) {
-    existing.mcpServers[name] = cfg
+    if (!cfg || typeof cfg !== 'object') continue
+    existing.mcpServers[name] = toClaudeMcp(cfg as Record<string, any>)
     added.push(name)
   }
   ensureDir(file)
   writeFileSync(file, JSON.stringify(existing, null, 2) + '\n')
   return added
+}
+
+function removeJsonMcp(cwd: string, name: string): boolean {
+  const file = join(cwd, '.mcp.json')
+  if (!existsSync(file)) return false
+  const data = JSON.parse(readFileSync(file, 'utf-8'))
+  if (!data?.mcpServers || !Object.prototype.hasOwnProperty.call(data.mcpServers, name)) return false
+  delete data.mcpServers[name]
+  writeFileSync(file, JSON.stringify(data, null, 2) + '\n')
+  return true
 }
 
 /**
@@ -268,7 +399,7 @@ function renderTomlValue(v: any): string {
 }
 
 function renderTomlSection(name: string, cfg: Record<string, any>): string {
-  const lines: string[] = [`[mcp_servers.${name}]`]
+  const lines: string[] = [`[mcp_servers."${name}"]`]
   const subTables: Array<[string, Record<string, any>]> = []
   for (const [k, v] of Object.entries(cfg)) {
     if (v && typeof v === 'object' && !Array.isArray(v)) {
@@ -279,7 +410,7 @@ function renderTomlSection(name: string, cfg: Record<string, any>): string {
   }
   for (const [k, sub] of subTables) {
     lines.push('')
-    lines.push(`[mcp_servers.${name}.${k}]`)
+    lines.push(`[mcp_servers."${name}".${k}]`)
     for (const [sk, sv] of Object.entries(sub)) {
       lines.push(`${sk} = ${renderTomlValue(sv)}`)
     }
@@ -297,7 +428,7 @@ function stripExistingTomlSection(text: string, name: string): string {
   const lines = text.split('\n')
   const out: string[] = []
   const escapedName = name.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
-  const headerRe = new RegExp(`^\\[mcp_servers\\.${escapedName}(?:\\.[A-Za-z0-9_-]+)?\\]\\s*$`)
+  const headerRe = new RegExp(`^\\[mcp_servers\\.(?:"${escapedName}"|${escapedName})(?:\\.[A-Za-z0-9_-]+)?\\]\\s*$`)
   const anyHeaderRe = /^\[[^\]]+\]\s*$/
   let inSection = false
   for (const line of lines) {
@@ -323,12 +454,59 @@ function writeTomlMcp(cwd: string, servers: Record<string, any>): string[] {
     text = stripExistingTomlSection(text, name)
     if (text && !text.endsWith('\n')) text += '\n'
     if (text && !text.endsWith('\n\n')) text += '\n'
-    text += renderTomlSection(name, cfg as Record<string, any>)
+    text += renderTomlSection(name, toCodexMcp(cfg as Record<string, any>))
     added.push(name)
+  }
+  if (Object.values(servers).some((cfg) => cfg && typeof cfg === 'object' && toCodexMcp(cfg).url)) {
+    if (!/^experimental_use_rmcp_client\s*=/m.test(text)) {
+      text = `experimental_use_rmcp_client = true\n\n${text}`
+    }
   }
   ensureDir(file)
   writeFileSync(file, text)
   return added
+}
+
+function removeTomlMcp(cwd: string, name: string): boolean {
+  const file = join(cwd, '.codex', 'config.toml')
+  if (!existsSync(file)) return false
+  const text = readFileSync(file, 'utf-8')
+  const next = stripExistingTomlSection(text, name)
+  if (next === text) return false
+  writeFileSync(file, next.replace(/^\s+|\s+$/g, '') + '\n')
+  return true
+}
+
+function writeOpenCodeMcp(cwd: string, servers: Record<string, any>): string[] {
+  const file = join(cwd, 'opencode.json')
+  let data: any = {}
+  if (existsSync(file)) {
+    data = parseJsonc(readFileSync(file, 'utf-8'))
+  }
+  if (!data || typeof data !== 'object') data = {}
+  if (!data.mcp || typeof data.mcp !== 'object') data.mcp = {}
+  const added: string[] = []
+  for (const [name, cfg] of Object.entries(servers)) {
+    if (!cfg || typeof cfg !== 'object') continue
+    data.mcp[name] = toOpenCodeMcp(cfg as Record<string, any>)
+    added.push(name)
+  }
+  writeFileSync(file, JSON.stringify(data, null, 2) + '\n')
+  return added
+}
+
+function removeOpenCodeMcp(cwd: string, name: string): boolean {
+  for (const filename of ['opencode.json', 'opencode.jsonc']) {
+    const file = join(cwd, filename)
+    if (!existsSync(file)) continue
+    let data: any
+    try { data = parseJsonc(readFileSync(file, 'utf-8')) } catch { continue }
+    if (!data?.mcp || !Object.prototype.hasOwnProperty.call(data.mcp, name)) continue
+    delete data.mcp[name]
+    writeFileSync(file, JSON.stringify(data, null, 2) + '\n')
+    return true
+  }
+  return false
 }
 
 export async function writeManualMcp(
@@ -353,11 +531,14 @@ export async function writeManualMcp(
     }
   }
   try {
-    const useToml = tool === 'codex'
-    const added = useToml ? writeTomlMcp(cwd, servers) : writeJsonMcp(cwd, servers)
-    const target = useToml ? '.codex/config.toml' : '.mcp.json'
-    log('mcps', `manual write → ${target}: ${added.join(', ')}`)
-    return { success: true, message: `已写入 ${target}: ${added.join(', ')}` }
+    // Manual entries are a deliberate user edit: keep all supported tools in
+    // sync immediately so switching tools cannot silently lose an MCP.
+    writeJsonMcp(cwd, servers)
+    writeTomlMcp(cwd, servers)
+    const added = writeOpenCodeMcp(cwd, servers)
+    const target = '.mcp.json + .codex/config.toml + opencode.json'
+    log('mcps', `manual sync → ${target}: ${added.join(', ')}`)
+    return { success: true, message: `已同步 ${target}: ${added.join(', ')}` }
   } catch (err: any) {
     return { success: false, message: err?.message || '写入失败' }
   }

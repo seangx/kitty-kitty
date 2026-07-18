@@ -8,6 +8,7 @@ import {
   CLAUDE_MEMORY_MAX_BYTES,
   CLAUDE_MEMORY_MAX_LINES,
   buildClaudeMemoryStartupPrompt,
+  findClaudeMemoryForProject,
   findClaudeMemoryIndex,
   readClaudeMemorySnapshot,
 } from '../src/main/claude-memory.ts'
@@ -101,4 +102,16 @@ test('honors Claude autoMemoryDirectory when configured', (t) => {
     findClaudeMemoryIndex(jsonl, '/project', { claudeHome, repoRoot: null }),
     customMemory,
   )
+})
+
+test('finds project memory for a fresh OpenCode session without Claude jsonl', (t) => {
+  const root = mkdtempSync(join(tmpdir(), 'kitty-opencode-memory-'))
+  t.after(() => rmSync(root, { recursive: true, force: true }))
+  const claudeHome = join(root, '.claude')
+  const cwd = join(root, 'project')
+  const memory = join(claudeHome, 'projects', encoded(cwd), 'memory', 'MEMORY.md')
+  mkdirSync(cwd)
+  write(memory, '# Repo memory for OpenCode\n')
+
+  assert.equal(findClaudeMemoryForProject(cwd, { claudeHome, repoRoot: null }), memory)
 })

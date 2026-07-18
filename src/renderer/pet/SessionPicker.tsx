@@ -29,6 +29,7 @@ const C = {
 const TOOL_BADGE: Record<string, { label: string; color: string }> = {
   claude: { label: '⚡ Claude', color: '#a7a5ff' },
   codex:  { label: '✦ Codex',  color: '#fcd34d' },
+  opencode: { label: '◈ OpenCode', color: '#65d8c8' },
 }
 
 export default function SessionPicker({ dir, defaultTool, sessions: initialSessions, onPick, onClose }: Props) {

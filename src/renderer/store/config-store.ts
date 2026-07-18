@@ -2,8 +2,8 @@ import { create } from 'zustand'
 import type { BubbleConfig } from '@shared/types/config'
 import { DEFAULT_BUBBLE_CONFIG } from '@shared/types/config'
 
-export type ToolId = 'claude' | 'codex'
-const VALID_TOOLS: ToolId[] = ['claude', 'codex']
+export type ToolId = 'claude' | 'codex' | 'opencode'
+const VALID_TOOLS: ToolId[] = ['claude', 'codex', 'opencode']
 
 interface ConfigState {
   bubble: BubbleConfig

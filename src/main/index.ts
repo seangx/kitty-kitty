@@ -9,6 +9,7 @@ import { hasTmux, focusAnyAttachedSession } from './tmux/session-manager'
 import * as ntfy from './ntfy'
 import { startWakeupServer, stopWakeupServer } from './wakeup'
 import { ensureClaudeNotificationHook } from './hook-installer'
+import { ensureOpenCodePlugin } from './opencode-plugin-installer'
 
 app.whenReady().then(() => {
   initLogger()
@@ -38,6 +39,7 @@ app.whenReady().then(() => {
   try { ntfy.start(); log('app', 'ntfy listener started') } catch (e) { log('app', 'ntfy error:', e) }
   try { startWakeupServer(); log('app', 'wakeup server started') } catch (e) { log('app', 'wakeup error:', e) }
   try { ensureClaudeNotificationHook(); log('app', 'claude hook ensured') } catch (e) { log('app', 'hook installer error:', e) }
+  try { ensureOpenCodePlugin(); log('app', 'opencode plugin ensured') } catch (e) { log('app', 'opencode plugin error:', e) }
 })
 
 app.on('window-all-closed', () => {

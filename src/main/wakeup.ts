@@ -59,7 +59,7 @@ export function claudeJsonlPath(sessionId: string, cwd: string): string | null {
   }
   return null
 }
-const SOCK_PATH = join(SOCK_DIR, 'wakeup.sock')
+export const WAKEUP_SOCK_PATH = join(SOCK_DIR, 'wakeup.sock')
 
 let server: Server | null = null
 
@@ -93,15 +93,15 @@ function readBody(req: IncomingMessage): Promise<string> {
   })
 }
 
-function resolveKittySessionId(kittyHeader: string | undefined, claudeSessionId: string | undefined): string | null {
+function resolveKittySessionId(kittyHeader: string | undefined, externalSessionId: string | undefined): string | null {
   // Header from HIVE_AGENT_KEY env wins — it's the kitty session id directly.
   if (kittyHeader && /^[a-f0-9]{6,}$/i.test(kittyHeader)) {
     const row = sessionRepo.listSessions().find((s) => s.id === kittyHeader)
     if (row) return row.id
   }
   // Fallback: match by externalSessionId (claude jsonl uuid).
-  if (claudeSessionId) {
-    const row = sessionRepo.listSessions().find((s) => s.externalSessionId === claudeSessionId)
+  if (externalSessionId) {
+    const row = sessionRepo.listSessions().find((s) => s.externalSessionId === externalSessionId)
     if (row) return row.id
   }
   return null
@@ -127,7 +127,8 @@ async function handleRequest(req: IncomingMessage, res: ServerResponse): Promise
   try { payload = body ? JSON.parse(body) : {} } catch { /* may be empty */ }
 
   const kittyHeader = (req.headers['x-kitty-session'] as string | undefined)?.trim()
-  const claudeSessionId = typeof payload?.session_id === 'string' ? payload.session_id : undefined
+  const externalSessionId = typeof payload?.session_id === 'string' ? payload.session_id : undefined
+  const sourceTool = typeof payload?.tool === 'string' ? payload.tool : 'claude'
   const message: string = typeof payload?.message === 'string' ? payload.message : ''
   const hookEvent: string = typeof payload?.hook_event_name === 'string' ? payload.hook_event_name : ''
   // claude-code Notification payload doesn't include `notification_type` (issue #11964),
@@ -137,9 +138,9 @@ async function handleRequest(req: IncomingMessage, res: ServerResponse): Promise
     /elicit|choose|question/i.test(message) ? 'elicitation_dialog' :
     'notification'
 
-  const kittyId = resolveKittySessionId(kittyHeader, claudeSessionId)
+  const kittyId = resolveKittySessionId(kittyHeader, externalSessionId)
   if (!kittyId) {
-    log('wakeup', `no matching session (header=${kittyHeader || ''} claudeId=${claudeSessionId || ''} event=${hookEvent})`)
+    log('wakeup', `no matching session (header=${kittyHeader || ''} externalId=${externalSessionId || ''} tool=${sourceTool} event=${hookEvent})`)
     res.statusCode = 200
     res.end(JSON.stringify({ ok: false, reason: 'no-match' }))
     return
@@ -158,19 +159,22 @@ async function handleRequest(req: IncomingMessage, res: ServerResponse): Promise
   // Without this check, a user (or stray script) running claude from a
   // different cwd while carrying our HIVE_AGENT_KEY would silently rebind the
   // row to the wrong jsonl (see kitty issue: 两个 pane 都变成 kitty-hive).
-  if (claudeSessionId) {
+  if (externalSessionId) {
     try {
       const row = sessionRepo.listSessions().find((s) => s.id === kittyId)
-      if (row && row.externalSessionId !== claudeSessionId) {
-        if (isJsonlInCwd(claudeSessionId, row.cwd)) {
-          sessionRepo.updateSessionExternalId(kittyId, claudeSessionId)
+      if (row && row.externalSessionId !== externalSessionId) {
+        const validForTool = sourceTool === 'opencode'
+          ? row.tool === 'opencode'
+          : row.tool === 'claude' && isJsonlInCwd(externalSessionId, row.cwd)
+        if (validForTool) {
+          sessionRepo.updateSessionExternalId(kittyId, externalSessionId)
           // The genuinely-new jsonl has appeared (and is cwd-validated), so a
           // prior "新对话" clear is now resolved — lift the mark so normal
           // sync/restart behaviour resumes.
           clearMark(kittyId)
-          log('wakeup', `${kittyId} externalSessionId synced: ${(row.externalSessionId || '(none)').slice(0, 8)} → ${claudeSessionId.slice(0, 8)} (event=${hookEvent})`)
+          log('wakeup', `${kittyId} externalSessionId synced: ${(row.externalSessionId || '(none)').slice(0, 8)} → ${externalSessionId.slice(0, 8)} (tool=${sourceTool} event=${hookEvent})`)
         } else {
-          log('wakeup', `${kittyId} REJECT cross-cwd sync: jsonl ${claudeSessionId.slice(0, 8)} not in ${row.cwd} (event=${hookEvent})`)
+          log('wakeup', `${kittyId} REJECT external sync: ${externalSessionId.slice(0, 8)} rowTool=${row.tool} sourceTool=${sourceTool} cwd=${row.cwd} (event=${hookEvent})`)
         }
       }
     } catch (err) { log('wakeup', 'updateSessionExternalId failed:', err) }
@@ -242,19 +246,17 @@ export function startWakeupServer(): void {
   if (server) return
   try { mkdirSync(SOCK_DIR, { recursive: true }) } catch { /* ignore */ }
   // Best-effort cleanup of stale socket from a prior crashed process.
-  if (existsSync(SOCK_PATH)) {
-    try { unlinkSync(SOCK_PATH) } catch { /* ignore */ }
+  if (existsSync(WAKEUP_SOCK_PATH)) {
+    try { unlinkSync(WAKEUP_SOCK_PATH) } catch { /* ignore */ }
   }
   server = createServer((req, res) => { void handleRequest(req, res) })
   server.on('error', (err) => log('wakeup', 'server error:', err))
-  server.listen(SOCK_PATH, () => log('wakeup', `listening on ${SOCK_PATH}`))
+  server.listen(WAKEUP_SOCK_PATH, () => log('wakeup', `listening on ${WAKEUP_SOCK_PATH}`))
 }
 
 export function stopWakeupServer(): void {
   if (!server) return
   try { server.close() } catch { /* ignore */ }
   server = null
-  try { if (existsSync(SOCK_PATH)) unlinkSync(SOCK_PATH) } catch { /* ignore */ }
+  try { if (existsSync(WAKEUP_SOCK_PATH)) unlinkSync(WAKEUP_SOCK_PATH) } catch { /* ignore */ }
 }
-
-export const WAKEUP_SOCK_PATH = SOCK_PATH

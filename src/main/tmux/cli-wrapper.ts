@@ -9,6 +9,7 @@ const EXTRA_BIN_DIRS = [
   '/usr/local/bin',
   '/usr/bin',
   join(homedir(), '.local', 'bin'),
+  join(homedir(), '.opencode', 'bin'),
   join(homedir(), '.npm-global', 'bin'),
 ]
 
@@ -48,6 +49,8 @@ interface ToolConfig {
   resumeFlag?: string
   /** Flag to start a NEW session with a caller-provided id (claude: --session-id) */
   sessionIdFlag?: string
+  /** Flag placed before an initial prompt (opencode: --prompt). Omit for positional prompts. */
+  promptFlag?: string
 }
 
 /**
@@ -124,6 +127,12 @@ const TOOLS: Record<string, ToolConfig> = {
     continueFlag: 'resume --last',
     resumeFlag: 'resume',
   },
+  opencode: {
+    cmd: 'opencode',
+    continueFlag: '--continue',
+    resumeFlag: '--session',
+    promptFlag: '--prompt',
+  },
   shell: {
     cmd: '$SHELL',
   },
@@ -146,6 +155,7 @@ export function getInstallHint(tool: string): string {
   switch (tool) {
     case 'claude': return '安装方法: npm install -g @anthropic-ai/claude-code'
     case 'codex': return '安装方法: npm install -g @openai/codex'
+    case 'opencode': return '安装方法: brew install anomalyco/tap/opencode（或 npm install -g opencode-ai）'
     default: return `请先安装 ${tool}`
   }
 }
@@ -220,8 +230,10 @@ export function injectHiveIdentity(scriptPath: string, key: string, name: string
   try {
     if (!existsSync(scriptPath)) return
     let script = readFileSync(scriptPath, 'utf-8')
-    if (script.includes('HIVE_AGENT_KEY=')) return // 已注入,幂等
+    if (script.includes('HIVE_AGENT_KEY=') && script.includes('KITTY_SESSION_ID=')) return // 已注入,幂等
     const exportLines =
+      `export KITTY_SESSION_ID=${shellQuoteForSh(key)}\n` +
+      `export KITTY_SESSION_NAME=${shellQuoteForSh(name || '')}\n` +
       `export HIVE_AGENT_KEY=${shellQuoteForSh(key)}\n` +
       `export HIVE_AGENT_NAME=${shellQuoteForSh(name || '')}`
     script = script.includes(PATH_PREAMBLE)
@@ -258,6 +270,24 @@ export function injectSessionEnv(scriptPath: string, envJson: string): void {
     writeFileSync(scriptPath, script)
     chmodSync(scriptPath, '755')
   } catch { /* best-effort */ }
+}
+
+/** Attach the repo-scoped Claude memory file to an OpenCode launch. */
+export function injectOpenCodeMemory(scriptPath: string, memoryFile: string | null | undefined): void {
+  if (!scriptPath || !memoryFile || !scriptPath.endsWith('.sh')) return
+  try {
+    if (!existsSync(scriptPath)) return
+    let script = readFileSync(scriptPath, 'utf8')
+    if (script.includes('# kitty:opencode-memory')) return
+    const exportLine =
+      `# kitty:opencode-memory\n` +
+      `export KITTY_CLAUDE_MEMORY_FILE=${shellQuoteForSh(memoryFile)}`
+    script = script.includes(PATH_PREAMBLE)
+      ? script.replace(PATH_PREAMBLE, `${PATH_PREAMBLE}\n${exportLine}`)
+      : script.replace(/^#!\/bin\/bash\n/, `#!/bin/bash\n${exportLine}\n`)
+    writeFileSync(scriptPath, script)
+    chmodSync(scriptPath, '755')
+  } catch { /* best-effort: memory bridge must not block launching OpenCode */ }
 }
 
 /**
@@ -315,7 +345,7 @@ function shellQuoteForSh(s: string): string {
 
 // --- Script builders ---
 
-const PATH_PREAMBLE = 'export PATH="/opt/homebrew/bin:/usr/local/bin:$HOME/.local/bin:$PATH"'
+const PATH_PREAMBLE = 'export PATH="/opt/homebrew/bin:/usr/local/bin:$HOME/.local/bin:$HOME/.opencode/bin:$PATH"'
 
 /** Build the full base command: cmd + hardcoded defaultArgs + 全局 toolArgs + per-session extraArgs(追加在最后,可覆盖前面的 flag) */
 function baseCmd(config: ToolConfig, extraArgs?: string): string {
@@ -337,14 +367,16 @@ export function needsDevChannelAutoAccept(tool: string): boolean {
   return userArgs.includes('--dangerously-load-development-channels')
 }
 
-function promptArg(initialPrompt?: string): string {
-  return initialPrompt ? ` ${shellQuoteForSh(initialPrompt)}` : ''
+function promptArg(config: ToolConfig, initialPrompt?: string): string {
+  if (!initialPrompt) return ''
+  const value = shellQuoteForSh(initialPrompt)
+  return config.promptFlag ? ` ${config.promptFlag} ${value}` : ` ${value}`
 }
 
 function buildContinueScript(config: ToolConfig, extraArgs?: string, initialPrompt?: string): string {
   if (!config.continueFlag) return buildNewScript(config, undefined, extraArgs, initialPrompt)
   const cmd = baseCmd(config, extraArgs)
-  const prompt = promptArg(initialPrompt)
+  const prompt = promptArg(config, initialPrompt)
 
   return `#!/bin/bash
 ${PATH_PREAMBLE}
@@ -366,7 +398,7 @@ function buildNewScript(config: ToolConfig, sessionId?: string, extraArgs?: stri
   // Lets kitty know the jsonl name up front instead of claiming by cwd later,
   // so multiple sessions can share one cwd without cross-assignment.
   if (sessionId && config.sessionIdFlag) cmd += ` ${config.sessionIdFlag} ${sessionId}`
-  cmd += promptArg(initialPrompt)
+  cmd += promptArg(config, initialPrompt)
   return `#!/bin/bash
 ${PATH_PREAMBLE}
 ${cmd}
@@ -378,7 +410,7 @@ exec $SHELL
 function buildResumeScript(config: ToolConfig, resumeId: string, extraArgs?: string, initialPrompt?: string): string {
   if (!config.resumeFlag) return buildNewScript(config, undefined, extraArgs, initialPrompt)
   const cmd = baseCmd(config, extraArgs)
-  const prompt = promptArg(initialPrompt)
+  const prompt = promptArg(config, initialPrompt)
   const fallback = config.continueFlag
     ? `${cmd} ${config.continueFlag}${prompt}`
     : `${cmd}${prompt}`
@@ -399,7 +431,7 @@ exec $SHELL
 
 function buildRestoreScript(config: ToolConfig, extraArgs?: string, initialPrompt?: string): string {
   const cmd = baseCmd(config, extraArgs)
-  const prompt = promptArg(initialPrompt)
+  const prompt = promptArg(config, initialPrompt)
   // Best-effort: try continue → new → shell
   if (!config.continueFlag) {
     return `#!/bin/bash

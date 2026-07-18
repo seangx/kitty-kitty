@@ -211,7 +211,7 @@ export default function PetCanvas() {
       ;(async () => {
         try {
           machine.forceState('dance', 10000)
-          say(lastTool === 'codex' ? '启动 Codex 中喵~' : '启动中喵~')
+          say(lastTool === 'codex' ? '启动 Codex 中喵~' : lastTool === 'opencode' ? '启动 OpenCode 中喵~' : '启动中喵~')
           await createSession(lastTool)
           machine.forceState('happy', 2000)
           say('开始新对话喵~')
@@ -262,7 +262,7 @@ export default function PetCanvas() {
     setLastTool(tool)
     try {
       machine.forceState('dance', 15000)
-      say(tool === 'codex' ? '启动 Codex 中喵~' : '启动中喵~')
+      say(tool === 'codex' ? '启动 Codex 中喵~' : tool === 'opencode' ? '启动 OpenCode 中喵~' : '启动中喵~')
       await createSession(tool, message)
       machine.forceState('happy', 2000)
       say('开始新对话喵~')
@@ -351,7 +351,7 @@ export default function PetCanvas() {
         : action.id
       await window.api.invoke('session:create-in-dir-confirm', action.tool, dirPick.dir, resumeArg)
       // Remember the chosen tool so subsequent actions default to it.
-      if (action.tool === 'claude' || action.tool === 'codex') setLastTool(action.tool)
+      if (action.tool === 'claude' || action.tool === 'codex' || action.tool === 'opencode') setLastTool(action.tool)
       machine.forceState('happy', 2000)
       say(action.type === 'resume' ? '继续之前的对话喵~' : '开始新对话喵~')
       await loadSessions()
@@ -647,6 +647,7 @@ function EnvEditor({ sessionId, sessionTitle, onClose, onSaved }: {
   const [text, setText] = useState('')
   const [argsClaudeText, setArgsClaudeText] = useState('')
   const [argsCodexText, setArgsCodexText] = useState('')
+  const [argsOpenCodeText, setArgsOpenCodeText] = useState('')
   const [loading, setLoading] = useState(true)
   const [saving, setSaving] = useState(false)
 
@@ -661,6 +662,7 @@ function EnvEditor({ sessionId, sessionTitle, onClose, onSaved }: {
       setText(lines)
       setArgsClaudeText(typeof args?.claude === 'string' ? args.claude : '')
       setArgsCodexText(typeof args?.codex === 'string' ? args.codex : '')
+      setArgsOpenCodeText(typeof args?.opencode === 'string' ? args.opencode : '')
       setLoading(false)
     }).catch(() => setLoading(false))
   }, [sessionId])
@@ -680,7 +682,7 @@ function EnvEditor({ sessionId, sessionTitle, onClose, onSaved }: {
       }
       await Promise.all([
         window.api.invoke('session:set-env', sessionId, env),
-        window.api.invoke('session:set-launch-args', sessionId, { claude: argsClaudeText.trim(), codex: argsCodexText.trim() }),
+        window.api.invoke('session:set-launch-args', sessionId, { claude: argsClaudeText.trim(), codex: argsCodexText.trim(), opencode: argsOpenCodeText.trim() }),
       ])
       onSaved()
       onClose()
@@ -752,8 +754,24 @@ function EnvEditor({ sessionId, sessionTitle, onClose, onSaved }: {
           outline: 'none',
         }}
       />
+      <div style={{ fontSize: 11, color: skinC.text, fontWeight: 600, margin: '10px 0 4px' }}>🚀 启动参数（opencode）</div>
+      <input
+        value={loading ? '加载中...' : argsOpenCodeText}
+        onChange={(e) => setArgsOpenCodeText(e.target.value)}
+        placeholder="--model provider/model --agent build"
+        disabled={loading}
+        style={{
+          width: '100%', boxSizing: 'border-box',
+          padding: '8px 10px', borderRadius: 8,
+          border: `1px solid ${skinC.outline}55`,
+          background: `${skinC.container}aa`,
+          color: skinC.text, fontSize: 12,
+          fontFamily: 'ui-monospace, SFMono-Regular, Menlo, monospace',
+          outline: 'none',
+        }}
+      />
       <div style={{ fontSize: 10, color: skinC.textDim, marginTop: 4 }}>
-        按会话当前工具生效（Alt+X 变身后自动用对应一栏），追加在全局 toolArgs 之后。均需<b>重启会话</b>后生效
+        按会话当前工具生效，追加在全局 toolArgs 之后。均需<b>重启会话</b>后生效
       </div>
       <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 6, marginTop: 10 }}>
         <button onClick={onClose} style={{

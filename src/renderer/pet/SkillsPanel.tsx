@@ -552,8 +552,8 @@ export default function SkillsPanel({ sessionId, onClose, onSay, onDance }: Prop
                   }}
                 >{mcpOperating === '__manual__' ? '写入中…' : '写入'}</button>
                 <span style={{ fontSize: 11, color: C.textDim }}>
-                  目标: {/* hint only — actual file decided by session.tool in main */}
-                  写入项目根目录的 .mcp.json (Claude) 或 .codex/config.toml (Codex)，不存在自动新建
+                  目标:
+                  同步写入 .mcp.json、.codex/config.toml 与 opencode.json
                 </span>
               </div>
             </div>

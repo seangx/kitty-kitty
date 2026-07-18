@@ -15,7 +15,7 @@ export interface ClaudeMemorySnapshot {
   truncated: boolean
 }
 
-interface ClaudeMemoryLookupOptions {
+export interface ClaudeMemoryLookupOptions {
   claudeHome?: string
   repoRoot?: string | null
 }
@@ -111,14 +111,13 @@ export function findClaudeMemoryIndex(
   cwd: string,
   options: ClaudeMemoryLookupOptions = {},
 ): string | null {
-  if (!jsonlPath) return null
   const claudeHome = options.claudeHome || join(homedir(), '.claude')
   const projectsDir = join(claudeHome, 'projects')
   const repoRoot = options.repoRoot === undefined ? gitMemoryRoot(cwd) : options.repoRoot
   const candidates = [
     configuredMemoryFile(claudeHome),
     ...(repoRoot ? encodedProjectDirs(repoRoot, projectsDir).map((p) => join(p, 'memory', 'MEMORY.md')) : []),
-    join(dirname(jsonlPath), 'memory', 'MEMORY.md'),
+    ...(jsonlPath ? [join(dirname(jsonlPath), 'memory', 'MEMORY.md')] : []),
     ...encodedProjectDirs(cwd, projectsDir).map((p) => join(p, 'memory', 'MEMORY.md')),
   ].filter((p): p is string => Boolean(p))
 
@@ -126,6 +125,14 @@ export function findClaudeMemoryIndex(
     if (isNonEmptyFile(file)) return file
   }
   return null
+}
+
+/** Resolve repo-scoped Claude Auto Memory without requiring a source Claude session. */
+export function findClaudeMemoryForProject(
+  cwd: string,
+  options: ClaudeMemoryLookupOptions = {},
+): string | null {
+  return findClaudeMemoryIndex('', cwd, options)
 }
 
 function truncateUtf8(text: string, maxBytes: number): string {

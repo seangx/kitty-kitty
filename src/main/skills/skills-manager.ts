@@ -121,6 +121,7 @@ function jsonToSearchResults(data: any): SearchResult[] {
 const TOOL_AGENT_MAP: Record<string, string> = {
   claude: 'claude-code',
   codex: 'codex',
+  opencode: 'opencode',
   shell: 'claude-code',
 }
 
@@ -313,6 +314,37 @@ export function listNativeSkills(tool: string, cwd: string): NativeSkill[] {
       for (const name of scanDir(projPrompts, '.md')) {
         skills.push({ name, source: 'project-command', path: join(projPrompts, name + '.md') })
       }
+    }
+  }
+
+  if (tool === 'opencode') {
+    const roots: Array<{ dir: string; source: NativeSkill['source'] }> = [
+      { dir: join(home, '.config', 'opencode', 'skills'), source: 'skill' },
+      { dir: join(home, '.agents', 'skills'), source: 'skill' },
+      { dir: join(home, '.claude', 'skills'), source: 'skill' },
+    ]
+    if (cwd) {
+      roots.push(
+        { dir: join(cwd, '.opencode', 'skills'), source: 'project-skill' },
+        { dir: join(cwd, '.agents', 'skills'), source: 'project-skill' },
+        { dir: join(cwd, '.claude', 'skills'), source: 'project-skill' },
+      )
+    }
+    const seen = new Set<string>()
+    for (const root of roots) {
+      if (!existsSync(root.dir)) continue
+      try {
+        for (const name of readdirSync(root.dir)) {
+          if (seen.has(name)) continue
+          const p = join(root.dir, name)
+          try {
+            if (require('fs').statSync(p).isDirectory()) {
+              skills.push({ name, source: root.source, path: p })
+              seen.add(name)
+            }
+          } catch { /* ignore */ }
+        }
+      } catch { /* ignore */ }
     }
   }
 

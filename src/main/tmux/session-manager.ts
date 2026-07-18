@@ -39,10 +39,12 @@ export const TMUX = findTmux()
  * `respawn-pane`.
  */
 export function tmuxSpawnEnv(): NodeJS.ProcessEnv {
-  const env = { ...process.env, TERM: 'xterm-256color' }
+  const env: NodeJS.ProcessEnv = { ...process.env, TERM: 'xterm-256color' }
   delete env.HIVE_AGENT_ID
   delete env.HIVE_AGENT_KEY
   delete env.HIVE_AGENT_NAME
+  delete env.KITTY_SESSION_ID
+  delete env.KITTY_SESSION_NAME
   return env
 }
 
@@ -69,6 +71,7 @@ const SESSION_PREFIX = 'kitty_'
 const TOOL_COMMANDS: Record<string, string> = {
   claude: 'claude',
   codex: 'codex',
+  opencode: 'opencode',
   shell: '$SHELL'
 }
 
@@ -116,16 +119,18 @@ export function createTmuxSession(tool: string, firstMessage?: string, cwd?: str
   //焊死 hive 身份进脚本本体(根治:不再只靠下面 ephemeral 的 tmux `-e`)
   if (launchScript) injectHiveIdentity(launchScript, id, title)
   // Inject hive identity env so kitty-hive MCP (if installed) auto-registers this agent
-  const hiveEnv =
+  const sessionEnv =
+    ` -e ${shellQuote(`KITTY_SESSION_ID=${id}`)}` +
+    ` -e ${shellQuote(`KITTY_SESSION_NAME=${title}`)}` +
     ` -e ${shellQuote(`HIVE_AGENT_KEY=${id}`)}` +
     ` -e ${shellQuote(`HIVE_AGENT_NAME=${title}`)}`
-  execSync(`${TMUX} new-session -d -s ${shellQuote(tmuxName)} -c ${shellQuote(cwd)}${hiveEnv} ${shellQuote(command)}`, {
+  execSync(`${TMUX} new-session -d -s ${shellQuote(tmuxName)} -c ${shellQuote(cwd)}${sessionEnv} ${shellQuote(command)}`, {
     stdio: 'ignore',
     env: tmuxSpawnEnv()
   })
 
   // If there's a first message, wait a moment then send it
-  if (firstMessage) {
+  if (firstMessage && tool !== 'opencode') {
     // Small delay for the CLI to initialize
     setTimeout(() => {
       try {
@@ -355,7 +360,10 @@ export function createPaneInSession(
   // (e.g. claude's hive-channel plugin) can reuse the kitty agent row by key
   // instead of registering a sibling.
   const hiveFlags = hiveEnv
-    ? ` -e ${shellQuote(`HIVE_AGENT_KEY=${hiveEnv.key}`)} -e ${shellQuote(`HIVE_AGENT_NAME=${hiveEnv.name}`)}`
+    ? ` -e ${shellQuote(`KITTY_SESSION_ID=${hiveEnv.key}`)}` +
+      ` -e ${shellQuote(`KITTY_SESSION_NAME=${hiveEnv.name}`)}` +
+      ` -e ${shellQuote(`HIVE_AGENT_KEY=${hiveEnv.key}`)}` +
+      ` -e ${shellQuote(`HIVE_AGENT_NAME=${hiveEnv.name}`)}`
     : ''
   //焊死 hive 身份进脚本本体(根治:不再只靠 ephemeral 的 tmux `-e`)
   if (hiveEnv) injectHiveIdentity(command, hiveEnv.key, hiveEnv.name)
@@ -793,5 +801,3 @@ fi
   chmodSync(scriptPath, '755')
   return scriptPath
 }
-
-

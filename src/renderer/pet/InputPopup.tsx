@@ -10,6 +10,7 @@ interface Props {
 const TOOLS: { id: ToolId; label: string }[] = [
   { id: 'claude', label: '⚡ Claude' },
   { id: 'codex',  label: '✦ Codex' },
+  { id: 'opencode', label: '◈ OpenCode' },
 ]
 
 // Aether Glass tokens

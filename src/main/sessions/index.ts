@@ -1,5 +1,6 @@
 import { claudeProvider } from './claude-provider'
 import { codexProvider } from './codex-provider'
+import { opencodeProvider } from './opencode-provider'
 import type { ExternalSessionProvider } from './external-session'
 
 export type { ExternalSessionEntry, ExternalSessionProvider } from './external-session'
@@ -7,6 +8,7 @@ export type { ExternalSessionEntry, ExternalSessionProvider } from './external-s
 const PROVIDERS: Record<string, ExternalSessionProvider> = {
   claude: claudeProvider,
   codex: codexProvider,
+  opencode: opencodeProvider,
 }
 
 /**

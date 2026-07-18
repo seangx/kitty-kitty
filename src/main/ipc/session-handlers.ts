@@ -7,7 +7,7 @@ import { execSync, spawn } from 'child_process'
 import { v4 as uuid } from 'uuid'
 import { log } from '../logger'
 import * as tmux from '../tmux/session-manager'
-import { generateLaunchScript, type LaunchMode, isToolInstalled, getInstallHint, getNtfyTopic, setNtfyTopic, getCodexHiveBridge, setCodexHiveBridge, needsDevChannelAutoAccept, generateCodexRemoteScript, injectHiveIdentity, injectSessionEnv } from '../tmux/cli-wrapper'
+import { generateLaunchScript, type LaunchMode, isToolInstalled, getInstallHint, getNtfyTopic, setNtfyTopic, getCodexHiveBridge, setCodexHiveBridge, needsDevChannelAutoAccept, generateCodexRemoteScript, injectHiveIdentity, injectSessionEnv, injectOpenCodeMemory } from '../tmux/cli-wrapper'
 import { registerCodexAgent, codexPaneWs, codexSetThread, renameAgent, hiveSupportsSwitchTool } from '../hive-codex'
 import * as sessionRepo from '../db/session-repo'
 import { getDB } from '../db/database'
@@ -16,7 +16,8 @@ import { getProvider } from '../sessions'
 import { clearNeedsInput, getPendingInput, isJsonlInCwd, claudeJsonlPath } from '../wakeup'
 import { markCleared, isCleared, clearMark } from '../session-clear-state'
 import { buildCodexHandoff, buildClaudeRecentHandoff, scanClaudeMessageTokens } from '../codex-rollout'
-import { buildClaudeMemoryStartupPrompt } from '../claude-memory'
+import { buildClaudeMemoryStartupPrompt, findClaudeMemoryForProject } from '../claude-memory'
+import { syncManagedMcpsToTool } from '../mcps/mcps-manager'
 import { getPetWindow } from '../windows/pet-window'
 import type { SessionInfo } from '@shared/types/session'
 
@@ -129,11 +130,11 @@ function sendTransferProgress(sessionId: string, stage: 'scan' | 'transfer' | 'h
  * 全局规则(~/.claude/CLAUDE.md ↔ ~/.codex/AGENTS.md)是用户级配置,影响所有
  * 会话,不在变身时自动改动。
  */
-function linkProjectRules(cwd: string, toTool: 'codex' | 'claude'): void {
+function linkProjectRules(cwd: string, toTool: 'codex' | 'claude' | 'opencode'): void {
   if (!cwd) return
   const claudeMd = join(cwd, 'CLAUDE.md')
   const agentsMd = join(cwd, 'AGENTS.md')
-  const [src, dst] = toTool === 'codex' ? [claudeMd, agentsMd] : [agentsMd, claudeMd]
+  const [src, dst] = toTool === 'claude' ? [agentsMd, claudeMd] : [claudeMd, agentsMd]
   try {
     if (existsSync(src) && !existsSync(dst)) {
       symlinkSync(basename(src), dst)
@@ -149,10 +150,12 @@ function linkProjectRules(cwd: string, toTool: 'codex' | 'claude'): void {
  * skill 全部隐身(管家 flyai/pptx 对 codex 不可见)。.agents/skills 存在而
  * 目标侧桥缺失时补一条相对软链;已有任何东西(含悬空链)一律不碰。
  */
-function linkSkillsBridge(cwd: string, toTool: 'codex' | 'claude'): void {
+function linkSkillsBridge(cwd: string, toTool: 'codex' | 'claude' | 'opencode'): void {
   const agentsSkills = join(cwd, '.agents', 'skills')
   try {
     if (!existsSync(agentsSkills)) return
+    // OpenCode reads .agents/skills natively; no tool-specific bridge needed.
+    if (toTool === 'opencode') return
     const bridgeDir = join(cwd, toTool === 'codex' ? '.codex' : '.claude')
     const bridge = join(bridgeDir, 'skills')
     try { lstatSync(bridge); return } catch { /* 不存在 → 补桥 */ }
@@ -160,6 +163,17 @@ function linkSkillsBridge(cwd: string, toTool: 'codex' | 'claude'): void {
     symlinkSync(join('..', '.agents', 'skills'), bridge)
     log('transfer', `skills: linked ${toTool}/skills → .agents/skills (${cwd})`)
   } catch { /* ignore */ }
+}
+
+/** Prepare repo-level rules and dynamic Claude Auto Memory for a tool launch. */
+function prepareProjectForTool(cwd: string, tool: string, launchScript: string): void {
+  if (!cwd || !launchScript) return
+  if (tool === 'claude' || tool === 'codex' || tool === 'opencode') {
+    linkProjectRules(cwd, tool)
+  }
+  if (tool === 'opencode') {
+    injectOpenCodeMemory(launchScript, findClaudeMemoryForProject(cwd))
+  }
 }
 
 /** 找已安装 codex 插件里支持 transfer 的最高版本 companion 脚本。 */
@@ -236,7 +250,7 @@ function findExternalSessions(tool: string, projectDir: string): Array<{ id: str
 /** List recent sessions across ALL supported tools, sorted by date desc (string sort, ISO-ish). */
 function findAllExternalSessions(projectDir: string): Array<{ id: string; summary: string; date: string; tool: string }> {
   const merged: Array<{ id: string; summary: string; date: string; tool: string }> = []
-  for (const tool of ['claude', 'codex']) {
+  for (const tool of ['claude', 'codex', 'opencode']) {
     merged.push(...findExternalSessions(tool, projectDir))
   }
   return merged.sort((a, b) => (b.date || '').localeCompare(a.date || '')).slice(0, 8)
@@ -286,7 +300,9 @@ export function registerSessionHandlers(): void {
     // Pre-bind a session id for claude so its jsonl is identifiable up front
     // (lets multiple claude sessions share one cwd without cross-assignment).
     const claudeSid = t === 'claude' ? uuid() : undefined
-    script = generateLaunchScript(t, 'new', undefined, undefined, claudeSid)
+    // OpenCode supports an initial prompt as a real CLI flag; do not paste it
+    // into the live TUI after startup.
+    script = generateLaunchScript(t, 'new', undefined, undefined, claudeSid, undefined, t === 'opencode' ? firstMessage : undefined)
     const session = tmux.createTmuxSession(t, firstMessage, undefined, script)
     sessionRepo.saveSession(session)
     if (claudeSid) sessionRepo.updateSessionExternalId(session.id, claudeSid)
@@ -318,6 +334,7 @@ export function registerSessionHandlers(): void {
     // No existing sessions — create new directly.
     // For codex with bridge on, try path B (codex --remote ws).
     const t = tool || 'claude'
+    await syncManagedMcpsToTool(dir, t)
     let script: string
     let hiveAgentId = ''
     let presetId: string | undefined
@@ -338,6 +355,7 @@ export function registerSessionHandlers(): void {
       claudeSid = t === 'claude' ? uuid() : undefined
       script = generateLaunchScript(t, 'new', undefined, undefined, claudeSid)
     }
+    prepareProjectForTool(dir, t, script)
     const session = tmux.createTmuxSession(t, undefined, dir, script, presetId)
     sessionRepo.saveSession(session)
     if (hiveAgentId) sessionRepo.updateSessionHiveAgentId(session.id, hiveAgentId)
@@ -355,6 +373,8 @@ export function registerSessionHandlers(): void {
     else mode = 'continue'
 
     const t = tool || 'claude'
+    ensureReady(t)
+    await syncManagedMcpsToTool(dir, t)
     let script: string
     let hiveAgentId = ''
     let presetId: string | undefined
@@ -378,6 +398,7 @@ export function registerSessionHandlers(): void {
       claudeSid = (t === 'claude' && mode === 'new') ? uuid() : undefined
       script = generateLaunchScript(t, mode, resumeId === '__new__' ? undefined : resumeId || undefined, undefined, claudeSid)
     }
+    prepareProjectForTool(dir, t, script)
     const session = tmux.createTmuxSession(t, undefined, dir, script, presetId)
     sessionRepo.saveSession(session)
     if (hiveAgentId) sessionRepo.updateSessionHiveAgentId(session.id, hiveAgentId)
@@ -558,9 +579,9 @@ export function registerSessionHandlers(): void {
   })
 
   // Change a session CLI tool and restart the tmux command in-place.
-  ipcMain.handle('session:set-tool', (_event, id: string, tool: string) => {
+  ipcMain.handle('session:set-tool', async (_event, id: string, tool: string) => {
     const nextTool = (tool || '').trim()
-    if (!['claude', 'codex', 'shell'].includes(nextTool)) {
+    if (!['claude', 'codex', 'opencode', 'shell'].includes(nextTool)) {
       throw new Error(`Unsupported tool: ${tool}`)
     }
     ensureReady(nextTool)
@@ -570,10 +591,26 @@ export function registerSessionHandlers(): void {
     if (!session) throw new Error('Session not found')
     if (session.tool === nextTool) return { success: true }
 
-    if (tmux.isSessionAlive(session.tmuxName)) {
-      restartSessionTool(session.tmuxName, session.mainPane || '0.0', session.tool, nextTool)
+    await syncManagedMcpsToTool(session.cwd, nextTool)
+    if (nextTool === 'claude' || nextTool === 'codex' || nextTool === 'opencode') {
+      linkProjectRules(session.cwd, nextTool)
     }
+
+    // OpenCode's plugin may emit session.created immediately after respawn.
+    // Commit the target tool first so wakeup accepts that exact external id;
+    // roll the DB state back if respawn itself fails.
+    const nextExternalId = nextTool === 'claude' ? uuid() : ''
     sessionRepo.updateSessionTool(id, nextTool)
+    sessionRepo.updateSessionExternalId(id, nextExternalId)
+    try {
+      if (tmux.isSessionAlive(session.tmuxName)) {
+        restartSessionTool({ ...session, tool: nextTool, externalSessionId: nextExternalId }, nextTool)
+      }
+    } catch (err) {
+      sessionRepo.updateSessionTool(id, session.tool)
+      sessionRepo.updateSessionExternalId(id, session.externalSessionId)
+      throw err
+    }
 
     return { success: true }
   })
@@ -823,6 +860,21 @@ export function registerSessionHandlers(): void {
       return { success: true, message: '已清空（hive 端未同步，可能丢推送）' }
     }
 
+    if (session.tool === 'opencode') {
+      const previousExternalId = session.externalSessionId
+      sessionRepo.updateSessionExternalId(session.id, '')
+      markCleared(session.id)
+      try {
+        await restartSessionPane({ ...session, externalSessionId: '' })
+      } catch (err: any) {
+        clearMark(session.id)
+        sessionRepo.updateSessionExternalId(session.id, previousExternalId)
+        return { success: false, message: err?.message || '启动 OpenCode 新对话失败' }
+      }
+      log('session', `clear-conversation (opencode): ${session.title}`)
+      return { success: true, message: '已启动 OpenCode 新对话，session id 将自动同步' }
+    }
+
     return { success: true, message: '已清空对话' }
   })
 
@@ -887,17 +939,18 @@ export function registerSessionHandlers(): void {
     if (raw.startsWith('{')) {
       try {
         const p = JSON.parse(raw) as Record<string, string>
-        return { claude: p?.claude || '', codex: p?.codex || '' }
-      } catch { return { claude: '', codex: '' } }
+        return { claude: p?.claude || '', codex: p?.codex || '', opencode: p?.opencode || '' }
+      } catch { return { claude: '', codex: '', opencode: '' } }
     }
-    return { claude: raw, codex: '' } // 旧格式归 claude
+    return { claude: raw, codex: '', opencode: '' } // 旧格式归 claude
   })
 
   // Set per-session launch args
-  ipcMain.handle('session:set-launch-args', (_event, id: string, args: { claude?: string; codex?: string }) => {
+  ipcMain.handle('session:set-launch-args', (_event, id: string, args: { claude?: string; codex?: string; opencode?: string }) => {
     const claude = String(args?.claude || '').trim()
     const codex = String(args?.codex || '').trim()
-    sessionRepo.updateSessionLaunchArgs(id, claude || codex ? JSON.stringify({ claude, codex }) : '')
+    const opencode = String(args?.opencode || '').trim()
+    sessionRepo.updateSessionLaunchArgs(id, claude || codex || opencode ? JSON.stringify({ claude, codex, opencode }) : '')
     return { success: true }
   })
 
@@ -1112,6 +1165,7 @@ export function registerSessionHandlers(): void {
         const gid = session.groupId
         const sLaunchArgs = launchArgsFor(session)
         const sEnv = session.env
+        const sTitle = session.title
         setTimeout(() => {
           try {
             if (gid) {
@@ -1122,6 +1176,8 @@ export function registerSessionHandlers(): void {
               if (hostTmux && sCwd && existsSync(sCwd)) {
                 const tempName = `kitty_tmp_${Date.now()}`
                 const script = generateLaunchScript(sTool || 'claude', 'restore', undefined, undefined, undefined, sLaunchArgs)
+                prepareProjectForTool(sCwd, sTool || 'claude', script)
+                injectHiveIdentity(script, sid, sTitle || '')
                 injectSessionEnv(script, sEnv)
                 execSync(
                   `${tmux.TMUX} new-session -d -s "${tempName}" -c "${sCwd}" "${script}"`,
@@ -1141,6 +1197,8 @@ export function registerSessionHandlers(): void {
               // Ungrouped: rebuild standalone tmux session if the old one is gone
               if (sTmuxName && !tmux.isSessionAlive(sTmuxName) && sCwd && existsSync(sCwd)) {
                 const script = generateLaunchScript(sTool || 'claude', 'restore', undefined, undefined, undefined, sLaunchArgs)
+                prepareProjectForTool(sCwd, sTool || 'claude', script)
+                injectHiveIdentity(script, sid, sTitle || '')
                 injectSessionEnv(script, sEnv)
                 execSync(
                   `${tmux.TMUX} new-session -d -s "${sTmuxName}" -c "${sCwd}" "${script}"`,
@@ -1409,6 +1467,8 @@ function tryRestoreSession(row: sessionRepo.SessionRow): boolean {
       const { sid, mode } = prebindClaudeRelaunch(row, 'restore')
       script = generateLaunchScript(row.tool, mode, undefined, row.cwd, sid, extraArgs)
     }
+    prepareProjectForTool(row.cwd, row.tool, script)
+    injectHiveIdentity(script, row.id, row.title || '')
     injectSessionEnv(script, row.env)
     execSync(
       `${tmux.TMUX} new-session -d -s "${row.tmuxName}" -c "${row.cwd}" "${script}"`,
@@ -1799,6 +1859,7 @@ function bindFreshCodexThread(sessionId: string): void {
 }
 
 async function restartSessionPane(session: sessionRepo.SessionRow, initialPrompt?: string): Promise<void> {
+  await syncManagedMcpsToTool(session.cwd, session.tool)
   // Resolve the exact pane to respawn WITHOUT clobbering a sibling session's
   // pane. Falls back to mainPane only when the tmux session is gone entirely.
   const target = resolveRestartPaneTarget(session)
@@ -1867,6 +1928,8 @@ async function restartSessionPane(session: sessionRepo.SessionRow, initialPrompt
     launch = generateLaunchScript(session.tool, mode, session.externalSessionId || undefined, session.cwd || undefined, sid, launchArgsFor(session), initialPrompt)
   }
 
+  prepareProjectForTool(session.cwd, session.tool, launch)
+
   // Parse per-session env and pass via respawn-pane -e KEY=VALUE
   let envFlags = ''
   if (session.env) {
@@ -1877,7 +1940,10 @@ async function restartSessionPane(session: sessionRepo.SessionRow, initialPrompt
       }
     } catch { /* ignore bad env json */ }
   }
-  // Hive identity — re-inject on every restart so MCP re-registers this agent
+  // Kitty identity drives tool-local integrations (OpenCode plugin); Hive
+  // identity remains optional and is carried for Claude/Codex compatibility.
+  envFlags += ` -e "KITTY_SESSION_ID=${session.id}"`
+  envFlags += ` -e "KITTY_SESSION_NAME=${String(session.title || '').replace(/"/g, '\\"')}"`
   envFlags += ` -e "HIVE_AGENT_KEY=${session.id}"`
   envFlags += ` -e "HIVE_AGENT_NAME=${String(session.title || '').replace(/"/g, '\\"')}"`
 
@@ -1917,69 +1983,41 @@ function pollAndAcceptDevChannelPrompt(paneTarget: string): void {
   }, 200)
 }
 
-function restartSessionTool(tmuxName: string, mainPane: string, prevTool: string, nextTool: string): void {
-  const target = resolvePaneTarget(tmuxName, mainPane)
-  try {
-    if (prevTool === 'claude') {
-      execSync(`${tmux.TMUX} send-keys -t "${target}" "/exit" Enter`, { stdio: 'ignore' })
-    } else {
-      execSync(`${tmux.TMUX} send-keys -t "${target}" C-c`, { stdio: 'ignore' })
-    }
-    waitForPaneShell(target, 12000)
-  } catch {
-    forceStopPaneForegroundProcess(target)
-    waitForPaneShell(target, 5000)
-  }
+function restartSessionTool(session: sessionRepo.SessionRow, nextTool: string): void {
+  const target = resolveRestartPaneTarget(session)
+    ?? resolvePaneTarget(session.tmuxName, session.mainPane || '0.0')
+  const launchArgs = launchArgsFor({ tool: nextTool, launchArgs: session.launchArgs })
+  // A generic tool switch does not convert conversation history (Alt+X owns
+  // that contract), so start a fresh target-tool session. Pre-bind Claude to
+  // avoid accidentally continuing a sibling session that shares the cwd.
+  const launch = generateLaunchScript(
+    nextTool,
+    'new',
+    undefined,
+    session.cwd,
+    nextTool === 'claude' ? session.externalSessionId : undefined,
+    launchArgs,
+  )
+  prepareProjectForTool(session.cwd, nextTool, launch)
+  injectHiveIdentity(launch, session.id, session.title || '')
+  injectSessionEnv(launch, session.env)
 
-  const launch = generateLaunchScript(nextTool, 'continue')
-  const escaped = launch.replace(/"/g, '\\"')
-  execSync(`${tmux.TMUX} send-keys -t "${target}" "${escaped}" Enter`, { stdio: 'ignore' })
-}
-
-function waitForPaneShell(tmuxTarget: string, timeoutMs: number): void {
-  const shellCommands = new Set(['zsh', 'bash', 'fish', 'sh', 'login'])
-  const deadline = Date.now() + timeoutMs
-  while (Date.now() < deadline) {
+  let envFlags =
+    ` -e "KITTY_SESSION_ID=${session.id}"` +
+    ` -e "KITTY_SESSION_NAME=${String(session.title || '').replace(/"/g, '\\"')}"` +
+    ` -e "HIVE_AGENT_KEY=${session.id}"` +
+    ` -e "HIVE_AGENT_NAME=${String(session.title || '').replace(/"/g, '\\"')}"`
+  if (session.env) {
     try {
-      const current = execSync(
-        `${tmux.TMUX} display-message -p -t "${tmuxTarget}" "#{pane_current_command}"`,
-        { encoding: 'utf-8' }
-      ).trim()
-      if (shellCommands.has(current)) return
-    } catch {
-      // Keep polling: pane can be mid-transition while command exits.
-    }
-    execSync('sleep 0.2', { stdio: 'ignore' })
+      const parsed = JSON.parse(session.env) as Record<string, string>
+      for (const [key, value] of Object.entries(parsed)) {
+        if (/^[A-Za-z_][A-Za-z0-9_]*$/.test(key)) {
+          envFlags += ` -e "${key}=${String(value).replace(/"/g, '\\"')}"`
+        }
+      }
+    } catch { /* ignore invalid per-session env */ }
   }
-  throw new Error(`Timed out waiting for tmux pane "${tmuxTarget}" to return to shell`)
-}
-
-function forceStopPaneForegroundProcess(tmuxTarget: string): void {
-  try {
-    execSync(`${tmux.TMUX} send-keys -t "${tmuxTarget}" C-c`, { stdio: 'ignore' })
-  } catch { /* ignore */ }
-  let panePid = ''
-  try {
-    panePid = execSync(`${tmux.TMUX} display-message -p -t "${tmuxTarget}" "#{pane_pid}"`, { encoding: 'utf-8' }).trim()
-  } catch { /* ignore */ }
-  if (!panePid) return
-
-  let childPids: string[] = []
-  try {
-    childPids = execSync(`pgrep -P "${panePid}" || true`, { encoding: 'utf-8' })
-      .trim()
-      .split(/\s+/)
-      .filter(Boolean)
-  } catch { /* ignore */ }
-  if (!childPids.length) return
-
-  for (const pid of childPids) {
-    try { execSync(`kill -TERM ${pid}`, { stdio: 'ignore' }) } catch { /* ignore */ }
-  }
-  execSync('sleep 0.3', { stdio: 'ignore' })
-  for (const pid of childPids) {
-    try { execSync(`kill -0 ${pid}`, { stdio: 'ignore' }); execSync(`kill -KILL ${pid}`, { stdio: 'ignore' }) } catch { /* ignore */ }
-  }
+  execSync(`${tmux.TMUX} respawn-pane -k${envFlags} -t "${target}" "${launch}"`, { stdio: 'ignore' })
 }
 
 function resolvePaneTarget(tmuxName: string, mainPane: string): string {
