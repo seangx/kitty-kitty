@@ -72,3 +72,15 @@ test('child group creation uses the in-app name dialog instead of Electron windo
   assert.match(source, /openChildGroupDialog\(groupId, depth, event\.clientX, event\.clientY\)/)
   assert.match(source, /<DeckNameDialog/)
 })
+
+test('Deck keeps one shared rail and dismisses expanded branches away from it', async () => {
+  const source = await readFile(new URL('../src/renderer/pet/SessionDeck.tsx', import.meta.url), 'utf8')
+  const css = await readFile(new URL('../src/renderer/pet/SessionDeck.css', import.meta.url), 'utf8')
+  const groupAddCss = css.match(/\.session-deck__group-add \{([^}]*)\}/)?.[1] || ''
+
+  assert.match(source, /window\.api\.on\('window-blur', closeTransientSurfaces\)/)
+  assert.match(source, /const collapseBranches = useCallback\(\(\) => \{[\s\S]*?setOpenPath\(\[\]\)/)
+  assert.match(css, /\.session-deck__rail \{[\s\S]*?background: linear-gradient/)
+  assert.match(groupAddCss, /bottom: -6px;/)
+  assert.doesNotMatch(groupAddCss, /top: -6px;/)
+})

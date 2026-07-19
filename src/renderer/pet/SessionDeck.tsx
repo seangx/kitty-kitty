@@ -106,6 +106,11 @@ export default function SessionDeck({
   const [childGroupCreating, setChildGroupCreating] = useState(false)
   const [childGroupError, setChildGroupError] = useState('')
 
+  const collapseBranches = useCallback(() => {
+    setOpenPath([])
+    setVerticalDirections({})
+  }, [])
+
   const accent = /^#[0-9a-f]{6}$/i.test(bubble.deckAccentColor || '')
     ? bubble.deckAccentColor
     : '#6fd7c8'
@@ -118,14 +123,15 @@ export default function SessionDeck({
   useEffect(() => { void loadGroups() }, [sessions, loadGroups])
 
   useEffect(() => {
-    const closeMenus = () => {
+    const closeTransientSurfaces = () => {
       setSessionMenu(null)
       setGroupMenu(null)
       setShowMoveMenu(false)
+      collapseBranches()
     }
-    const unsubscribe = window.api.on('window-blur', closeMenus)
+    const unsubscribe = window.api.on('window-blur', closeTransientSurfaces)
     return unsubscribe
-  }, [])
+  }, [collapseBranches])
 
   const visibleSessions = useMemo(
     () => sessions.filter((session) => session.status !== 'dead' && !session.hidden),
@@ -263,9 +269,10 @@ export default function SessionDeck({
   }, [executeDrop])
 
   const attach = useCallback((session: SessionInfo) => {
+    collapseBranches()
     setActiveSessionId(session.id)
     onAttach(session.id)
-  }, [onAttach])
+  }, [collapseBranches, onAttach])
 
   const renderSession = (session: SessionInfo, compact = false) => {
     const selected = activeSessionId === session.id
@@ -275,10 +282,11 @@ export default function SessionDeck({
         key={`session:${session.id}`}
         className={`session-deck__item session-deck__session${selected ? ' is-selected' : ''}${compact ? ' is-compact' : ''}${dragging ? ' is-dragging' : ''}`}
         onMouseDown={(event) => startDrag(event, { kind: 'session', id: session.id, title: session.title }, () => attach(session))}
-        onContextMenu={(event) => {
-          event.preventDefault()
-          event.stopPropagation()
-          setSessionMenu({ id: session.id, x: event.clientX, y: event.clientY })
+          onContextMenu={(event) => {
+            event.preventDefault()
+            event.stopPropagation()
+            collapseBranches()
+            setSessionMenu({ id: session.id, x: event.clientX, y: event.clientY })
           setGroupMenu(null)
           setShowMoveMenu(false)
         }}
@@ -315,6 +323,7 @@ export default function SessionDeck({
           onContextMenu={(event) => {
             event.preventDefault()
             event.stopPropagation()
+            collapseBranches()
             setGroupMenu({ id: groupId, x: event.clientX, y: event.clientY })
             setSessionMenu(null)
           }}
@@ -378,14 +387,25 @@ export default function SessionDeck({
         event.stopPropagation()
       }}
     >
-      <div className="session-deck__rail">
+      <div
+        className="session-deck__rail"
+        onMouseDown={(event) => {
+          if (event.target === event.currentTarget) collapseBranches()
+        }}
+      >
         <button
           className="session-deck__collapse"
           onClick={onClose}
           aria-label="收起边栏"
           title="收起成猫"
         >{edge === 'left' ? '‹' : '›'}</button>
-        <div className="session-deck__root-scroll" data-drop="root">
+        <div
+          className="session-deck__root-scroll"
+          data-drop="root"
+          onMouseDown={(event) => {
+            if (event.target === event.currentTarget) collapseBranches()
+          }}
+        >
           {rootItems.map((item) => item.kind === 'session'
             ? renderSession(item.session, true)
             : renderGroup(item.node, 'vertical', 0, true))}
@@ -394,11 +414,22 @@ export default function SessionDeck({
         {hiddenSessions.length > 0 && (
           <button
             className={`session-deck__utility${showHidden ? ' is-selected' : ''}`}
-            onClick={() => setShowHidden((value) => !value)}
+            onClick={() => {
+              collapseBranches()
+              setShowHidden((value) => !value)
+            }}
             title="隐藏的会话"
           >◌<span>{hiddenSessions.length}</span></button>
         )}
-        <button className="session-deck__add" onClick={onCreate} aria-label="新建会话" title="新建会话">＋</button>
+        <button
+          className="session-deck__add"
+          onClick={() => {
+            collapseBranches()
+            onCreate()
+          }}
+          aria-label="新建会话"
+          title="新建会话"
+        >＋</button>
       </div>
 
       {drag?.active && (
