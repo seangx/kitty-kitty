@@ -22,6 +22,11 @@ export function statusLineCountForDepth(depth: number): number {
   return Math.max(1, Math.min(5, Math.floor(depth) + 1))
 }
 
+/** tmux spells a single status row as `on`; numeric row counts start at 2. */
+export function statusOptionValueForLineCount(lineCount: number): string {
+  return lineCount <= 1 ? 'on' : String(lineCount)
+}
+
 /**
  * Dynamic renderer for one tmux status row.
  *

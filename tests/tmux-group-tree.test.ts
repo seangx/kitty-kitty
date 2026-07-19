@@ -11,7 +11,10 @@ import {
   ROOT_GROUPS_SQL,
   rootGroupForTmuxSql,
 } from '../src/main/tmux/group-tree-sql.ts'
-import { statusLineCountForDepth } from '../src/main/tmux/status-scripts.ts'
+import {
+  statusLineCountForDepth,
+  statusOptionValueForLineCount,
+} from '../src/main/tmux/status-scripts.ts'
 
 test('tmux navigation renders root groups and rolls child sessions into their root', () => {
   const dir = mkdtempSync(join(tmpdir(), 'kitty-tmux-groups-'))
@@ -55,6 +58,8 @@ test('tmux navigation renders root groups and rolls child sessions into their ro
     assert.equal(statusLineCountForDepth(0), 1)
     assert.equal(statusLineCountForDepth(2), 3)
     assert.equal(statusLineCountForDepth(8), 5)
+    assert.equal(statusOptionValueForLineCount(1), 'on')
+    assert.equal(statusOptionValueForLineCount(2), '2')
 
     const subtree = groupSubtreeCte("'root'")
     assert.equal(sqlite(`

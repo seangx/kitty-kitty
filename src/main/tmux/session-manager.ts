@@ -17,6 +17,7 @@ import {
   buildStatusNavigateScript,
   buildStatusRowScript,
   statusLineCountForDepth,
+  statusOptionValueForLineCount,
 } from './status-scripts'
 
 /** Resolve tmux binary — GUI apps don't inherit homebrew PATH */
@@ -466,9 +467,10 @@ function statusLineCountForTmux(tmuxName: string): number {
 function applyStatusLineOptions(tmuxName: string): void {
   const rowScript = ensureStatusRowScript()
   const lineCount = statusLineCountForTmux(tmuxName)
+  const statusValue = statusOptionValueForLineCount(lineCount)
   const sq = shellQuote(tmuxName)
 
-  execSync(`${TMUX} set-option -t ${sq} status ${lineCount}`, { stdio: 'ignore' })
+  execSync(`${TMUX} set-option -t ${sq} status ${statusValue}`, { stdio: 'ignore' })
   for (let line = 0; line < lineCount; line++) {
     const clock = line === lineCount - 1
       ? '#[fill=#1e1e36,align=right]#[fg=#aaa8c3] %H:%M '
