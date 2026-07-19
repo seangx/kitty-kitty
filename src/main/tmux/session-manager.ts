@@ -5,6 +5,7 @@ import { tmpdir, homedir } from 'os'
 import { v4 as uuid } from 'uuid'
 import { getDB } from '../db/database'
 import { injectHiveIdentity } from './cli-wrapper'
+import { groupSubtreeCte, ROOT_GROUPS_SQL, rootGroupForTmuxSql } from './group-tree-sql'
 import {
   formatPaneLabel,
   PANE_BORDER_FORMAT,
@@ -335,7 +336,7 @@ export function focusSession(tmuxName: string): void {
 function syncActiveGroupForSession(tmuxName: string): void {
   try {
     const db = getDB()
-    const row = db.prepare("SELECT COALESCE(group_id, '') as group_id FROM sessions WHERE tmux_name = ?").get(tmuxName) as { group_id: string } | undefined
+    const row = db.prepare(rootGroupForTmuxSql('?')).get(tmuxName) as { group_id: string } | undefined
     const groupId = row?.group_id || '__ungrouped__'
     execSync(`${TMUX} set-environment -g KITTY_ACTIVE_GROUP ${shellQuote(groupId)}`, { stdio: 'ignore' })
   } catch { /* ignore */ }
@@ -730,7 +731,7 @@ fi
 
 # Derive active group from the session being rendered — this is the truth for this status bar
 if [ -n "\$RENDER_SESSION" ]; then
-  ACTIVE_GROUP=\$(sqlite3 "\$DB" "SELECT COALESCE(group_id, '__ungrouped__') FROM sessions WHERE tmux_name='\$RENDER_SESSION' LIMIT 1;" 2>/dev/null)
+  ACTIVE_GROUP=\$(sqlite3 "\$DB" "${rootGroupForTmuxSql("'\$RENDER_SESSION'")}" 2>/dev/null)
 fi
 [ -z "\$ACTIVE_GROUP" ] && ACTIVE_GROUP="__ungrouped__"
 
@@ -748,15 +749,18 @@ N=0
 # used by prefix+N / Alt+N (kitty_switch_group.sh).
 while IFS='|' read -r GID GNAME; do
   [ -z "\$GID" ] && continue
-  # Count visible sessions in this group
+  # The tmux bar is intentionally root-only. Child groups remain Deck-level
+  # navigation, while their sessions and active state roll up to this root.
+  SUBTREE_SQL="${groupSubtreeCte("'\$GID'")}"
+  # Count visible sessions in the complete group subtree
   # In pane mode, multiple DB sessions share one tmux session, so count from DB directly
-  COUNT=\$(sqlite3 "\$DB" "SELECT COUNT(*) FROM sessions WHERE group_id='\$GID' AND COALESCE(hidden,0)=0;" 2>/dev/null)
-  # But still need at least one alive tmux session in the group
+  COUNT=\$(sqlite3 "\$DB" "\$SUBTREE_SQL SELECT COUNT(*) FROM sessions WHERE group_id IN (SELECT id FROM subtree) AND COALESCE(hidden,0)=0;" 2>/dev/null)
+  # But still need at least one alive tmux session in the subtree
   HAS_ALIVE=0
   while read -r TNAME; do
     [ -z "\$TNAME" ] && continue
     case "\$ALIVE" in *"|\$TNAME|"*) HAS_ALIVE=1; break ;; esac
-  done < <(sqlite3 "\$DB" "SELECT DISTINCT tmux_name FROM sessions WHERE group_id='\$GID' AND COALESCE(hidden,0)=0;" 2>/dev/null)
+  done < <(sqlite3 "\$DB" "\$SUBTREE_SQL SELECT DISTINCT tmux_name FROM sessions WHERE group_id IN (SELECT id FROM subtree) AND COALESCE(hidden,0)=0;" 2>/dev/null)
   [ "\$HAS_ALIVE" -eq 0 ] && continue
   [ "\${COUNT:-0}" -eq 0 ] && continue
   N=\$((N+1))
@@ -766,7 +770,7 @@ while IFS='|' read -r GID GNAME; do
     [ "\$N" -gt 1 ] && printf '#[fg=#3a3a5c,bg=%s] ' "\$GBG"
     printf '#[range=user|kitty:group:%d]#[fg=#706f8a,bg=%s]  %d  %s (%d)  #[norange]' "\$N" "\$GBG" "\$N" "\$GNAME" "\$COUNT"
   fi
-done < <(sqlite3 "\$DB" "SELECT id, name FROM groups ORDER BY created_at;" 2>/dev/null)
+done < <(sqlite3 "\$DB" "${ROOT_GROUPS_SQL}" 2>/dev/null)
 
 # Ungrouped sessions rendered individually as top-level tabs
 while IFS='|' read -r TNAME TITLE; do
@@ -817,16 +821,17 @@ N=0
 
 while IFS='|' read -r GID GNAME; do
   [ -z "\$GID" ] && continue
+  SUBTREE_SQL="${groupSubtreeCte("'\$GID'")}"
   COUNT=0
   while read -r TNAME; do
     [ -z "\$TNAME" ] && continue
     case "\$ALIVE" in *"|\$TNAME|"*) COUNT=\$((COUNT+1)) ;; esac
-  done < <(sqlite3 "\$DB" "SELECT tmux_name FROM sessions WHERE group_id='\$GID' AND COALESCE(hidden,0)=0;" 2>/dev/null)
+  done < <(sqlite3 "\$DB" "\$SUBTREE_SQL SELECT DISTINCT tmux_name FROM sessions WHERE group_id IN (SELECT id FROM subtree) AND COALESCE(hidden,0)=0;" 2>/dev/null)
   [ "\$COUNT" -eq 0 ] && continue
   N=\$((N+1))
   GROUP_IDS[\$N]="\$GID"
   GROUP_NAMES[\$N]="\$GNAME"
-done < <(sqlite3 "\$DB" "SELECT id, name FROM groups ORDER BY created_at;" 2>/dev/null)
+done < <(sqlite3 "\$DB" "${ROOT_GROUPS_SQL}" 2>/dev/null)
 
 # Each ungrouped alive session gets its own slot
 while IFS='|' read -r TNAME TITLE; do
@@ -855,7 +860,7 @@ case "\$TARGET_GID" in
     TARGET_GID="__ungrouped__"
     ;;
   *)
-    QUERY_BEST="SELECT tmux_name FROM sessions WHERE group_id='\$TARGET_GID' AND COALESCE(hidden,0)=0 ORDER BY updated_at DESC;"
+    QUERY_BEST="${groupSubtreeCte("'\$TARGET_GID'")} SELECT tmux_name FROM sessions WHERE group_id IN (SELECT id FROM subtree) AND COALESCE(hidden,0)=0 ORDER BY updated_at DESC;"
     while read -r CANDIDATE; do
       [ -z "\$CANDIDATE" ] && continue
       case "\$ALIVE" in *"|\$CANDIDATE|"*) BEST="\$CANDIDATE"; break ;; esac
