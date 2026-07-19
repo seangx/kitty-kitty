@@ -84,3 +84,16 @@ test('Deck keeps one shared rail and dismisses expanded branches away from it', 
   assert.match(groupAddCss, /bottom: -6px;/)
   assert.doesNotMatch(groupAddCss, /top: -6px;/)
 })
+
+test('Deck keeps session creation in its footer and offers both start paths', async () => {
+  const source = await readFile(new URL('../src/renderer/pet/SessionDeck.tsx', import.meta.url), 'utf8')
+  const canvas = await readFile(new URL('../src/renderer/pet/PetCanvas.tsx', import.meta.url), 'utf8')
+  const css = await readFile(new URL('../src/renderer/pet/SessionDeck.css', import.meta.url), 'utf8')
+
+  assert.match(source, /className="session-deck__footer"/)
+  assert.match(source, /📂 从目录开始/)
+  assert.match(source, /💬 直接开始/)
+  assert.match(canvas, /onCreateDirect=\{\(\) => setShowInput\(true\)\}/)
+  assert.match(canvas, /onCreateInDirectory=\{handleOpenInDir\}/)
+  assert.match(css, /\.session-deck__footer \{[\s\S]*?z-index: 30;/)
+})

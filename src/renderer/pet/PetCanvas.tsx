@@ -602,7 +602,8 @@ export default function PetCanvas() {
         edge={deckEdge}
         closing={deckClosing}
         onClose={closeDeck}
-        onCreate={() => setShowInput(true)}
+        onCreateDirect={() => setShowInput(true)}
+        onCreateInDirectory={handleOpenInDir}
         onAttach={handleAttach}
         onKill={killSession}
         onRename={renameSession}

@@ -23,7 +23,8 @@ interface Props {
   edge: DeckEdge
   closing?: boolean
   onClose: () => void
-  onCreate: () => void
+  onCreateDirect: () => void
+  onCreateInDirectory: () => void
   onAttach: (id: string) => void
   onKill: (id: string) => void
   onRename: (id: string, title: string) => void
@@ -81,7 +82,8 @@ export default function SessionDeck({
   edge,
   closing = false,
   onClose,
-  onCreate,
+  onCreateDirect,
+  onCreateInDirectory,
   onAttach,
   onKill,
   onRename,
@@ -102,6 +104,7 @@ export default function SessionDeck({
   const [groupMenu, setGroupMenu] = useState<{ id: string; x: number; y: number } | null>(null)
   const [showMoveMenu, setShowMoveMenu] = useState(false)
   const [showHidden, setShowHidden] = useState(false)
+  const [createMenu, setCreateMenu] = useState<{ x: number; y: number } | null>(null)
   const [childGroupDialog, setChildGroupDialog] = useState<ChildGroupDialogState | null>(null)
   const [childGroupCreating, setChildGroupCreating] = useState(false)
   const [childGroupError, setChildGroupError] = useState('')
@@ -126,6 +129,7 @@ export default function SessionDeck({
     const closeTransientSurfaces = () => {
       setSessionMenu(null)
       setGroupMenu(null)
+      setCreateMenu(null)
       setShowMoveMenu(false)
       collapseBranches()
     }
@@ -411,26 +415,50 @@ export default function SessionDeck({
             : renderGroup(item.node, 'vertical', 0, true))}
           {showHidden && hiddenSessions.map((session) => renderSession(session, true))}
         </div>
-        {hiddenSessions.length > 0 && (
+        <div className="session-deck__footer">
+          {hiddenSessions.length > 0 && (
+            <button
+              className={`session-deck__utility${showHidden ? ' is-selected' : ''}`}
+              onClick={() => {
+                collapseBranches()
+                setCreateMenu(null)
+                setShowHidden((value) => !value)
+              }}
+              title="隐藏的会话"
+            >◌<span>{hiddenSessions.length}</span></button>
+          )}
           <button
-            className={`session-deck__utility${showHidden ? ' is-selected' : ''}`}
-            onClick={() => {
+            className={`session-deck__add${createMenu ? ' is-selected' : ''}`}
+            onClick={(event) => {
+              event.stopPropagation()
               collapseBranches()
-              setShowHidden((value) => !value)
+              setSessionMenu(null)
+              setGroupMenu(null)
+              setShowMoveMenu(false)
+              const rect = event.currentTarget.getBoundingClientRect()
+              setCreateMenu((current) => current ? null : {
+                x: edge === 'left' ? rect.right + 8 : rect.left - 184,
+                y: rect.top,
+              })
             }}
-            title="隐藏的会话"
-          >◌<span>{hiddenSessions.length}</span></button>
-        )}
-        <button
-          className="session-deck__add"
-          onClick={() => {
-            collapseBranches()
-            onCreate()
-          }}
-          aria-label="新建会话"
-          title="新建会话"
-        >＋</button>
+            aria-label="新建会话"
+            title="新建会话"
+          >＋</button>
+        </div>
       </div>
+
+      {createMenu && (
+        <DeckMenu x={createMenu.x} y={createMenu.y} onClose={() => setCreateMenu(null)}>
+          <button onClick={() => {
+            setCreateMenu(null)
+            onCreateInDirectory()
+          }}>📂 从目录开始</button>
+          <button onClick={() => {
+            setCreateMenu(null)
+            onCreateDirect()
+          }}>💬 直接开始</button>
+        </DeckMenu>
+      )}
 
       {drag?.active && (
         <div className="session-deck__drag-preview" style={{ left: drag.x + 12, top: drag.y + 12 }}>
