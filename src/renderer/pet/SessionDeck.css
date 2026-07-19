@@ -46,6 +46,7 @@
 }
 .session-deck.is-closing .session-deck__branch,
 .session-deck.is-closing .session-deck__menu,
+.session-deck.is-closing .session-deck__name-dialog,
 .session-deck.is-closing .session-deck__drag-preview {
   pointer-events: none;
   animation: deck-surface-exit 110ms ease-in both;
@@ -413,6 +414,97 @@
   backdrop-filter: blur(28px);
   -webkit-backdrop-filter: blur(28px);
   animation: deck-menu-enter 130ms ease-out both;
+}
+
+.session-deck__name-dialog {
+  position: fixed;
+  z-index: 500;
+  width: 238px;
+  box-sizing: border-box;
+  padding: 12px;
+  pointer-events: auto;
+  border: 1px solid var(--deck-border);
+  border-radius: 15px;
+  color: var(--deck-text);
+  background: var(--deck-surface-strong);
+  box-shadow: 0 20px 52px rgba(0, 0, 0, .52), inset 0 1px rgba(255, 255, 255, .06);
+  backdrop-filter: blur(28px) saturate(1.1);
+  -webkit-backdrop-filter: blur(28px) saturate(1.1);
+  animation: deck-menu-enter 150ms cubic-bezier(.16, .9, .25, 1) both;
+}
+
+.session-deck__name-dialog-title {
+  margin: 0 1px 9px;
+  color: var(--deck-muted);
+  font-size: 11px;
+  line-height: 1.35;
+}
+
+.session-deck__name-dialog input {
+  width: 100%;
+  height: 34px;
+  box-sizing: border-box;
+  padding: 0 10px;
+  border: 1px solid rgba(224, 229, 245, .16);
+  border-radius: 10px;
+  outline: none;
+  color: var(--deck-text);
+  background: rgba(10, 12, 20, .54);
+  font: 500 12px/1 inherit;
+  transition: border-color 140ms ease, box-shadow 140ms ease, background 140ms ease;
+}
+
+.session-deck__name-dialog input:focus {
+  border-color: color-mix(in srgb, var(--deck-accent) 72%, white 6%);
+  background: rgba(10, 12, 20, .72);
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--deck-accent) 15%, transparent);
+}
+
+.session-deck__name-dialog input::placeholder { color: var(--deck-muted); }
+.session-deck__name-dialog input:disabled { opacity: .58; }
+
+.session-deck__name-dialog-error {
+  margin-top: 7px;
+  color: #ff7d89;
+  font-size: 10px;
+  line-height: 1.35;
+}
+
+.session-deck__name-dialog-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 7px;
+  margin-top: 10px;
+}
+
+.session-deck__name-dialog-actions button {
+  min-width: 56px;
+  height: 29px;
+  padding: 0 11px;
+  border: 1px solid rgba(224, 229, 245, .13);
+  border-radius: 9px;
+  color: var(--deck-muted);
+  background: rgba(255, 255, 255, .04);
+  font: 500 11px/1 inherit;
+  cursor: pointer;
+  transition: color 130ms ease, background 130ms ease, transform 130ms ease, opacity 130ms ease;
+}
+
+.session-deck__name-dialog-actions button:hover:not(:disabled) {
+  color: var(--deck-text);
+  background: rgba(255, 255, 255, .08);
+  transform: translateY(-1px);
+}
+
+.session-deck__name-dialog-actions button.is-primary {
+  border-color: color-mix(in srgb, var(--deck-accent) 44%, transparent);
+  color: color-mix(in srgb, var(--deck-accent) 76%, white);
+  background: color-mix(in srgb, var(--deck-accent) 17%, rgba(255, 255, 255, .04));
+}
+
+.session-deck__name-dialog-actions button:disabled {
+  cursor: default;
+  opacity: .42;
 }
 
 .session-deck__menu button {
