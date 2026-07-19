@@ -67,9 +67,9 @@ test('nested tmux rows anchor to their parent and collapse direct panes into ung
     chmodSync(navigateScript, '755')
 
     const render = (row: number) => execFileSync(rowScript, [String(row), 'kitty_child', childPanes[0], '120'], { encoding: 'utf8' })
-    const childRow = render(0)
-    const rootContentsRow = render(1)
-    const rootRow = render(2)
+    const rootContentsRow = render(0)
+    const rootRow = render(1)
+    const hiddenLeafRow = render(2)
 
     assert.match(rootRow, /range=user\|kr:1/)
     assert.match(rootRow, /Root \(3\)/)
@@ -79,12 +79,11 @@ test('nested tmux rows anchor to their parent and collapse direct panes into ung
     assert.match(rootContentsRow, /range=user\|kd:root/)
     assert.doesNotMatch(rootContentsRow, /Master/)
     assert.match(rootContentsRow, /range=user\|kg:child/)
-    assert.match(childRow, /未分组 \(2\)/)
-    assert.match(childRow, /range=user\|kd:child/)
-    assert.doesNotMatch(childRow, /Reviewer|Tester/)
-    assert.doesNotMatch(`${rootRow}${rootContentsRow}${childRow}`, /range=user\|ks:/)
+    assert.equal(hiddenLeafRow, '')
+    assert.doesNotMatch(`${rootRow}${rootContentsRow}`, /Reviewer|Tester|range=user\|kd:child/)
+    assert.doesNotMatch(`${rootRow}${rootContentsRow}`, /range=user\|ks:/)
 
-    const ranges = [...`${rootRow}${rootContentsRow}${childRow}`.matchAll(/range=user\|([^\]]+)/g)]
+    const ranges = [...`${rootRow}${rootContentsRow}`.matchAll(/range=user\|([^\]]+)/g)]
       .map((match) => match[1])
     assert.ok(ranges.length > 0)
     for (const range of ranges) {
@@ -93,7 +92,7 @@ test('nested tmux rows anchor to their parent and collapse direct panes into ung
 
     const visibleText = (value: string) => value.replace(/#\[[^\]]*\]/g, '')
     const leadingCells = (value: string) => visibleText(value).match(/^ */)?.[0].length || 0
-    assert.ok(leadingCells(childRow) > leadingCells(rootContentsRow))
+    assert.equal(leadingCells(rootContentsRow), leadingCells(rootRow))
 
     tmux('select-pane', '-t', childPanes[0])
     execFileSync(navigateScript, ['level-index', '1', 'kitty_child', ''], { encoding: 'utf8' })

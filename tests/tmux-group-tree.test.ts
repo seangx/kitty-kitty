@@ -5,6 +5,7 @@ import { mkdtempSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import {
+  childGroupTmuxNamesForTmuxSql,
   groupDepthForTmuxSql,
   groupPathForTmuxSql,
   groupSubtreeCte,
@@ -58,8 +59,14 @@ test('tmux navigation renders root groups and rolls child sessions into their ro
     assert.equal(statusLineCountForDepth(0), 1)
     assert.equal(statusLineCountForDepth(2), 3)
     assert.equal(statusLineCountForDepth(8), 5)
+    assert.equal(statusLineCountForDepth(1, false), 1)
+    assert.equal(statusLineCountForDepth(2, false), 2)
+    assert.equal(statusLineCountForDepth(2, true), 3)
     assert.equal(statusOptionValueForLineCount(1), 'on')
     assert.equal(statusOptionValueForLineCount(2), '2')
+    assert.deepEqual(sqlite(childGroupTmuxNamesForTmuxSql("'tmux-root'"))
+      .split('\n').filter(Boolean), ['tmux-child', 'tmux-grandchild'])
+    assert.equal(sqlite(childGroupTmuxNamesForTmuxSql("'tmux-grandchild'")), '')
 
     const subtree = groupSubtreeCte("'root'")
     assert.equal(sqlite(`

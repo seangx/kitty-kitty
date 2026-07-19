@@ -5,7 +5,13 @@ import { tmpdir, homedir } from 'os'
 import { v4 as uuid } from 'uuid'
 import { getDB } from '../db/database'
 import { injectHiveIdentity } from './cli-wrapper'
-import { groupDepthForTmuxSql, groupSubtreeCte, ROOT_GROUPS_SQL, rootGroupForTmuxSql } from './group-tree-sql'
+import {
+  childGroupTmuxNamesForTmuxSql,
+  groupDepthForTmuxSql,
+  groupSubtreeCte,
+  ROOT_GROUPS_SQL,
+  rootGroupForTmuxSql,
+} from './group-tree-sql'
 import {
   formatPaneLabel,
   PANE_BORDER_FORMAT,
@@ -457,8 +463,11 @@ export function applyMainVerticalLayout(tmuxName: string): void {
 
 function statusLineCountForTmux(tmuxName: string): number {
   try {
-    const row = getDB().prepare(groupDepthForTmuxSql('?')).get(tmuxName) as { depth: number } | undefined
-    return statusLineCountForDepth(Number(row?.depth || 0))
+    const db = getDB()
+    const row = db.prepare(groupDepthForTmuxSql('?')).get(tmuxName) as { depth: number } | undefined
+    const childTmuxNames = db.prepare(childGroupTmuxNamesForTmuxSql('?')).all(tmuxName) as Array<{ tmux_name: string }>
+    const hasAliveChildGroup = childTmuxNames.some(({ tmux_name: childTmuxName }) => isSessionAlive(childTmuxName))
+    return statusLineCountForDepth(Number(row?.depth || 0), hasAliveChildGroup)
   } catch {
     return 1
   }

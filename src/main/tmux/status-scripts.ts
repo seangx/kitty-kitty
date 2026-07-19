@@ -17,9 +17,14 @@ const shellDoubleQuoted = (value: string): string => value
   .replace(/\$/g, '\\$')
   .replace(/`/g, '\\`')
 
-/** tmux supports at most five status rows. One row is always the root bar. */
-export function statusLineCountForDepth(depth: number): number {
-  return Math.max(1, Math.min(5, Math.floor(depth) + 1))
+/**
+ * Tmux supports at most five status rows. One row is always the root bar;
+ * the current group's own row only exists when it has navigable child groups.
+ */
+export function statusLineCountForDepth(depth: number, showCurrentGroupRow = true): number {
+  const normalizedDepth = Math.max(0, Math.floor(depth))
+  const groupRows = Math.max(0, normalizedDepth - 1) + (showCurrentGroupRow && normalizedDepth > 0 ? 1 : 0)
+  return Math.max(1, Math.min(5, groupRows + 1))
 }
 
 /** tmux spells a single status row as `on`; numeric row counts start at 2. */
@@ -200,7 +205,18 @@ while IFS="\$SEP" read -r GID GNAME _PARENT; do
 done < <(sqlite3 -separator "\$SEP" "\$DB" "${groupPathForTmuxSql("'\$RENDER_SESSION'")}" 2>/dev/null)
 
 PATH_DEPTH=\${#PATH_IDS[@]}
-VISIBLE_GROUP_ROWS=\$PATH_DEPTH
+SHOW_CURRENT_ROW=0
+if [ "\$PATH_DEPTH" -gt 0 ]; then
+  CURRENT_GID="\${PATH_IDS[\$((PATH_DEPTH-1))]}"
+  while read -r CHILD_ID; do
+    [ -z "\$CHILD_ID" ] && continue
+    if group_has_alive "\$CHILD_ID"; then SHOW_CURRENT_ROW=1; break; fi
+  done < <(sqlite3 "\$DB" "SELECT id FROM groups WHERE parent_group_id='\$CURRENT_GID' ORDER BY created_at;" 2>/dev/null)
+fi
+
+MAX_TARGET_INDEX=\$((PATH_DEPTH-2+SHOW_CURRENT_ROW))
+VISIBLE_GROUP_ROWS=\$((MAX_TARGET_INDEX+1))
+[ "\$VISIBLE_GROUP_ROWS" -lt 0 ] && VISIBLE_GROUP_ROWS=0
 [ "\$VISIBLE_GROUP_ROWS" -gt 4 ] && VISIBLE_GROUP_ROWS=4
 ROOT_ROW=\$VISIBLE_GROUP_ROWS
 
@@ -215,7 +231,7 @@ fi
 
 if [ "\$ROW_INDEX" -gt "\$ROOT_ROW" ] || [ "\$PATH_DEPTH" -eq 0 ]; then exit 0; fi
 
-TARGET_INDEX=\$((PATH_DEPTH-1-ROW_INDEX))
+TARGET_INDEX=\$((MAX_TARGET_INDEX-ROW_INDEX))
 INDENT=0
 
 # Root group anchor.
@@ -329,9 +345,21 @@ navigate_direct() {
 }
 
 navigate_level_index() {
-  local IDX="\$1" GID N TNAME CHILD_ID CHILD_NAME HAS_DIRECT
+  local IDX="\$1" GID N TNAME CHILD_ID CHILD_NAME HAS_DIRECT HAS_CHILD TARGET
   GID=\$(sqlite3 "\$DB" "SELECT COALESCE(group_id,'') FROM sessions WHERE tmux_name='\$RENDER_SESSION' AND COALESCE(hidden,0)=0 LIMIT 1;" 2>/dev/null)
   [ -z "\$GID" ] && exit 0
+  HAS_CHILD=0
+  while read -r CHILD_ID; do
+    [ -z "\$CHILD_ID" ] && continue
+    TARGET=""
+    while read -r TNAME; do
+      [ -z "\$TNAME" ] && continue
+      if tmux_is_alive "\$TNAME"; then TARGET="\$TNAME"; break; fi
+    done < <(sqlite3 "\$DB" "${groupSubtreeCte("'\$CHILD_ID'")} SELECT DISTINCT tmux_name FROM sessions WHERE group_id IN (SELECT id FROM subtree) AND COALESCE(hidden,0)=0;" 2>/dev/null)
+    if [ -n "\$TARGET" ]; then HAS_CHILD=1; break; fi
+  done < <(sqlite3 "\$DB" "SELECT id FROM groups WHERE parent_group_id='\$GID' ORDER BY created_at;" 2>/dev/null)
+  [ "\$HAS_CHILD" -eq 0 ] && exit 0
+
   N=0
   HAS_DIRECT=0
   while read -r TNAME; do

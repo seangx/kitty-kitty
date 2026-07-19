@@ -73,6 +73,30 @@ export function groupDepthForTmuxSql(tmuxNameSql: string): string {
   `.trim()
 }
 
+/** Tmux sessions contained by any direct child group of the current group. */
+export function childGroupTmuxNamesForTmuxSql(tmuxNameSql: string): string {
+  return `
+    WITH RECURSIVE descendants(id) AS (
+      SELECT child.id
+      FROM groups child
+      WHERE child.parent_group_id = (
+        SELECT group_id FROM sessions
+        WHERE tmux_name = ${tmuxNameSql} AND COALESCE(hidden, 0) = 0
+        LIMIT 1
+      )
+      UNION ALL
+      SELECT child.id
+      FROM groups child
+      JOIN descendants parent ON child.parent_group_id = parent.id
+    )
+    SELECT DISTINCT tmux_name
+    FROM sessions
+    WHERE group_id IN (SELECT id FROM descendants)
+      AND COALESCE(hidden, 0) = 0
+    ORDER BY tmux_name;
+  `.trim()
+}
+
 /** Prefix a query with a recursive subtree rooted at `rootGroupSql`. */
 export function groupSubtreeCte(rootGroupSql: string): string {
   return `
