@@ -669,7 +669,7 @@ function bindPaneActionKeys(): void {
 
 /**
  * Click-dispatcher for tmux status bar `range=user|kitty:*` regions. Tmux
- * forwards `#{mouse_status_range}` (e.g. "user|kitty:node:group:abc") when the
+ * forwards `#{mouse_status_range}` (e.g. "user|kg:abc") when the
  * MouseDown1Status binding fires. We parse it here and delegate to the right
  * follow-up script. Lives in /tmp like the rest of the helpers.
  */
@@ -679,22 +679,22 @@ function ensureStatusClickScript(): string {
   const scriptPath = join(tmpdir(), 'kitty_status_click.sh')
   writeFileSync(scriptPath, `#!/bin/bash
 # tmux's mouse_status_range variable returns ONLY the user-range argument
-# (e.g. "kitty:node:group:abc"), not the full "user|...". Match on the
+# (e.g. "kg:abc"), not the full "user|...". Match on the
 # arg form, not the type-prefixed form.
 RANGE="\$1"
 CLIENT="\$2"
 RENDER_SESSION="\$3"
 [ -z "\$RANGE" ] && exit 0
 case "\$RANGE" in
-  kitty:root:*)
+  kr:*)
     IDX="\${RANGE##*:}"
     exec "${switchScript}" "\$IDX" "\$CLIENT"
     ;;
-  kitty:node:group:*)
+  kg:*)
     ID="\${RANGE##*:}"
     exec "${navigateScript}" group "\$ID" "\$RENDER_SESSION" "\$CLIENT"
     ;;
-  kitty:node:session:*)
+  ks:*)
     ID="\${RANGE##*:}"
     exec "${navigateScript}" session "\$ID" "\$RENDER_SESSION" "\$CLIENT"
     ;;

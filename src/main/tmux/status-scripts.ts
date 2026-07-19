@@ -138,7 +138,7 @@ build_root_items() {
     ACTIVE=0
     [ "\$GID" = "\$ACTIVE_ROOT" ] && ACTIVE=1
     RANGE_INDEX=\$((ITEM_NO+1))
-    add_item group "\$GID" "\$GNAME" "\$COUNT" "\$ACTIVE" "kitty:root:\$RANGE_INDEX"
+    add_item group "\$GID" "\$GNAME" "\$COUNT" "\$ACTIVE" "kr:\$RANGE_INDEX"
   done < <(sqlite3 -separator "\$SEP" "\$DB" "${ROOT_GROUPS_SQL}" 2>/dev/null)
 
   while IFS="\$SEP" read -r SID TNAME TITLE; do
@@ -146,7 +146,7 @@ build_root_items() {
     tmux_is_alive "\$TNAME" || continue
     ACTIVE=0
     [ "\$TNAME" = "\$RENDER_SESSION" ] && ACTIVE=1
-    add_item session "\$SID" "\${TITLE:-\$TNAME}" "" "\$ACTIVE" "kitty:node:session:\$SID"
+    add_item session "\$SID" "\${TITLE:-\$TNAME}" "" "\$ACTIVE" "ks:\$SID"
   done < <(sqlite3 -separator "\$SEP" "\$DB" "SELECT id, tmux_name, title FROM sessions WHERE (group_id IS NULL OR group_id='') AND COALESCE(hidden,0)=0 ORDER BY updated_at DESC;" 2>/dev/null)
 }
 
@@ -164,7 +164,7 @@ build_group_items() {
     tmux_is_alive "\$TNAME" || continue
     ACTIVE=0
     if [ "\$TNAME" = "\$RENDER_SESSION" ] && [ -n "\$PANE_ID" ] && [ "\$PANE_ID" = "\$ACTIVE_PANE" ]; then ACTIVE=1; fi
-    add_item session "\$SID" "\${TITLE:-\$TNAME}" "" "\$ACTIVE" "kitty:node:session:\$SID"
+    add_item session "\$SID" "\${TITLE:-\$TNAME}" "" "\$ACTIVE" "ks:\$SID"
   done < <(sqlite3 -separator "\$SEP" "\$DB" "SELECT id, title, tmux_name, COALESCE(pane_id,'') FROM sessions WHERE group_id='\$GID' AND COALESCE(hidden,0)=0 ORDER BY created_at;" 2>/dev/null)
 
   while IFS="\$SEP" read -r CHILD_ID CHILD_NAME; do
@@ -173,7 +173,7 @@ build_group_items() {
     COUNT=\$(group_count "\$CHILD_ID")
     ACTIVE=0
     [ "\$CHILD_ID" = "\$ACTIVE_CHILD" ] && ACTIVE=1
-    add_item group "\$CHILD_ID" "\$CHILD_NAME" "\$COUNT" "\$ACTIVE" "kitty:node:group:\$CHILD_ID"
+    add_item group "\$CHILD_ID" "\$CHILD_NAME" "\$COUNT" "\$ACTIVE" "kg:\$CHILD_ID"
   done < <(sqlite3 -separator "\$SEP" "\$DB" "SELECT id, name FROM groups WHERE parent_group_id='\$GID' ORDER BY created_at;" 2>/dev/null)
 }
 

@@ -67,12 +67,19 @@ test('nested tmux rows anchor to their parent and session clicks select the exac
     const rootContentsRow = render(1)
     const rootRow = render(2)
 
-    assert.match(rootRow, /kitty:root:1/)
+    assert.match(rootRow, /range=user\|kr:1/)
     assert.match(rootRow, /Root \(3\)/)
     assert.match(rootContentsRow, /Master/)
-    assert.match(rootContentsRow, /kitty:node:group:child/)
+    assert.match(rootContentsRow, /range=user\|kg:child/)
     assert.match(childRow, /Reviewer/)
-    assert.match(childRow, /kitty:node:session:tester/)
+    assert.match(childRow, /range=user\|ks:tester/)
+
+    const ranges = [...`${rootRow}${rootContentsRow}${childRow}`.matchAll(/range=user\|([^\]]+)/g)]
+      .map((match) => match[1])
+    assert.ok(ranges.length > 0)
+    for (const range of ranges) {
+      assert.ok(Buffer.byteLength(range, 'utf8') <= 15, `tmux user range is too long: ${range}`)
+    }
 
     const visibleText = (value: string) => value.replace(/#\[[^\]]*\]/g, '')
     const leadingCells = (value: string) => visibleText(value).match(/^ */)?.[0].length || 0
