@@ -125,7 +125,7 @@ add_item() {
 }
 
 build_root_items() {
-  local ACTIVE_ROOT="\$1" GID GNAME COUNT ACTIVE TNAME SID TITLE RANGE_INDEX
+  local ACTIVE_ROOT="\$1" GID GNAME COUNT ACTIVE TNAME RANGE_INDEX HAS_ALIVE
   ITEMS_PLAIN=""
   ITEMS_FORMAT=""
   TARGET_PREFIX=""
@@ -141,31 +141,40 @@ build_root_items() {
     add_item group "\$GID" "\$GNAME" "\$COUNT" "\$ACTIVE" "kr:\$RANGE_INDEX"
   done < <(sqlite3 -separator "\$SEP" "\$DB" "${ROOT_GROUPS_SQL}" 2>/dev/null)
 
-  while IFS="\$SEP" read -r SID TNAME TITLE; do
-    [ -z "\$SID" ] && continue
-    tmux_is_alive "\$TNAME" || continue
+  COUNT=\$(sqlite3 "\$DB" "SELECT COUNT(*) FROM sessions WHERE (group_id IS NULL OR group_id='') AND COALESCE(hidden,0)=0;" 2>/dev/null)
+  HAS_ALIVE=0
+  while read -r TNAME; do
+    [ -z "\$TNAME" ] && continue
+    if tmux_is_alive "\$TNAME"; then HAS_ALIVE=1; break; fi
+  done < <(sqlite3 "\$DB" "SELECT DISTINCT tmux_name FROM sessions WHERE (group_id IS NULL OR group_id='') AND COALESCE(hidden,0)=0;" 2>/dev/null)
+  if [ "\$HAS_ALIVE" -eq 1 ] && [ "\${COUNT:-0}" -gt 0 ]; then
     ACTIVE=0
-    [ "\$TNAME" = "\$RENDER_SESSION" ] && ACTIVE=1
-    add_item session "\$SID" "\${TITLE:-\$TNAME}" "" "\$ACTIVE" "ks:\$SID"
-  done < <(sqlite3 -separator "\$SEP" "\$DB" "SELECT id, tmux_name, title FROM sessions WHERE (group_id IS NULL OR group_id='') AND COALESCE(hidden,0)=0 ORDER BY updated_at DESC;" 2>/dev/null)
+    [ "\$ACTIVE_ROOT" = "__ungrouped__" ] && ACTIVE=1
+    RANGE_INDEX=\$((ITEM_NO+1))
+    add_item group "__ungrouped__" "未分组" "\$COUNT" "\$ACTIVE" "kr:\$RANGE_INDEX"
+  fi
 }
 
 build_group_items() {
   local GID="\$1" GNAME="\$2" ACTIVE_CHILD="\$3"
-  local SID TITLE TNAME PANE_ID ACTIVE CHILD_ID CHILD_NAME COUNT GROUP_LABEL
+  local TNAME ACTIVE CHILD_ID CHILD_NAME COUNT GROUP_LABEL HAS_ALIVE
   GROUP_LABEL="  \$(clean_text "\$GNAME") ›"
   ITEMS_PLAIN="\$GROUP_LABEL"
   ITEMS_FORMAT="#[fg=#aaa8c3,bg=\$GBG]\$(escape_status_text "\$GROUP_LABEL")"
   TARGET_PREFIX=""
   ITEM_NO=0
 
-  while IFS="\$SEP" read -r SID TITLE TNAME PANE_ID; do
-    [ -z "\$SID" ] && continue
-    tmux_is_alive "\$TNAME" || continue
+  COUNT=\$(sqlite3 "\$DB" "SELECT COUNT(*) FROM sessions WHERE group_id='\$GID' AND COALESCE(hidden,0)=0;" 2>/dev/null)
+  HAS_ALIVE=0
+  while read -r TNAME; do
+    [ -z "\$TNAME" ] && continue
+    if tmux_is_alive "\$TNAME"; then HAS_ALIVE=1; break; fi
+  done < <(sqlite3 "\$DB" "SELECT DISTINCT tmux_name FROM sessions WHERE group_id='\$GID' AND COALESCE(hidden,0)=0;" 2>/dev/null)
+  if [ "\$HAS_ALIVE" -eq 1 ] && [ "\${COUNT:-0}" -gt 0 ]; then
     ACTIVE=0
-    if [ "\$TNAME" = "\$RENDER_SESSION" ] && [ -n "\$PANE_ID" ] && [ "\$PANE_ID" = "\$ACTIVE_PANE" ]; then ACTIVE=1; fi
-    add_item session "\$SID" "\${TITLE:-\$TNAME}" "" "\$ACTIVE" "ks:\$SID"
-  done < <(sqlite3 -separator "\$SEP" "\$DB" "SELECT id, title, tmux_name, COALESCE(pane_id,'') FROM sessions WHERE group_id='\$GID' AND COALESCE(hidden,0)=0 ORDER BY created_at;" 2>/dev/null)
+    [ -z "\$ACTIVE_CHILD" ] && ACTIVE=1
+    add_item group "direct:\$GID" "未分组" "\$COUNT" "\$ACTIVE" "kd:\$GID"
+  fi
 
   while IFS="\$SEP" read -r CHILD_ID CHILD_NAME; do
     [ -z "\$CHILD_ID" ] && continue
@@ -251,7 +260,7 @@ SESSION_PREFIX="${options.sessionPrefix}"
 SEP=$'\\037'
 
 if ! [ -f "\$DB" ] || ! command -v sqlite3 >/dev/null 2>&1; then exit 0; fi
-case "\$ACTION" in group|session|level-index) ;; *) exit 0 ;; esac
+case "\$ACTION" in group|direct|level-index) ;; *) exit 0 ;; esac
 case "\$ACTION" in
   level-index) case "\$VALUE" in *[!0-9]*|'') exit 0 ;; esac ;;
   *) case "\$VALUE" in *[!A-Za-z0-9_-]*|'') exit 0 ;; esac ;;
@@ -290,66 +299,44 @@ finish_navigation() {
 
 navigate_group() {
   local GID="\$1" TARGET_TMUX CANDIDATE
+  # Prefer this group's own tmux so opening a group stops at that hierarchy
+  # level instead of jumping straight into the most recently used descendant.
   while read -r CANDIDATE; do
     [ -z "\$CANDIDATE" ] && continue
     if tmux_is_alive "\$CANDIDATE"; then TARGET_TMUX="\$CANDIDATE"; break; fi
-  done < <(sqlite3 "\$DB" "${groupSubtreeCte("'\$GID'")} SELECT tmux_name FROM sessions WHERE group_id IN (SELECT id FROM subtree) AND COALESCE(hidden,0)=0 ORDER BY updated_at DESC;" 2>/dev/null)
+  done < <(sqlite3 "\$DB" "SELECT tmux_name FROM sessions WHERE group_id='\$GID' AND COALESCE(hidden,0)=0 ORDER BY updated_at DESC;" 2>/dev/null)
+  if [ -z "\$TARGET_TMUX" ]; then
+    while read -r CANDIDATE; do
+      [ -z "\$CANDIDATE" ] && continue
+      if tmux_is_alive "\$CANDIDATE"; then TARGET_TMUX="\$CANDIDATE"; break; fi
+    done < <(sqlite3 "\$DB" "${groupSubtreeCte("'\$GID'")} SELECT tmux_name FROM sessions WHERE group_id IN (SELECT id FROM subtree) AND COALESCE(hidden,0)=0 ORDER BY updated_at DESC;" 2>/dev/null)
+  fi
   finish_navigation "\$TARGET_TMUX" ""
 }
 
-resolve_session_pane() {
-  local SID="\$1" TARGET_TMUX="\$2" STORED_PANE="\$3" TARGET_CWD="\$4"
-  local PANE CWD CLAIMED CANDIDATE COUNT
-  if [ -n "\$STORED_PANE" ] && \$TMUX_BIN list-panes -t "\$TARGET_TMUX" -F '#{pane_id}' 2>/dev/null | grep -Fxq "\$STORED_PANE"; then
-    printf '%s' "\$STORED_PANE"
-    return
-  fi
-
-  CLAIMED=""
-  while read -r PANE; do [ -n "\$PANE" ] && CLAIMED="\$CLAIMED|\$PANE|"; done < <(sqlite3 "\$DB" "SELECT pane_id FROM sessions WHERE tmux_name='\$TARGET_TMUX' AND id!='\$SID' AND COALESCE(pane_id,'')!='';" 2>/dev/null)
-
-  CANDIDATE=""
-  COUNT=0
-  while IFS='|' read -r PANE CWD; do
-    [ -z "\$PANE" ] && continue
-    case "\$CLAIMED" in *"|\$PANE|"*) continue ;; esac
-    if [ -n "\$TARGET_CWD" ] && [ "\$CWD" = "\$TARGET_CWD" ]; then CANDIDATE="\$PANE"; COUNT=\$((COUNT+1)); fi
-  done < <(\$TMUX_BIN list-panes -t "\$TARGET_TMUX" -F '#{pane_id}|#{pane_current_path}' 2>/dev/null)
-  if [ "\$COUNT" -ne 1 ]; then
-    CANDIDATE=""
-    COUNT=0
-    while read -r PANE; do
-      [ -z "\$PANE" ] && continue
-      case "\$CLAIMED" in *"|\$PANE|"*) continue ;; esac
-      CANDIDATE="\$PANE"
-      COUNT=\$((COUNT+1))
-    done < <(\$TMUX_BIN list-panes -t "\$TARGET_TMUX" -F '#{pane_id}' 2>/dev/null)
-  fi
-  if [ "\$COUNT" -eq 1 ]; then
-    sqlite3 "\$DB" "UPDATE sessions SET pane_id='\$CANDIDATE' WHERE id='\$SID';" 2>/dev/null
-    printf '%s' "\$CANDIDATE"
-  fi
-}
-
-navigate_session() {
-  local SID="\$1" TARGET_TMUX STORED_PANE TARGET_CWD TARGET_PANE
-  IFS="\$SEP" read -r TARGET_TMUX STORED_PANE TARGET_CWD < <(sqlite3 -separator "\$SEP" "\$DB" "SELECT tmux_name, COALESCE(pane_id,''), COALESCE(cwd,'') FROM sessions WHERE id='\$SID' AND COALESCE(hidden,0)=0 LIMIT 1;" 2>/dev/null)
-  [ -z "\$TARGET_TMUX" ] && exit 0
-  TARGET_PANE=\$(resolve_session_pane "\$SID" "\$TARGET_TMUX" "\$STORED_PANE" "\$TARGET_CWD")
-  finish_navigation "\$TARGET_TMUX" "\$TARGET_PANE"
+navigate_direct() {
+  local GID="\$1" TARGET_TMUX CANDIDATE
+  while read -r CANDIDATE; do
+    [ -z "\$CANDIDATE" ] && continue
+    if tmux_is_alive "\$CANDIDATE"; then TARGET_TMUX="\$CANDIDATE"; break; fi
+  done < <(sqlite3 "\$DB" "SELECT tmux_name FROM sessions WHERE group_id='\$GID' AND COALESCE(hidden,0)=0 ORDER BY updated_at DESC;" 2>/dev/null)
+  finish_navigation "\$TARGET_TMUX" ""
 }
 
 navigate_level_index() {
-  local IDX="\$1" GID N SID TNAME CHILD_ID CHILD_NAME
+  local IDX="\$1" GID N TNAME CHILD_ID CHILD_NAME HAS_DIRECT
   GID=\$(sqlite3 "\$DB" "SELECT COALESCE(group_id,'') FROM sessions WHERE tmux_name='\$RENDER_SESSION' AND COALESCE(hidden,0)=0 LIMIT 1;" 2>/dev/null)
   [ -z "\$GID" ] && exit 0
   N=0
-  while IFS="\$SEP" read -r SID TNAME; do
-    [ -z "\$SID" ] && continue
-    tmux_is_alive "\$TNAME" || continue
+  HAS_DIRECT=0
+  while read -r TNAME; do
+    [ -z "\$TNAME" ] && continue
+    if tmux_is_alive "\$TNAME"; then HAS_DIRECT=1; break; fi
+  done < <(sqlite3 "\$DB" "SELECT DISTINCT tmux_name FROM sessions WHERE group_id='\$GID' AND COALESCE(hidden,0)=0;" 2>/dev/null)
+  if [ "\$HAS_DIRECT" -eq 1 ]; then
     N=\$((N+1))
-    if [ "\$N" -eq "\$IDX" ]; then exec "\$0" session "\$SID" "\$RENDER_SESSION" "\$CLIENT"; fi
-  done < <(sqlite3 -separator "\$SEP" "\$DB" "SELECT id, tmux_name FROM sessions WHERE group_id='\$GID' AND COALESCE(hidden,0)=0 ORDER BY created_at;" 2>/dev/null)
+    if [ "\$N" -eq "\$IDX" ]; then exec "\$0" direct "\$GID" "\$RENDER_SESSION" "\$CLIENT"; fi
+  fi
 
   while IFS="\$SEP" read -r CHILD_ID CHILD_NAME; do
     [ -z "\$CHILD_ID" ] && continue
@@ -366,7 +353,7 @@ navigate_level_index() {
 
 case "\$ACTION" in
   group) navigate_group "\$VALUE" ;;
-  session) navigate_session "\$VALUE" ;;
+  direct) navigate_direct "\$VALUE" ;;
   level-index) navigate_level_index "\$VALUE" ;;
 esac
 `

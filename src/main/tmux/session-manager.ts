@@ -480,7 +480,7 @@ function applyStatusLineOptions(tmuxName: string): void {
 
 /**
  * Apply kitty-kitty status bar to a tmux session.
- * Shows all kitty sessions as clickable tabs with switch keybindings.
+ * Shows group-level destinations; individual panes stay inside tmux.
  */
 export function applyKittyStatusBar(tmuxName: string): void {
   try {
@@ -534,7 +534,7 @@ export function applyKittyStatusBar(tmuxName: string): void {
       try { execSync(`${TMUX} ${cmd}`, { stdio: 'ignore' }) } catch { /* ignore */ }
     }
 
-    // Ctrl+1~9 to switch groups, Alt+1~9 to switch sessions within group
+    // Prefix+1~9 switches root groups; Alt+1~9 switches group-level items.
     // Key bindings are global (not per-session), only bind once via refreshAllStatusBars
     // to avoid race conditions between multiple applyKittyStatusBar calls
   } catch { /* ignore */ }
@@ -694,9 +694,9 @@ case "\$RANGE" in
     ID="\${RANGE##*:}"
     exec "${navigateScript}" group "\$ID" "\$RENDER_SESSION" "\$CLIENT"
     ;;
-  ks:*)
+  kd:*)
     ID="\${RANGE##*:}"
-    exec "${navigateScript}" session "\$ID" "\$RENDER_SESSION" "\$CLIENT"
+    exec "${navigateScript}" direct "\$ID" "\$RENDER_SESSION" "\$CLIENT"
     ;;
 esac
 `)
@@ -734,8 +734,10 @@ export function refreshAllStatusBars(): void {
   const sessions = listTmuxSessions()
   for (const s of sessions) {
     try {
-      applyStatusLineOptions(s.name)
-      syncPaneLabels(s.name)
+      // Refresh the complete contract, not only status-format. Imported or
+      // long-lived standalone sessions may still carry an older window list,
+      // mouse setting, or row count until the app explicitly normalizes them.
+      applyKittyStatusBar(s.name)
     } catch { /* ignore */ }
   }
   try {
@@ -812,14 +814,17 @@ while IFS='|' read -r GID GNAME; do
   GROUP_NAMES[\$N]="\$GNAME"
 done < <(sqlite3 "\$DB" "${ROOT_GROUPS_SQL}" 2>/dev/null)
 
-# Each ungrouped alive session gets its own slot
-while IFS='|' read -r TNAME TITLE; do
+# All top-level standalone sessions share one "un-grouped" slot.
+HAS_UNGROUPED=0
+while read -r TNAME; do
   [ -z "\$TNAME" ] && continue
-  case "\$ALIVE" in *"|\$TNAME|"*) ;; *) continue ;; esac
+  case "\$ALIVE" in *"|\$TNAME|"*) HAS_UNGROUPED=1; break ;; esac
+done < <(sqlite3 "\$DB" "SELECT DISTINCT tmux_name FROM sessions WHERE (group_id IS NULL OR group_id='') AND COALESCE(hidden,0)=0;" 2>/dev/null)
+if [ "\$HAS_UNGROUPED" -eq 1 ]; then
   N=\$((N+1))
-  GROUP_IDS[\$N]="__ungrouped__:\$TNAME"
-  GROUP_NAMES[\$N]="\${TITLE:-\$TNAME}"
-done < <(sqlite3 "\$DB" "SELECT tmux_name, title FROM sessions WHERE (group_id IS NULL OR group_id='') AND COALESCE(hidden,0)=0 ORDER BY updated_at DESC;" 2>/dev/null)
+  GROUP_IDS[\$N]="__ungrouped__"
+  GROUP_NAMES[\$N]="未分组"
+fi
 
 # Validate index
 if [ "\$IDX" -gt "\$N" ] || [ "\$IDX" -lt 1 ]; then
@@ -829,21 +834,29 @@ fi
 TARGET_GID="\${GROUP_IDS[\$IDX]}"
 [ -z "\$TARGET_GID" ] && exit 0
 
-# Ungrouped slots are per-session: "__ungrouped__:<tmux_name>" → switch directly to that session
 BEST=""
 ENV_GID="\$TARGET_GID"
 case "\$TARGET_GID" in
-  __ungrouped__:*)
-    BEST="\${TARGET_GID#__ungrouped__:}"
+  __ungrouped__)
     ENV_GID="__ungrouped__"
-    TARGET_GID="__ungrouped__"
+    while read -r CANDIDATE; do
+      [ -z "\$CANDIDATE" ] && continue
+      case "\$ALIVE" in *"|\$CANDIDATE|"*) BEST="\$CANDIDATE"; break ;; esac
+    done < <(sqlite3 "\$DB" "SELECT tmux_name FROM sessions WHERE (group_id IS NULL OR group_id='') AND COALESCE(hidden,0)=0 ORDER BY updated_at DESC;" 2>/dev/null)
     ;;
   *)
-    QUERY_BEST="${groupSubtreeCte("'\$TARGET_GID'")} SELECT tmux_name FROM sessions WHERE group_id IN (SELECT id FROM subtree) AND COALESCE(hidden,0)=0 ORDER BY updated_at DESC;"
+    QUERY_BEST="SELECT tmux_name FROM sessions WHERE group_id='\$TARGET_GID' AND COALESCE(hidden,0)=0 ORDER BY updated_at DESC;"
     while read -r CANDIDATE; do
       [ -z "\$CANDIDATE" ] && continue
       case "\$ALIVE" in *"|\$CANDIDATE|"*) BEST="\$CANDIDATE"; break ;; esac
     done < <(sqlite3 "\$DB" "\$QUERY_BEST" 2>/dev/null)
+    if [ -z "\$BEST" ]; then
+      QUERY_BEST="${groupSubtreeCte("'\$TARGET_GID'")} SELECT tmux_name FROM sessions WHERE group_id IN (SELECT id FROM subtree) AND COALESCE(hidden,0)=0 ORDER BY updated_at DESC;"
+      while read -r CANDIDATE; do
+        [ -z "\$CANDIDATE" ] && continue
+        case "\$ALIVE" in *"|\$CANDIDATE|"*) BEST="\$CANDIDATE"; break ;; esac
+      done < <(sqlite3 "\$DB" "\$QUERY_BEST" 2>/dev/null)
+    fi
     ;;
 esac
 

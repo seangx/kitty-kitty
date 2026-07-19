@@ -1,6 +1,6 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
-import { chmodSync, existsSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs'
+import { chmodSync, existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { execFileSync } from 'node:child_process'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
@@ -9,7 +9,7 @@ import { buildStatusNavigateScript, buildStatusRowScript } from '../src/main/tmu
 const TMUX = ['/opt/homebrew/bin/tmux', '/usr/local/bin/tmux', '/usr/bin/tmux']
   .find(existsSync) || 'tmux'
 
-test('nested tmux rows anchor to their parent and session clicks select the exact pane', () => {
+test('nested tmux rows anchor to their parent and collapse direct panes into ungrouped items', () => {
   const dir = mkdtempSync(join(tmpdir(), 'kitty-status-navigation-'))
   const socket = `kitty-status-${process.pid}-${Date.now()}`
   const tmux = (...args: string[]) => execFileSync(TMUX, ['-L', socket, ...args], { encoding: 'utf8' }).trim()
@@ -22,6 +22,8 @@ test('nested tmux rows anchor to their parent and session clicks select the exac
     tmux('new-session', '-d', '-s', 'kitty_root', 'sleep', '120')
     tmux('new-session', '-d', '-s', 'kitty_child', 'sleep', '120')
     tmux('split-window', '-d', '-t', 'kitty_child', 'sleep', '120')
+    tmux('new-session', '-d', '-s', 'kitty_loose1', 'sleep', '120')
+    tmux('new-session', '-d', '-s', 'kitty_loose2', 'sleep', '120')
 
     const rootPane = tmux('list-panes', '-t', 'kitty_root', '-F', '#{pane_id}')
     const childPanes = tmux('list-panes', '-t', 'kitty_child', '-F', '#{pane_id}').split('\n')
@@ -50,6 +52,8 @@ test('nested tmux rows anchor to their parent and session clicks select the exac
       INSERT INTO sessions VALUES ('master', 'Master', 'kitty_root', '/tmp', 'root', '${rootPane}', 0, '2026-01-01', '2026-01-01');
       INSERT INTO sessions VALUES ('reviewer', 'Reviewer', 'kitty_child', '/tmp', 'child', '${childPanes[0]}', 0, '2026-01-02', '2026-01-02');
       INSERT INTO sessions VALUES ('tester', 'Tester', 'kitty_child', '/tmp', 'child', '', 0, '2026-01-03', '2026-01-03');
+      INSERT INTO sessions VALUES ('loose1', 'Loose 1', 'kitty_loose1', '/tmp', NULL, '', 0, '2026-01-04', '2026-01-04');
+      INSERT INTO sessions VALUES ('loose2', 'Loose 2', 'kitty_loose2', '/tmp', NULL, '', 0, '2026-01-05', '2026-01-05');
     `)
 
     const scriptOptions = {
@@ -69,10 +73,16 @@ test('nested tmux rows anchor to their parent and session clicks select the exac
 
     assert.match(rootRow, /range=user\|kr:1/)
     assert.match(rootRow, /Root \(3\)/)
-    assert.match(rootContentsRow, /Master/)
+    assert.match(rootRow, /未分组 \(2\)/)
+    assert.doesNotMatch(rootRow, /Loose [12]/)
+    assert.match(rootContentsRow, /未分组 \(1\)/)
+    assert.match(rootContentsRow, /range=user\|kd:root/)
+    assert.doesNotMatch(rootContentsRow, /Master/)
     assert.match(rootContentsRow, /range=user\|kg:child/)
-    assert.match(childRow, /Reviewer/)
-    assert.match(childRow, /range=user\|ks:tester/)
+    assert.match(childRow, /未分组 \(2\)/)
+    assert.match(childRow, /range=user\|kd:child/)
+    assert.doesNotMatch(childRow, /Reviewer|Tester/)
+    assert.doesNotMatch(`${rootRow}${rootContentsRow}${childRow}`, /range=user\|ks:/)
 
     const ranges = [...`${rootRow}${rootContentsRow}${childRow}`.matchAll(/range=user\|([^\]]+)/g)]
       .map((match) => match[1])
@@ -86,11 +96,20 @@ test('nested tmux rows anchor to their parent and session clicks select the exac
     assert.ok(leadingCells(childRow) > leadingCells(rootContentsRow))
 
     tmux('select-pane', '-t', childPanes[0])
-    execFileSync(navigateScript, ['level-index', '2', 'kitty_child', ''], { encoding: 'utf8' })
-    assert.equal(tmux('display-message', '-t', 'kitty_child', '-p', '#{pane_id}'), childPanes[1])
-    assert.equal(sqlite("SELECT pane_id FROM sessions WHERE id='tester';"), childPanes[1])
+    execFileSync(navigateScript, ['level-index', '1', 'kitty_child', ''], { encoding: 'utf8' })
+    assert.equal(tmux('display-message', '-t', 'kitty_child', '-p', '#{pane_id}'), childPanes[0])
+    assert.equal(sqlite("SELECT pane_id FROM sessions WHERE id='tester';"), '')
   } finally {
     try { tmux('kill-server') } catch { /* already gone */ }
     rmSync(dir, { recursive: true, force: true })
   }
+})
+
+test('app startup refreshes tmux status bars without waiting for the Deck to open', () => {
+  const source = readFileSync(new URL('../src/main/index.ts', import.meta.url), 'utf8')
+  const ipcIndex = source.indexOf('registerIpcHandlers()')
+  const refreshIndex = source.indexOf('refreshAllStatusBars()')
+
+  assert.ok(ipcIndex >= 0)
+  assert.ok(refreshIndex > ipcIndex)
 })

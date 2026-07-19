@@ -5,7 +5,7 @@ import { createTray } from './tray'
 import { registerIpcHandlers } from './ipc/handlers'
 import { initDB, closeDB } from './db/database'
 import { initLogger, log } from './logger'
-import { hasTmux, focusAnyAttachedSession } from './tmux/session-manager'
+import { hasTmux, focusAnyAttachedSession, refreshAllStatusBars } from './tmux/session-manager'
 import * as ntfy from './ntfy'
 import { startWakeupServer, stopWakeupServer } from './wakeup'
 import { ensureClaudeNotificationHook } from './hook-installer'
@@ -35,6 +35,10 @@ app.whenReady().then(() => {
 
   try { initDB(); log('app', 'db initialized') } catch (e) { log('app', 'db error:', e) }
   try { registerIpcHandlers(); log('app', 'ipc handlers registered') } catch (e) { log('app', 'ipc error:', e) }
+  // Status helpers and click bindings are versioned with the app. Refresh every
+  // live kitty_* tmux at process startup so standalone/ungrouped sessions never
+  // keep a stale formatter merely because the Deck/session list was not opened.
+  try { refreshAllStatusBars(); log('app', 'tmux status bars refreshed') } catch (e) { log('app', 'tmux status refresh error:', e) }
   try { createTray(); log('app', 'tray created') } catch (e) { log('app', 'tray error:', e) }
   try { createPetWindow(); log('app', 'pet window created') } catch (e) { log('app', 'window error:', e) }
   try { ntfy.start(); log('app', 'ntfy listener started') } catch (e) { log('app', 'ntfy error:', e) }
