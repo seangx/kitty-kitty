@@ -3,6 +3,7 @@ productName: Kitty Kitty
 directories:
   buildResources: build
 files:
+  - '!**/.worktrees/**'
   - '!**/.vscode/*'
   - '!src/*'
   - '!electron.vite.config.*'
