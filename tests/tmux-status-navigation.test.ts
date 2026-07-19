@@ -73,8 +73,9 @@ test('nested tmux rows anchor to their parent and collapse direct panes into ung
 
     assert.match(rootRow, /range=user\|kr:1/)
     assert.match(rootRow, /Root \(3\)/)
-    assert.match(rootRow, /未分组 \(2\)/)
-    assert.doesNotMatch(rootRow, /Loose [12]/)
+    assert.match(rootRow, /Loose 1/)
+    assert.match(rootRow, /Loose 2/)
+    assert.doesNotMatch(rootRow, /未分组 \(2\)/)
     assert.match(rootContentsRow, /未分组 \(1\)/)
     assert.match(rootContentsRow, /range=user\|kd:root/)
     assert.doesNotMatch(rootContentsRow, /Master/)

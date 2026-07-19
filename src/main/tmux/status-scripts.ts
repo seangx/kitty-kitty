@@ -135,7 +135,7 @@ add_item() {
 }
 
 build_root_items() {
-  local ACTIVE_ROOT="\$1" GID GNAME COUNT ACTIVE TNAME RANGE_INDEX HAS_ALIVE
+  local ACTIVE_ROOT="\$1" GID GNAME COUNT ACTIVE TNAME SID TITLE RANGE_INDEX
   ITEMS_PLAIN=""
   ITEMS_FORMAT=""
   TARGET_PREFIX=""
@@ -151,18 +151,14 @@ build_root_items() {
     add_item group "\$GID" "\$GNAME" "\$COUNT" "\$ACTIVE" "kr:\$RANGE_INDEX"
   done < <(sqlite3 -separator "\$SEP" "\$DB" "${ROOT_GROUPS_SQL}" 2>/dev/null)
 
-  COUNT=\$(sqlite3 "\$DB" "SELECT COUNT(*) FROM sessions WHERE (group_id IS NULL OR group_id='') AND COALESCE(hidden,0)=0;" 2>/dev/null)
-  HAS_ALIVE=0
-  while read -r TNAME; do
-    [ -z "\$TNAME" ] && continue
-    if tmux_is_alive "\$TNAME"; then HAS_ALIVE=1; break; fi
-  done < <(sqlite3 "\$DB" "SELECT DISTINCT tmux_name FROM sessions WHERE (group_id IS NULL OR group_id='') AND COALESCE(hidden,0)=0;" 2>/dev/null)
-  if [ "\$HAS_ALIVE" -eq 1 ] && [ "\${COUNT:-0}" -gt 0 ]; then
+  while IFS="\$SEP" read -r SID TNAME TITLE; do
+    [ -z "\$SID" ] && continue
+    tmux_is_alive "\$TNAME" || continue
     ACTIVE=0
-    [ "\$ACTIVE_ROOT" = "__ungrouped__" ] && ACTIVE=1
+    [ "\$TNAME" = "\$RENDER_SESSION" ] && ACTIVE=1
     RANGE_INDEX=\$((ITEM_NO+1))
-    add_item group "__ungrouped__" "未分组" "\$COUNT" "\$ACTIVE" "kr:\$RANGE_INDEX"
-  fi
+    add_item session "\$SID" "\${TITLE:-\$TNAME}" "" "\$ACTIVE" "kr:\$RANGE_INDEX"
+  done < <(sqlite3 -separator "\$SEP" "\$DB" "SELECT id, tmux_name, title FROM sessions WHERE (group_id IS NULL OR group_id='') AND COALESCE(hidden,0)=0 ORDER BY updated_at DESC;" 2>/dev/null)
 }
 
 build_group_items() {

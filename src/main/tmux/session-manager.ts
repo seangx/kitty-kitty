@@ -825,17 +825,14 @@ while IFS='|' read -r GID GNAME; do
   GROUP_NAMES[\$N]="\$GNAME"
 done < <(sqlite3 "\$DB" "${ROOT_GROUPS_SQL}" 2>/dev/null)
 
-# All top-level standalone sessions share one "un-grouped" slot.
-HAS_UNGROUPED=0
-while read -r TNAME; do
+# Top-level standalone sessions stay individually addressable.
+while IFS='|' read -r TNAME TITLE; do
   [ -z "\$TNAME" ] && continue
-  case "\$ALIVE" in *"|\$TNAME|"*) HAS_UNGROUPED=1; break ;; esac
-done < <(sqlite3 "\$DB" "SELECT DISTINCT tmux_name FROM sessions WHERE (group_id IS NULL OR group_id='') AND COALESCE(hidden,0)=0;" 2>/dev/null)
-if [ "\$HAS_UNGROUPED" -eq 1 ]; then
+  case "\$ALIVE" in *"|\$TNAME|"*) ;; *) continue ;; esac
   N=\$((N+1))
-  GROUP_IDS[\$N]="__ungrouped__"
-  GROUP_NAMES[\$N]="未分组"
-fi
+  GROUP_IDS[\$N]="__ungrouped__:\$TNAME"
+  GROUP_NAMES[\$N]="\${TITLE:-\$TNAME}"
+done < <(sqlite3 "\$DB" "SELECT tmux_name, title FROM sessions WHERE (group_id IS NULL OR group_id='') AND COALESCE(hidden,0)=0 ORDER BY updated_at DESC;" 2>/dev/null)
 
 # Validate index
 if [ "\$IDX" -gt "\$N" ] || [ "\$IDX" -lt 1 ]; then
@@ -848,12 +845,9 @@ TARGET_GID="\${GROUP_IDS[\$IDX]}"
 BEST=""
 ENV_GID="\$TARGET_GID"
 case "\$TARGET_GID" in
-  __ungrouped__)
+  __ungrouped__:*)
     ENV_GID="__ungrouped__"
-    while read -r CANDIDATE; do
-      [ -z "\$CANDIDATE" ] && continue
-      case "\$ALIVE" in *"|\$CANDIDATE|"*) BEST="\$CANDIDATE"; break ;; esac
-    done < <(sqlite3 "\$DB" "SELECT tmux_name FROM sessions WHERE (group_id IS NULL OR group_id='') AND COALESCE(hidden,0)=0 ORDER BY updated_at DESC;" 2>/dev/null)
+    BEST="\${TARGET_GID#__ungrouped__:}"
     ;;
   *)
     QUERY_BEST="SELECT tmux_name FROM sessions WHERE group_id='\$TARGET_GID' AND COALESCE(hidden,0)=0 ORDER BY updated_at DESC;"
