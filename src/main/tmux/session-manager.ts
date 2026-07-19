@@ -5,7 +5,7 @@ import { tmpdir, homedir } from 'os'
 import { v4 as uuid } from 'uuid'
 import { getDB } from '../db/database'
 import { injectHiveIdentity } from './cli-wrapper'
-import { groupSubtreeCte, ROOT_GROUPS_SQL, rootGroupForTmuxSql } from './group-tree-sql'
+import { groupDepthForTmuxSql, groupSubtreeCte, ROOT_GROUPS_SQL, rootGroupForTmuxSql } from './group-tree-sql'
 import {
   formatPaneLabel,
   PANE_BORDER_FORMAT,
@@ -13,6 +13,11 @@ import {
   resolveSessionPaneId,
 } from './pane-label'
 import type { PaneLocation } from './pane-label'
+import {
+  buildStatusNavigateScript,
+  buildStatusRowScript,
+  statusLineCountForDepth,
+} from './status-scripts'
 
 /** Resolve tmux binary — GUI apps don't inherit homebrew PATH */
 function findTmux(): string {
@@ -449,13 +454,36 @@ export function applyMainVerticalLayout(tmuxName: string): void {
   } catch { /* ignore */ }
 }
 
+function statusLineCountForTmux(tmuxName: string): number {
+  try {
+    const row = getDB().prepare(groupDepthForTmuxSql('?')).get(tmuxName) as { depth: number } | undefined
+    return statusLineCountForDepth(Number(row?.depth || 0))
+  } catch {
+    return 1
+  }
+}
+
+function applyStatusLineOptions(tmuxName: string): void {
+  const rowScript = ensureStatusRowScript()
+  const lineCount = statusLineCountForTmux(tmuxName)
+  const sq = shellQuote(tmuxName)
+
+  execSync(`${TMUX} set-option -t ${sq} status ${lineCount}`, { stdio: 'ignore' })
+  for (let line = 0; line < lineCount; line++) {
+    const clock = line === lineCount - 1
+      ? '#[fill=#1e1e36,align=right]#[fg=#aaa8c3] %H:%M '
+      : '#[fill=#1e1e36]'
+    const format = `#[bg=#1e1e36]#(${rowScript} ${line} #{session_name} #{pane_id} #{client_width})${clock}`
+    execSync(`${TMUX} set-option -t ${sq} status-format[${line}] ${shellQuote(format)}`, { stdio: 'ignore' })
+  }
+}
+
 /**
  * Apply kitty-kitty status bar to a tmux session.
  * Shows all kitty sessions as clickable tabs with switch keybindings.
  */
 export function applyKittyStatusBar(tmuxName: string): void {
   try {
-    const groupBarScript = ensureGroupBarScript()
     const sq = shellQuote(tmuxName)
 
     // Initialize KITTY_ACTIVE_GROUP if not set
@@ -477,8 +505,6 @@ export function applyKittyStatusBar(tmuxName: string): void {
       `set-window-option -t ${sq} window-status-current-format ""`,
       `set-option -t ${sq} status-interval 5`,
       `set-option -t ${sq} mouse on`,
-      `set-option -t ${sq} status 1`,
-      `set-option -t ${sq} status-format[0] "#[bg=#1e1e36]#(${groupBarScript} #{session_name})#[fill=#1e1e36,align=right]#[fg=#aaa8c3] %H:%M "`,
       // Highlight active pane with border + top status label
       `set-option -t ${sq} pane-active-border-style "fg=#645efb"`,
       `set-option -t ${sq} pane-border-style "fg=#2a2a45"`,
@@ -490,6 +516,7 @@ export function applyKittyStatusBar(tmuxName: string): void {
     for (const cmd of opts) {
       try { execSync(`${TMUX} ${cmd}`, { stdio: 'ignore' }) } catch { /* ignore */ }
     }
+    applyStatusLineOptions(tmuxName)
     syncPaneLabels(tmuxName)
 
     const binds = [
@@ -589,7 +616,7 @@ function bindGroupKeys(): void {
   const switchScript = ensureSwitchGroupScript()
   for (let i = 1; i <= 9; i++) {
     try {
-      execSync(`${TMUX} bind-key ${i} run-shell -b '${switchScript} ${i}'`, { stdio: 'ignore' })
+      execSync(`${TMUX} bind-key ${i} run-shell -b '${switchScript} ${i} "#{client_name}"'`, { stdio: 'ignore' })
     } catch { /* ignore */ }
   }
 }
@@ -642,23 +669,34 @@ function bindPaneActionKeys(): void {
 
 /**
  * Click-dispatcher for tmux status bar `range=user|kitty:*` regions. Tmux
- * forwards `#{mouse_status_range}` (e.g. "user|kitty:group:3") when the
+ * forwards `#{mouse_status_range}` (e.g. "user|kitty:node:group:abc") when the
  * MouseDown1Status binding fires. We parse it here and delegate to the right
  * follow-up script. Lives in /tmp like the rest of the helpers.
  */
 function ensureStatusClickScript(): string {
   const switchScript = ensureSwitchGroupScript()
+  const navigateScript = ensureStatusNavigateScript()
   const scriptPath = join(tmpdir(), 'kitty_status_click.sh')
   writeFileSync(scriptPath, `#!/bin/bash
 # tmux's mouse_status_range variable returns ONLY the user-range argument
-# (e.g. "kitty:group:4"), not the full "user|kitty:group:4". Match on the
+# (e.g. "kitty:node:group:abc"), not the full "user|...". Match on the
 # arg form, not the type-prefixed form.
 RANGE="\$1"
+CLIENT="\$2"
+RENDER_SESSION="\$3"
 [ -z "\$RANGE" ] && exit 0
 case "\$RANGE" in
-  kitty:group:*)
+  kitty:root:*)
     IDX="\${RANGE##*:}"
-    exec "${switchScript}" "\$IDX"
+    exec "${switchScript}" "\$IDX" "\$CLIENT"
+    ;;
+  kitty:node:group:*)
+    ID="\${RANGE##*:}"
+    exec "${navigateScript}" group "\$ID" "\$RENDER_SESSION" "\$CLIENT"
+    ;;
+  kitty:node:session:*)
+    ID="\${RANGE##*:}"
+    exec "${navigateScript}" session "\$ID" "\$RENDER_SESSION" "\$CLIENT"
     ;;
 esac
 `)
@@ -673,18 +711,18 @@ function bindStatusClickKeys(): void {
     // mouse_status_range to the user range string we tagged in status-format.
     // Default MouseDown1Status (select window) is irrelevant here since our
     // window-status-format is empty.
-    execSync(`${TMUX} bind-key -T root MouseDown1Status run-shell -b '${script} "#{mouse_status_range}"'`, { stdio: 'ignore' })
+    execSync(`${TMUX} bind-key -T root MouseDown1Status run-shell -b '${script} "#{mouse_status_range}" "#{client_name}" "#{session_name}"'`, { stdio: 'ignore' })
   } catch { /* ignore */ }
 }
 
 /**
- * Bind Alt+1~9 to switch between groups. Panes handle session navigation inside a group.
+ * Bind Alt+1~9 to the visible items in the current group's row.
  */
 function bindAltGroupKeys(): void {
-  const switchScript = ensureSwitchGroupScript()
+  const navigateScript = ensureStatusNavigateScript()
   for (let i = 1; i <= 9; i++) {
     try {
-      execSync(`${TMUX} bind-key -n M-${i} run-shell -b '${switchScript} ${i}'`, { stdio: 'ignore' })
+      execSync(`${TMUX} bind-key -n M-${i} run-shell -b '${navigateScript} level-index ${i} "#{session_name}" "#{client_name}"'`, { stdio: 'ignore' })
     } catch { /* ignore */ }
   }
 }
@@ -693,12 +731,10 @@ function bindAltGroupKeys(): void {
  * Refresh the status bar of all kitty sessions (called after session changes)
  */
 export function refreshAllStatusBars(): void {
-  const groupBarScript = ensureGroupBarScript()
   const sessions = listTmuxSessions()
   for (const s of sessions) {
     try {
-      execSync(`${TMUX} set-option -t ${shellQuote(s.name)} status 1`, { stdio: 'ignore' })
-      execSync(`${TMUX} set-option -t ${shellQuote(s.name)} status-format[0] "#[bg=#1e1e36]#(${groupBarScript} #{session_name})#[fill=#1e1e36,align=right]#[fg=#aaa8c3] %H:%M "`, { stdio: 'ignore' })
+      applyStatusLineOptions(s.name)
       syncPaneLabels(s.name)
     } catch { /* ignore */ }
   }
@@ -711,94 +747,37 @@ export function refreshAllStatusBars(): void {
   bindStatusClickKeys()
 }
 
-/**
- * Upper status bar: group tabs — shows all groups with active session counts
- */
-function ensureGroupBarScript(): string {
-  const dbPath = join(homedir(), 'Library', 'Application Support', 'kitty-kitty', 'kitty-kitty.db')
-  const scriptPath = join(tmpdir(), 'kitty_group_bar.sh')
-  writeFileSync(scriptPath, `#!/bin/bash
-# Argument \$1: the tmux session name being rendered (passed via #{session_name})
-TMUX_BIN="${TMUX}"
-DB="${dbPath}"
-GBG="#1e1e36"
-RENDER_SESSION="\$1"
+function statusScriptOptions(): Parameters<typeof buildStatusRowScript>[0] {
+  return {
+    tmuxBin: TMUX,
+    dbPath: join(homedir(), 'Library', 'Application Support', 'kitty-kitty', 'kitty-kitty.db'),
+    sessionPrefix: SESSION_PREFIX,
+  }
+}
 
-if ! [ -f "\$DB" ] || ! command -v sqlite3 >/dev/null 2>&1; then
-  printf '#[fg=#aaa8c3,bg=%s]  (no db)  ' "\$GBG"
-  exit 0
-fi
+function ensureStatusRowScript(): string {
+  const scriptPath = join(tmpdir(), 'kitty_status_row.sh')
+  writeFileSync(scriptPath, buildStatusRowScript(statusScriptOptions()))
+  chmodSync(scriptPath, '755')
+  return scriptPath
+}
 
-# Derive active group from the session being rendered — this is the truth for this status bar
-if [ -n "\$RENDER_SESSION" ]; then
-  ACTIVE_GROUP=\$(sqlite3 "\$DB" "${rootGroupForTmuxSql("'\$RENDER_SESSION'")}" 2>/dev/null)
-fi
-[ -z "\$ACTIVE_GROUP" ] && ACTIVE_GROUP="__ungrouped__"
-
-# Collect alive tmux sessions
-ALIVE=""
-while read -r S; do
-  ALIVE="\$ALIVE|\$S|"
-done < <(\$TMUX_BIN list-sessions -F '#{session_name}' 2>/dev/null | grep '^${SESSION_PREFIX}')
-
-N=0
-
-# Named groups with active sessions
-# Each tab is wrapped in #[range=user|kitty:group:<N>]...#[norange] so the
-# MouseDown1Status binding can dispatch a click on the tab to the same script
-# used by prefix+N / Alt+N (kitty_switch_group.sh).
-while IFS='|' read -r GID GNAME; do
-  [ -z "\$GID" ] && continue
-  # The tmux bar is intentionally root-only. Child groups remain Deck-level
-  # navigation, while their sessions and active state roll up to this root.
-  SUBTREE_SQL="${groupSubtreeCte("'\$GID'")}"
-  # Count visible sessions in the complete group subtree
-  # In pane mode, multiple DB sessions share one tmux session, so count from DB directly
-  COUNT=\$(sqlite3 "\$DB" "\$SUBTREE_SQL SELECT COUNT(*) FROM sessions WHERE group_id IN (SELECT id FROM subtree) AND COALESCE(hidden,0)=0;" 2>/dev/null)
-  # But still need at least one alive tmux session in the subtree
-  HAS_ALIVE=0
-  while read -r TNAME; do
-    [ -z "\$TNAME" ] && continue
-    case "\$ALIVE" in *"|\$TNAME|"*) HAS_ALIVE=1; break ;; esac
-  done < <(sqlite3 "\$DB" "\$SUBTREE_SQL SELECT DISTINCT tmux_name FROM sessions WHERE group_id IN (SELECT id FROM subtree) AND COALESCE(hidden,0)=0;" 2>/dev/null)
-  [ "\$HAS_ALIVE" -eq 0 ] && continue
-  [ "\${COUNT:-0}" -eq 0 ] && continue
-  N=\$((N+1))
-  if [ "\$GID" = "\$ACTIVE_GROUP" ]; then
-    printf '#[range=user|kitty:group:%d]#[fg=#06b6d4,bg=#3a3a5c,bold]  %d  %s (%d)  #[norange]#[bg=%s]' "\$N" "\$N" "\$GNAME" "\$COUNT" "\$GBG"
-  else
-    [ "\$N" -gt 1 ] && printf '#[fg=#3a3a5c,bg=%s] ' "\$GBG"
-    printf '#[range=user|kitty:group:%d]#[fg=#706f8a,bg=%s]  %d  %s (%d)  #[norange]' "\$N" "\$GBG" "\$N" "\$GNAME" "\$COUNT"
-  fi
-done < <(sqlite3 "\$DB" "${ROOT_GROUPS_SQL}" 2>/dev/null)
-
-# Ungrouped sessions rendered individually as top-level tabs
-while IFS='|' read -r TNAME TITLE; do
-  [ -z "\$TNAME" ] && continue
-  case "\$ALIVE" in *"|\$TNAME|"*) ;; *) continue ;; esac
-  N=\$((N+1))
-  DISPLAY="\${TITLE:-\$TNAME}"
-  if [ "\$TNAME" = "\$RENDER_SESSION" ]; then
-    [ "\$N" -gt 1 ] && printf '#[fg=#3a3a5c,bg=%s] ' "\$GBG"
-    printf '#[range=user|kitty:group:%d]#[fg=#06b6d4,bg=#3a3a5c,bold]  %d  %s  #[norange]#[bg=%s]' "\$N" "\$N" "\$DISPLAY" "\$GBG"
-  else
-    [ "\$N" -gt 1 ] && printf '#[fg=#3a3a5c,bg=%s] ' "\$GBG"
-    printf '#[range=user|kitty:group:%d]#[fg=#706f8a,bg=%s]  %d  %s  #[norange]' "\$N" "\$GBG" "\$N" "\$DISPLAY"
-  fi
-done < <(sqlite3 "\$DB" "SELECT tmux_name, title FROM sessions WHERE (group_id IS NULL OR group_id='') AND COALESCE(hidden,0)=0 ORDER BY updated_at DESC;" 2>/dev/null)
-`)
+function ensureStatusNavigateScript(): string {
+  const scriptPath = join(tmpdir(), 'kitty_status_navigate.sh')
+  writeFileSync(scriptPath, buildStatusNavigateScript(statusScriptOptions()))
   chmodSync(scriptPath, '755')
   return scriptPath
 }
 
 /**
- * Script called by Ctrl+N to switch to a group by index
+ * Legacy single-level root switcher used by prefix+1~9 and root-row clicks.
  */
 function ensureSwitchGroupScript(): string {
   const dbPath = join(homedir(), 'Library', 'Application Support', 'kitty-kitty', 'kitty-kitty.db')
   const scriptPath = join(tmpdir(), 'kitty_switch_group.sh')
   writeFileSync(scriptPath, `#!/bin/bash
 IDX="\$1"
+CLIENT="\$2"
 [ -z "\$IDX" ] && exit 0
 
 TMUX_BIN="${TMUX}"
@@ -869,7 +848,10 @@ case "\$TARGET_GID" in
 esac
 
 if [ -n "\$BEST" ]; then
-  CLIENT=\$(\$TMUX_BIN list-clients -F '#{client_name}' 2>/dev/null | head -1)
+  if [ -n "\$CLIENT" ]; then
+    \$TMUX_BIN list-clients -F '#{client_name}' 2>/dev/null | grep -Fxq "\$CLIENT" || CLIENT=""
+  fi
+  [ -z "\$CLIENT" ] && CLIENT=\$(\$TMUX_BIN list-clients -F '#{client_name}' 2>/dev/null | head -1)
   if [ -n "\$CLIENT" ]; then
     if \$TMUX_BIN switch-client -c "\$CLIENT" -t "\$BEST" 2>/dev/null; then
       # Only update env after successful switch

@@ -1,0 +1,89 @@
+import test from 'node:test'
+import assert from 'node:assert/strict'
+import { chmodSync, existsSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs'
+import { execFileSync } from 'node:child_process'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
+import { buildStatusNavigateScript, buildStatusRowScript } from '../src/main/tmux/status-scripts.ts'
+
+const TMUX = ['/opt/homebrew/bin/tmux', '/usr/local/bin/tmux', '/usr/bin/tmux']
+  .find(existsSync) || 'tmux'
+
+test('nested tmux rows anchor to their parent and session clicks select the exact pane', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'kitty-status-navigation-'))
+  const socket = `kitty-status-${process.pid}-${Date.now()}`
+  const tmux = (...args: string[]) => execFileSync(TMUX, ['-L', socket, ...args], { encoding: 'utf8' }).trim()
+  const dbPath = join(dir, 'test.db')
+  const sqlite = (sql: string) => execFileSync('sqlite3', [dbPath, sql], { encoding: 'utf8' }).trim()
+  const rowScript = join(dir, 'status-row.sh')
+  const navigateScript = join(dir, 'status-navigate.sh')
+
+  try {
+    tmux('new-session', '-d', '-s', 'kitty_root', 'sleep', '120')
+    tmux('new-session', '-d', '-s', 'kitty_child', 'sleep', '120')
+    tmux('split-window', '-d', '-t', 'kitty_child', 'sleep', '120')
+
+    const rootPane = tmux('list-panes', '-t', 'kitty_root', '-F', '#{pane_id}')
+    const childPanes = tmux('list-panes', '-t', 'kitty_child', '-F', '#{pane_id}').split('\n')
+    assert.equal(childPanes.length, 2)
+
+    sqlite(`
+      CREATE TABLE groups (
+        id TEXT PRIMARY KEY,
+        name TEXT NOT NULL,
+        parent_group_id TEXT,
+        created_at TEXT NOT NULL
+      );
+      CREATE TABLE sessions (
+        id TEXT PRIMARY KEY,
+        title TEXT NOT NULL,
+        tmux_name TEXT NOT NULL,
+        cwd TEXT,
+        group_id TEXT,
+        pane_id TEXT,
+        hidden INTEGER NOT NULL DEFAULT 0,
+        created_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL
+      );
+      INSERT INTO groups VALUES ('root', 'Root', NULL, '2026-01-01');
+      INSERT INTO groups VALUES ('child', 'Child', 'root', '2026-01-02');
+      INSERT INTO sessions VALUES ('master', 'Master', 'kitty_root', '/tmp', 'root', '${rootPane}', 0, '2026-01-01', '2026-01-01');
+      INSERT INTO sessions VALUES ('reviewer', 'Reviewer', 'kitty_child', '/tmp', 'child', '${childPanes[0]}', 0, '2026-01-02', '2026-01-02');
+      INSERT INTO sessions VALUES ('tester', 'Tester', 'kitty_child', '/tmp', 'child', '', 0, '2026-01-03', '2026-01-03');
+    `)
+
+    const scriptOptions = {
+      tmuxBin: `${TMUX} -L ${socket}`,
+      dbPath,
+      sessionPrefix: 'kitty_',
+    }
+    writeFileSync(rowScript, buildStatusRowScript(scriptOptions))
+    writeFileSync(navigateScript, buildStatusNavigateScript(scriptOptions))
+    chmodSync(rowScript, '755')
+    chmodSync(navigateScript, '755')
+
+    const render = (row: number) => execFileSync(rowScript, [String(row), 'kitty_child', childPanes[0], '120'], { encoding: 'utf8' })
+    const childRow = render(0)
+    const rootContentsRow = render(1)
+    const rootRow = render(2)
+
+    assert.match(rootRow, /kitty:root:1/)
+    assert.match(rootRow, /Root \(3\)/)
+    assert.match(rootContentsRow, /Master/)
+    assert.match(rootContentsRow, /kitty:node:group:child/)
+    assert.match(childRow, /Reviewer/)
+    assert.match(childRow, /kitty:node:session:tester/)
+
+    const visibleText = (value: string) => value.replace(/#\[[^\]]*\]/g, '')
+    const leadingCells = (value: string) => visibleText(value).match(/^ */)?.[0].length || 0
+    assert.ok(leadingCells(childRow) > leadingCells(rootContentsRow))
+
+    tmux('select-pane', '-t', childPanes[0])
+    execFileSync(navigateScript, ['level-index', '2', 'kitty_child', ''], { encoding: 'utf8' })
+    assert.equal(tmux('display-message', '-t', 'kitty_child', '-p', '#{pane_id}'), childPanes[1])
+    assert.equal(sqlite("SELECT pane_id FROM sessions WHERE id='tester';"), childPanes[1])
+  } finally {
+    try { tmux('kill-server') } catch { /* already gone */ }
+    rmSync(dir, { recursive: true, force: true })
+  }
+})

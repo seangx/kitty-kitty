@@ -5,10 +5,13 @@ import { mkdtempSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import {
+  groupDepthForTmuxSql,
+  groupPathForTmuxSql,
   groupSubtreeCte,
   ROOT_GROUPS_SQL,
   rootGroupForTmuxSql,
 } from '../src/main/tmux/group-tree-sql.ts'
+import { statusLineCountForDepth } from '../src/main/tmux/status-scripts.ts'
 
 test('tmux navigation renders root groups and rolls child sessions into their root', () => {
   const dir = mkdtempSync(join(tmpdir(), 'kitty-tmux-groups-'))
@@ -45,6 +48,13 @@ test('tmux navigation renders root groups and rolls child sessions into their ro
     assert.equal(sqlite(rootGroupForTmuxSql("'tmux-child'")), 'root')
     assert.equal(sqlite(rootGroupForTmuxSql("'tmux-grandchild'")), 'root')
     assert.equal(sqlite(rootGroupForTmuxSql("'tmux-loose'")), '__ungrouped__')
+    assert.deepEqual(sqlite(groupPathForTmuxSql("'tmux-grandchild'"))
+      .split('\n').map((row) => row.split('|')[0]), ['root', 'child', 'grandchild'])
+    assert.equal(sqlite(groupDepthForTmuxSql("'tmux-grandchild'")), '3')
+    assert.equal(sqlite(groupDepthForTmuxSql("'tmux-loose'")), '0')
+    assert.equal(statusLineCountForDepth(0), 1)
+    assert.equal(statusLineCountForDepth(2), 3)
+    assert.equal(statusLineCountForDepth(8), 5)
 
     const subtree = groupSubtreeCte("'root'")
     assert.equal(sqlite(`
