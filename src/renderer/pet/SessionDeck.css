@@ -571,6 +571,93 @@
   border-left: 1px solid color-mix(in srgb, var(--deck-accent) 36%, var(--deck-border));
 }
 
+.session-deck__restart-progress {
+  position: fixed;
+  z-index: 450;
+  bottom: 18px;
+  width: 238px;
+  box-sizing: border-box;
+  padding: 11px 12px 10px;
+  pointer-events: auto;
+  border: 1px solid var(--deck-border);
+  border-radius: 15px;
+  color: var(--deck-text);
+  background: var(--deck-surface-strong);
+  box-shadow: 0 18px 48px rgba(0, 0, 0, .48), inset 0 1px rgba(255, 255, 255, .06);
+  backdrop-filter: blur(28px) saturate(1.1);
+  -webkit-backdrop-filter: blur(28px) saturate(1.1);
+  animation: deck-menu-enter 160ms cubic-bezier(.16, .9, .25, 1) both;
+}
+
+.session-deck.is-left .session-deck__restart-progress { left: 94px; }
+.session-deck.is-right .session-deck__restart-progress { right: 94px; }
+
+.session-deck__restart-header {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto auto;
+  align-items: center;
+  gap: 8px;
+  font-size: 11px;
+}
+
+.session-deck__restart-header span {
+  overflow: hidden;
+  font-weight: 600;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.session-deck__restart-header strong {
+  color: color-mix(in srgb, var(--deck-accent) 80%, white);
+  font-size: 10px;
+}
+
+.session-deck__restart-header button {
+  width: 19px;
+  height: 19px;
+  padding: 0;
+  border: 0;
+  border-radius: 6px;
+  color: var(--deck-muted);
+  background: transparent;
+  font: 500 16px/1 inherit;
+  cursor: pointer;
+}
+
+.session-deck__restart-header button:hover { color: var(--deck-text); background: rgba(255, 255, 255, .07); }
+
+.session-deck__restart-track {
+  height: 5px;
+  margin-top: 9px;
+  overflow: hidden;
+  border-radius: 999px;
+  background: rgba(255, 255, 255, .08);
+}
+
+.session-deck__restart-track span {
+  display: block;
+  height: 100%;
+  border-radius: inherit;
+  background: var(--deck-accent);
+  box-shadow: 0 0 10px color-mix(in srgb, var(--deck-accent) 42%, transparent);
+  transition: width 220ms cubic-bezier(.2, .8, .2, 1);
+}
+
+.session-deck__restart-progress.is-error .session-deck__restart-track span { background: #ff6977; }
+.session-deck__restart-progress.is-done:not(.is-error) .session-deck__restart-track span { background: #72d6a0; }
+
+.session-deck__restart-detail {
+  margin-top: 7px;
+  overflow: hidden;
+  color: var(--deck-muted);
+  font-size: 10px;
+  line-height: 1.3;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.session-deck__restart-progress.is-error .session-deck__restart-detail { color: #ff8e98; }
+
 @keyframes deck-rail-enter {
   from { opacity: 0; translate: var(--deck-enter-x, 0) 0; }
   to { opacity: 1; translate: 0 0; }

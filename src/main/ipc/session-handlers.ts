@@ -20,6 +20,7 @@ import { markCleared, isCleared, clearMark } from '../session-clear-state'
 import { buildCodexHandoff, buildClaudeRecentHandoff, scanClaudeMessageTokens } from '../codex-rollout'
 import { buildClaudeMemoryStartupPrompt, findClaudeMemoryForProject } from '../claude-memory'
 import { syncManagedMcpsToTool } from '../mcps/mcps-manager'
+import { selectGroupRestartCandidates } from '../group-restart'
 import { getPetWindow } from '../windows/pet-window'
 import type { SessionInfo } from '@shared/types/session'
 
@@ -989,13 +990,34 @@ export function registerSessionHandlers(): void {
     return { ok, fail }
   })
 
-  // Restart all sessions in a given group
-  ipcMain.handle('group:restart-sessions', async (_event, groupId: string) => {
-    const rows = sessionRepo.listSessions().filter(s => s.groupId === groupId)
+  // Restart every visible, alive session in a group and all of its descendants.
+  ipcMain.handle('group:restart-sessions', async (event, groupId: string) => {
+    const operationId = uuid()
+    const group = sessionRepo.getGroupById(groupId)
+    const rows = selectGroupRestartCandidates(
+      sessionRepo.listGroupSubtreeIds(groupId),
+      sessionRepo.listSessions(),
+      tmux.isSessionAlive,
+    )
     let ok = 0, fail = 0
+    let completed = 0
+    const sendProgress = (currentTitle: string | undefined, done: boolean) => {
+      if (event.sender.isDestroyed()) return
+      event.sender.send('group:restart-progress', {
+        operationId,
+        groupId,
+        groupName: group?.name || groupId,
+        completed,
+        total: rows.length,
+        ok,
+        fail,
+        currentTitle,
+        done,
+      })
+    }
+    sendProgress(undefined, rows.length === 0)
     for (const session of rows) {
-      if (session.hidden) continue
-      if (!tmux.isSessionAlive(session.tmuxName)) continue
+      sendProgress(session.title, false)
       try {
         await restartSessionPane(session)
         ok++
@@ -1003,9 +1025,12 @@ export function registerSessionHandlers(): void {
         log('session', `group-restart: failed for ${session.title}:`, err)
         fail++
       }
+      completed++
+      sendProgress(session.title, false)
     }
+    sendProgress(undefined, true)
     log('session', `group-restart: group=${groupId} ok=${ok} fail=${fail}`)
-    return { ok, fail }
+    return { operationId, total: rows.length, ok, fail }
   })
 
   // Get session env vars (returns object)

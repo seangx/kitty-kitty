@@ -23,3 +23,15 @@ export interface GroupInfo {
   mainSessionId?: string
   parentGroupId?: string
 }
+
+export interface GroupRestartProgress {
+  operationId: string
+  groupId: string
+  groupName: string
+  completed: number
+  total: number
+  ok: number
+  fail: number
+  currentTitle?: string
+  done: boolean
+}

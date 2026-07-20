@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
 import { createPortal } from 'react-dom'
-import type { GroupInfo, SessionInfo } from '@shared/types/session'
+import type { GroupInfo, GroupRestartProgress, SessionInfo } from '@shared/types/session'
 import { useConfigStore } from '../store/config-store'
 import { useSessionStore } from '../store/session-store'
 import {
@@ -57,6 +57,10 @@ interface ChildGroupDialogState {
   rootBranchStyle?: React.CSSProperties
 }
 
+interface GroupRestartState extends GroupRestartProgress {
+  error?: string
+}
+
 const DRAG_THRESHOLD = 5
 
 function childItems(node: DeckGroupNode): DeckItem[] {
@@ -111,6 +115,7 @@ export default function SessionDeck({
   const [childGroupCreating, setChildGroupCreating] = useState(false)
   const [childGroupError, setChildGroupError] = useState('')
   const [rootBranchStyle, setRootBranchStyle] = useState<React.CSSProperties | null>(null)
+  const [groupRestart, setGroupRestart] = useState<GroupRestartState | null>(null)
   const branchPortalRef = useRef<HTMLDivElement | null>(null)
 
   const collapseBranches = useCallback(() => {
@@ -141,6 +146,21 @@ export default function SessionDeck({
     const unsubscribe = window.api.on('window-blur', closeTransientSurfaces)
     return unsubscribe
   }, [collapseBranches])
+
+  useEffect(() => window.api.on('group:restart-progress', (value) => {
+    const progress = value as GroupRestartProgress
+    if (!progress?.groupId || !progress?.operationId) return
+    setGroupRestart(progress)
+  }), [])
+
+  useEffect(() => {
+    if (!groupRestart?.done || groupRestart.error) return
+    const operationId = groupRestart.operationId
+    const timer = window.setTimeout(() => {
+      setGroupRestart((current) => current?.operationId === operationId ? null : current)
+    }, 3500)
+    return () => window.clearTimeout(timer)
+  }, [groupRestart?.done, groupRestart?.error, groupRestart?.operationId])
 
   const visibleSessions = useMemo(
     () => sessions.filter((session) => session.status !== 'dead' && !session.hidden),
@@ -197,6 +217,46 @@ export default function SessionDeck({
   const refresh = useCallback(async () => {
     await Promise.all([loadGroups(), loadSessions()])
   }, [loadGroups, loadSessions])
+
+  const restartGroup = useCallback(async (group: GroupInfo) => {
+    setGroupMenu(null)
+    setGroupRestart({
+      operationId: `pending:${group.id}`,
+      groupId: group.id,
+      groupName: group.name,
+      completed: 0,
+      total: 0,
+      ok: 0,
+      fail: 0,
+      done: false,
+    })
+    try {
+      const result = await window.api.invoke('group:restart-sessions', group.id) as {
+        operationId: string
+        total: number
+        ok: number
+        fail: number
+      }
+      setGroupRestart((current) => current?.groupId === group.id ? {
+        operationId: result.operationId,
+        groupId: group.id,
+        groupName: group.name,
+        completed: result.total,
+        total: result.total,
+        ok: result.ok,
+        fail: result.fail,
+        done: true,
+      } : current)
+      await refresh()
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error)
+      setGroupRestart((current) => current?.groupId === group.id ? {
+        ...current,
+        done: true,
+        error: message,
+      } : current)
+    }
+  }, [refresh])
 
   const openChildGroupDialog = useCallback((
     groupId: string,
@@ -316,7 +376,6 @@ export default function SessionDeck({
           onContextMenu={(event) => {
             event.preventDefault()
             event.stopPropagation()
-            collapseBranches()
             setSessionMenu({ id: session.id, x: event.clientX, y: event.clientY })
           setGroupMenu(null)
           setShowMoveMenu(false)
@@ -371,7 +430,6 @@ export default function SessionDeck({
           onContextMenu={(event) => {
             event.preventDefault()
             event.stopPropagation()
-            collapseBranches()
             setGroupMenu({ id: groupId, x: event.clientX, y: event.clientY })
             setSessionMenu(null)
           }}
@@ -568,10 +626,55 @@ export default function SessionDeck({
           {selectedGroup.parentGroupId && (
             <button onClick={async () => { await window.api.invoke('group:set-parent', selectedGroup.id, null); setGroupMenu(null); await refresh() }}>移到根层级</button>
           )}
-          <button onClick={async () => { await window.api.invoke('group:restart-sessions', selectedGroup.id); setGroupMenu(null) }}>重启直接会话</button>
+          <button onClick={() => { void restartGroup(selectedGroup) }}>重启整个分组</button>
           <button className="is-danger" onClick={async () => { await window.api.invoke('group:archive', selectedGroup.id); setGroupMenu(null); await refresh() }}>归档分组</button>
         </DeckMenu>
       )}
+
+      {groupRestart && (
+        <GroupRestartProgressCard
+          progress={groupRestart}
+          onClose={() => setGroupRestart(null)}
+        />
+      )}
+    </div>
+  )
+}
+
+function GroupRestartProgressCard({ progress, onClose }: {
+  progress: GroupRestartState
+  onClose: () => void
+}) {
+  const percent = progress.total > 0
+    ? Math.round((progress.completed / progress.total) * 100)
+    : progress.done ? 100 : 0
+  const detail = progress.error
+    ? `重启失败：${progress.error}`
+    : progress.done
+      ? progress.total === 0
+        ? '没有可重启的运行中会话'
+        : `完成 ${progress.ok} 个${progress.fail ? `，失败 ${progress.fail} 个` : ''}`
+      : progress.total === 0
+        ? '正在统计会话…'
+        : `正在重启 ${progress.currentTitle || '会话'} · ${progress.completed}/${progress.total}`
+
+  return (
+    <div className={`session-deck__restart-progress${progress.error ? ' is-error' : ''}${progress.done ? ' is-done' : ''}`}>
+      <div className="session-deck__restart-header">
+        <span>重启 {progress.groupName}</span>
+        <strong>{percent}%</strong>
+        {progress.done && <button onClick={onClose} aria-label="关闭重启进度">×</button>}
+      </div>
+      <div
+        className="session-deck__restart-track"
+        role="progressbar"
+        aria-valuemin={0}
+        aria-valuemax={100}
+        aria-valuenow={percent}
+      >
+        <span style={{ width: `${percent}%` }} />
+      </div>
+      <div className="session-deck__restart-detail">{detail}</div>
     </div>
   )
 }
