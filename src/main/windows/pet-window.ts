@@ -7,6 +7,7 @@ import { PET_WINDOW } from '@shared/constants'
 import { log } from '../logger'
 import {
   ANIMATE_FLOATING_DECK_BOUNDS,
+  applyFloatingDeckBounds,
   getFloatingDeckLayout,
   type DeckWindowEdge,
 } from './deck-window-layout'
@@ -60,14 +61,14 @@ function setFloatingDeckOpen(win: BrowserWindow, open: boolean): { edge: DeckWin
       const layout = getFloatingDeckLayout(current, displayForWindow(current).workArea)
       deckRestoreBounds = current
       deckEdge = layout.edge
-      win.setBounds(layout.bounds, ANIMATE_FLOATING_DECK_BOUNDS)
+      applyFloatingDeckBounds(win, layout.bounds)
     }
     return { edge: deckEdge }
   }
   if (deckRestoreBounds) {
     const restore = deckRestoreBounds
     deckRestoreBounds = null
-    win.setBounds(restore, ANIMATE_FLOATING_DECK_BOUNDS)
+    applyFloatingDeckBounds(win, restore)
   }
   return { edge: deckEdge }
 }

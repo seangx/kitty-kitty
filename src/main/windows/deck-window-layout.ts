@@ -18,6 +18,24 @@ export const FLOATING_DECK_WIDTH = 720
 // macOS 会在透明 BrowserWindow 的原生 bounds 动画期间留下合成残影。
 export const ANIMATE_FLOATING_DECK_BOUNDS = false
 
+export interface FloatingDeckWindow {
+  setBounds(bounds: DeckWindowBounds, animate?: boolean): void
+  setIgnoreMouseEvents(ignore: boolean, options?: { forward?: boolean }): void
+}
+
+/**
+ * 透明窗口改变大小时不能继承之前停在猫/Deck 控件上的鼠标捕获状态。
+ * 先应用新 bounds，再让透明区域重新穿透；renderer 会在鼠标真正进入
+ * 可见控件时恢复交互。
+ */
+export function applyFloatingDeckBounds(
+  win: FloatingDeckWindow,
+  bounds: DeckWindowBounds,
+): void {
+  win.setBounds(bounds, ANIMATE_FLOATING_DECK_BOUNDS)
+  win.setIgnoreMouseEvents(true, { forward: true })
+}
+
 /**
  * Deck 不再依赖屏幕吸附。它以猫当前的水平中心为基准扩展，并根据猫位于
  * 屏幕哪一半选择长条栏所在侧；最终窗口始终限制在当前显示器工作区内。
