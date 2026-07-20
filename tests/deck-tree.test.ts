@@ -69,7 +69,7 @@ test('openDeckPath opens a parent after creating its child group', () => {
 test('child group creation uses the in-app name dialog instead of Electron window.prompt', async () => {
   const source = await readFile(new URL('../src/renderer/pet/SessionDeck.tsx', import.meta.url), 'utf8')
   assert.doesNotMatch(source, /window\.prompt\(['"]子分组名称/)
-  assert.match(source, /openChildGroupDialog\(groupId, depth, event\.clientX, event\.clientY\)/)
+  assert.match(source, /openChildGroupDialog\([\s\S]*?groupId,[\s\S]*?depth,[\s\S]*?event\.clientX,[\s\S]*?event\.clientY,/)
   assert.match(source, /<DeckNameDialog/)
 })
 
@@ -96,4 +96,15 @@ test('Deck keeps session creation in its footer and offers both start paths', as
   assert.match(canvas, /onCreateDirect=\{\(\) => setShowInput\(true\)\}/)
   assert.match(canvas, /onCreateInDirectory=\{handleOpenInDir\}/)
   assert.match(css, /\.session-deck__footer \{[\s\S]*?z-index: 30;/)
+})
+
+test('Deck scrolls root sessions above its footer without clipping open branches', async () => {
+  const source = await readFile(new URL('../src/renderer/pet/SessionDeck.tsx', import.meta.url), 'utf8')
+  const css = await readFile(new URL('../src/renderer/pet/SessionDeck.css', import.meta.url), 'utf8')
+  const rootScrollCss = css.match(/\.session-deck__root-scroll \{([^}]*)\}/)?.[1] || ''
+
+  assert.match(rootScrollCss, /overflow-y: auto;/)
+  assert.match(source, /createPortal\(branch, branchPortalRef\.current\)/)
+  assert.match(source, /onScroll=\{collapseBranches\}/)
+  assert.match(css, /\.session-deck__branch\.is-portaled \{[\s\S]*?position: fixed;/)
 })

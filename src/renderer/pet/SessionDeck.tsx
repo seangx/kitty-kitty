@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
+import { createPortal } from 'react-dom'
 import type { GroupInfo, SessionInfo } from '@shared/types/session'
 import { useConfigStore } from '../store/config-store'
 import { useSessionStore } from '../store/session-store'
@@ -53,6 +54,7 @@ interface ChildGroupDialogState {
   depth?: number
   x: number
   y: number
+  rootBranchStyle?: React.CSSProperties
 }
 
 const DRAG_THRESHOLD = 5
@@ -108,10 +110,13 @@ export default function SessionDeck({
   const [childGroupDialog, setChildGroupDialog] = useState<ChildGroupDialogState | null>(null)
   const [childGroupCreating, setChildGroupCreating] = useState(false)
   const [childGroupError, setChildGroupError] = useState('')
+  const [rootBranchStyle, setRootBranchStyle] = useState<React.CSSProperties | null>(null)
+  const branchPortalRef = useRef<HTMLDivElement | null>(null)
 
   const collapseBranches = useCallback(() => {
     setOpenPath([])
     setVerticalDirections({})
+    setRootBranchStyle(null)
   }, [])
 
   const accent = /^#[0-9a-f]{6}$/i.test(bubble.deckAccentColor || '')
@@ -167,6 +172,17 @@ export default function SessionDeck({
     target: HTMLElement,
     itemCount: number,
   ) => {
+    const nextPath = toggleDeckPath(openPath, depth, groupId)
+    if (depth === 0) {
+      if (nextPath[0] === groupId) {
+        const rect = target.getBoundingClientRect()
+        setRootBranchStyle(edge === 'left'
+          ? { top: rect.top + rect.height / 2, left: rect.right + 14 }
+          : { top: rect.top + rect.height / 2, right: window.innerWidth - rect.left + 14 })
+      } else {
+        setRootBranchStyle(null)
+      }
+    }
     if (nextDeckAxis(parentAxis) === 'vertical') {
       const rect = target.getBoundingClientRect()
       const height = Math.min(Math.max(itemCount, 1), 6) * 76 + 24
@@ -175,8 +191,8 @@ export default function SessionDeck({
         [groupId]: chooseVerticalDirection(rect.top, rect.bottom, height, window.innerHeight),
       }))
     }
-    setExpandedPath(toggleDeckPath(openPath, depth, groupId))
-  }, [openPath, setExpandedPath])
+    setExpandedPath(nextPath)
+  }, [edge, openPath, setExpandedPath])
 
   const refresh = useCallback(async () => {
     await Promise.all([loadGroups(), loadSessions()])
@@ -187,20 +203,31 @@ export default function SessionDeck({
     depth: number | undefined,
     x: number,
     y: number,
+    target?: HTMLElement,
   ) => {
     setChildGroupError('')
-    setChildGroupDialog({ groupId, depth, x, y })
-  }, [])
+    let nextRootBranchStyle: React.CSSProperties | undefined
+    if (depth === 0 && target) {
+      const rect = target.getBoundingClientRect()
+      nextRootBranchStyle = edge === 'left'
+        ? { top: rect.top + rect.height / 2, left: rect.right + 14 }
+        : { top: rect.top + rect.height / 2, right: window.innerWidth - rect.left + 14 }
+    }
+    setChildGroupDialog({ groupId, depth, x, y, rootBranchStyle: nextRootBranchStyle })
+  }, [edge])
 
   const createChildGroup = useCallback(async (name: string) => {
     if (!childGroupDialog) return
-    const { groupId, depth } = childGroupDialog
+    const { groupId, depth, rootBranchStyle: nextRootBranchStyle } = childGroupDialog
     try {
       setChildGroupCreating(true)
       setChildGroupError('')
       await window.api.invoke('group:create', name, undefined, groupId)
       await refresh()
-      if (depth !== undefined) setOpenPath((current) => openDeckPath(current, depth, groupId))
+      if (depth !== undefined) {
+        if (depth === 0 && nextRootBranchStyle) setRootBranchStyle(nextRootBranchStyle)
+        setOpenPath((current) => openDeckPath(current, depth, groupId))
+      }
       setChildGroupDialog(null)
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error)
@@ -311,6 +338,23 @@ export default function SessionDeck({
     const direction = verticalDirections[groupId] || 'down'
     const dragging = drag?.kind === 'group' && drag.id === groupId && drag.active
     const isDropTarget = drag?.active && drag.target === `group:${groupId}` && drag.id !== groupId
+    const branch = isOpen ? (
+      <div
+        data-drop={`group:${groupId}`}
+        className={[
+          'session-deck__branch',
+          `is-${childAxis}`,
+          `from-${edge}`,
+          depth === 0 ? 'is-portaled' : '',
+          childAxis === 'vertical' ? `opens-${direction}` : '',
+        ].filter(Boolean).join(' ')}
+        style={depth === 0 ? rootBranchStyle || undefined : undefined}
+      >
+        {items.length > 0
+          ? renderItems(items, childAxis, depth + 1)
+          : <span className="session-deck__empty">拖入会话或分组</span>}
+      </div>
+    ) : null
     return (
       <div className="session-deck__item-anchor" key={`group:${groupId}`}>
         <div
@@ -340,28 +384,24 @@ export default function SessionDeck({
             onMouseDown={(event) => event.stopPropagation()}
             onClick={(event) => {
               event.stopPropagation()
-              openChildGroupDialog(groupId, depth, event.clientX, event.clientY)
+              openChildGroupDialog(
+                groupId,
+                depth,
+                event.clientX,
+                event.clientY,
+                (event.currentTarget.closest('.session-deck__item') as HTMLElement | null) || undefined,
+              )
             }}
             aria-label={`在 ${node.group.name} 中新建子分组`}
             title="新建子分组"
           >＋</button>
           <span className="session-deck__count">{countDeckDescendants(node)}</span>
         </div>
-        {isOpen && (
-          <div
-            data-drop={`group:${groupId}`}
-            className={[
-              'session-deck__branch',
-              `is-${childAxis}`,
-              `from-${edge}`,
-              childAxis === 'vertical' ? `opens-${direction}` : '',
-            ].filter(Boolean).join(' ')}
-          >
-            {items.length > 0
-              ? renderItems(items, childAxis, depth + 1)
-              : <span className="session-deck__empty">拖入会话或分组</span>}
-          </div>
-        )}
+        {depth === 0
+          ? branch && rootBranchStyle && branchPortalRef.current
+            ? createPortal(branch, branchPortalRef.current)
+            : null
+          : branch}
       </div>
     )
   }
@@ -406,6 +446,7 @@ export default function SessionDeck({
         <div
           className="session-deck__root-scroll"
           data-drop="root"
+          onScroll={collapseBranches}
           onMouseDown={(event) => {
             if (event.target === event.currentTarget) collapseBranches()
           }}
@@ -446,6 +487,8 @@ export default function SessionDeck({
           >＋</button>
         </div>
       </div>
+
+      <div ref={branchPortalRef} className="session-deck__branch-portal" />
 
       {createMenu && (
         <DeckMenu x={createMenu.x} y={createMenu.y} onClose={() => setCreateMenu(null)}>
