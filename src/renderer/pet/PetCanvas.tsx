@@ -429,6 +429,15 @@ export default function PetCanvas() {
     }
   }, [anyPopup])
 
+  // Opening Deck replaces the cat under the cursor with transparent space after
+  // the native window grows. Reset capture after that render as well, so a late
+  // mousemove from the old cat layout cannot leave the full 720px window blocking.
+  useEffect(() => {
+    if (deckOpen && !anyPopup && !isDraggingBubble.current) {
+      window.api.invoke('set-ignore-mouse', true)
+    }
+  }, [anyPopup, deckOpen])
+
   const openDeck = useCallback(async (event: React.MouseEvent) => {
     event.stopPropagation()
     if (isDragging.current || deckOpen || deckClosing) return

@@ -1,7 +1,9 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
+import { readFile } from 'node:fs/promises'
 import {
   ANIMATE_FLOATING_DECK_BOUNDS,
+  applyFloatingDeckBounds,
   getFloatingDeckLayout,
 } from '../src/main/windows/deck-window-layout.ts'
 
@@ -9,6 +11,31 @@ const workArea = { x: 100, y: 24, width: 1400, height: 900 }
 
 test('transparent floating Deck never asks macOS to animate native bounds', () => {
   assert.equal(ANIMATE_FLOATING_DECK_BOUNDS, false)
+})
+
+test('resizing the transparent Deck releases stale full-window mouse capture', () => {
+  const calls: unknown[][] = []
+  const win = {
+    setBounds: (...args: unknown[]) => calls.push(['bounds', ...args]),
+    setIgnoreMouseEvents: (...args: unknown[]) => calls.push(['ignore', ...args]),
+  }
+  const bounds = { x: 100, y: 140, width: 720, height: 650 }
+
+  applyFloatingDeckBounds(win, bounds)
+
+  assert.deepEqual(calls, [
+    ['bounds', bounds, false],
+    ['ignore', true, { forward: true }],
+  ])
+})
+
+test('Deck render releases any late mouse capture from the replaced pet', async () => {
+  const source = await readFile(new URL('../src/renderer/pet/PetCanvas.tsx', import.meta.url), 'utf8')
+
+  assert.match(
+    source,
+    /useEffect\(\(\) => \{[\s\S]*?if \(deckOpen && !anyPopup && !isDraggingBubble\.current\)[\s\S]*?set-ignore-mouse', true[\s\S]*?\}, \[anyPopup, deckOpen\]\)/,
+  )
 })
 
 test('floating Deck chooses the side with outward space and stays on screen', () => {
