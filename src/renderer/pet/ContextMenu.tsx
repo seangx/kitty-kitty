@@ -1,4 +1,6 @@
+import { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react'
 import { useAutoClose } from './useAutoClose'
+import { clampMenuPosition } from './menu-position'
 
 interface MenuItem { label: string; onClick: () => void; separator?: false }
 interface Separator { separator: true }
@@ -14,16 +16,48 @@ const C = {
 }
 
 export default function ContextMenu({ x, y, onClose, items }: Props) {
-  const ref = useAutoClose(true, onClose)
+  const autoCloseRef = useAutoClose(true, onClose)
+  const menuRef = useRef<HTMLDivElement | null>(null)
+  const [position, setPosition] = useState({ left: x, top: y })
+  const reposition = useCallback(() => {
+    const menu = menuRef.current
+    if (!menu) return
+    const rect = menu.getBoundingClientRect()
+    setPosition(clampMenuPosition(
+      x,
+      y,
+      rect.width,
+      rect.height,
+      window.innerWidth,
+      window.innerHeight,
+      8,
+    ))
+  }, [x, y])
+  const setRef = useCallback((node: HTMLDivElement | null) => {
+    ;(autoCloseRef as React.MutableRefObject<HTMLDivElement | null>).current = node
+    menuRef.current = node
+  }, [autoCloseRef])
+
+  useLayoutEffect(reposition, [reposition])
+  useEffect(() => {
+    const menu = menuRef.current
+    const observer = menu ? new ResizeObserver(reposition) : null
+    if (menu) observer?.observe(menu)
+    window.addEventListener('resize', reposition)
+    return () => {
+      observer?.disconnect()
+      window.removeEventListener('resize', reposition)
+    }
+  }, [reposition])
 
   return (
     <div
-      ref={ref}
+      ref={setRef}
       style={{
-        position: 'fixed', left: x, top: y, zIndex: 200,
+        position: 'fixed', ...position, zIndex: 200,
         background: `${C.variant}f0`,
         backdropFilter: 'blur(24px)', WebkitBackdropFilter: 'blur(24px)',
-        borderRadius: 12, padding: '4px 0', minWidth: 140,
+        borderRadius: 12, padding: '4px 0', minWidth: 140, whiteSpace: 'nowrap',
         boxShadow: `0 8px 32px rgba(0,0,0,0.5), inset 0 1px 0 ${C.outline}20`,
         fontFamily: "'Plus Jakarta Sans', -apple-system, sans-serif"
       }}

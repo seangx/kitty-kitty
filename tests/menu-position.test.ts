@@ -1,5 +1,6 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
+import { readFile } from 'node:fs/promises'
 import { clampMenuPosition } from '../src/renderer/pet/menu-position.ts'
 
 test('keeps a context menu at its click point when it already fits', () => {
@@ -21,4 +22,12 @@ test('pins an oversized context menu to the viewport margin', () => {
     left: 4,
     top: 4,
   })
+})
+
+test('the pet context menu measures itself and clamps to the live viewport', async () => {
+  const source = await readFile(new URL('../src/renderer/pet/ContextMenu.tsx', import.meta.url), 'utf8')
+
+  assert.match(source, /getBoundingClientRect\(\)/)
+  assert.match(source, /clampMenuPosition\([\s\S]*?window\.innerWidth,[\s\S]*?window\.innerHeight/)
+  assert.doesNotMatch(source, /position: 'fixed', left: x, top: y/)
 })
