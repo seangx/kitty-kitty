@@ -5,7 +5,7 @@
   --deck-border: rgba(218, 224, 242, 0.14);
   --deck-text: rgba(244, 246, 255, 0.94);
   --deck-muted: rgba(206, 211, 231, 0.6);
-  position: absolute;
+  position: fixed;
   inset: 0;
   z-index: 40;
   pointer-events: none;

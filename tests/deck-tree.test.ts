@@ -101,8 +101,11 @@ test('Deck keeps session creation in its footer and offers both start paths', as
 test('Deck scrolls root sessions above its footer without clipping open branches', async () => {
   const source = await readFile(new URL('../src/renderer/pet/SessionDeck.tsx', import.meta.url), 'utf8')
   const css = await readFile(new URL('../src/renderer/pet/SessionDeck.css', import.meta.url), 'utf8')
+  const deckCss = css.match(/\.session-deck \{([^}]*)\}/)?.[1] || ''
   const rootScrollCss = css.match(/\.session-deck__root-scroll \{([^}]*)\}/)?.[1] || ''
 
+  assert.match(deckCss, /position: fixed;/)
+  assert.match(deckCss, /inset: 0;/)
   assert.match(rootScrollCss, /overflow-y: auto;/)
   assert.match(source, /createPortal\(branch, branchPortalRef\.current\)/)
   assert.match(source, /onScroll=\{collapseBranches\}/)
