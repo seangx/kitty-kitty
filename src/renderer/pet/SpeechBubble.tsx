@@ -1,4 +1,5 @@
 import { useEffect, useState } from 'react'
+import { T, popover } from './ui-tokens'
 
 interface Props {
   text: string
@@ -30,25 +31,19 @@ export default function SpeechBubble({ text, duration = 3000, onDone, persistent
     <div
       onClick={persistent ? handleClick : undefined}
       style={{
+        ...popover({ alpha: 'ee', radius: 12 }),
         position: 'absolute',
         bottom: '100%',
         left: '50%',
         transform: 'translateX(-50%)',
         marginBottom: 4,
         padding: '6px 12px',
-        borderRadius: 12,
-        background: '#23233fee',
-        backdropFilter: 'blur(16px)',
-        WebkitBackdropFilter: 'blur(16px)',
-        color: '#e5e3ff',
         fontSize: 12,
-        fontFamily: "'Plus Jakarta Sans', -apple-system, sans-serif",
         whiteSpace: 'nowrap',
-        boxShadow: '0 4px 16px rgba(0,0,0,0.4)',
         animation: 'fadeInUp 0.3s ease',
         pointerEvents: persistent ? 'auto' : 'none',
         cursor: persistent ? 'pointer' : 'default',
-        borderLeft: accentColor ? `3px solid ${accentColor}` : undefined,
+        borderLeft: accentColor ? `3px solid ${accentColor}` : `1px solid ${T.border}14`,
       }}
     >
       {text}

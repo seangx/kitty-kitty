@@ -16,11 +16,15 @@ interface Toast {
   tone: 'info' | 'success' | 'error'
 }
 
+import { T, popover } from './ui-tokens'
+
+// Neutral palette mapped onto the legacy token names used below — the layout
+// and handlers are unchanged; only the color channels moved to ui-tokens.
 const C = {
-  variant: '#23233f', container: '#17172f',
-  text: '#e5e3ff', textDim: '#aaa8c3',
-  primary: '#a7a5ff', primaryDim: '#645efb',
-  outline: '#46465c', green: '#10b981', red: '#e11d48',
+  variant: T.surface, container: T.well,
+  text: T.text, textDim: T.faint,
+  primary: '#8fe0d4', primaryDim: T.accent,
+  outline: T.border, green: T.success, red: T.danger,
 }
 
 type Tab = 'skills' | 'mcps'
@@ -228,11 +232,8 @@ export default function SkillsPanel({ sessionId, onClose, onSay, onDance }: Prop
 
   return (
     <div style={{
-      background: `${C.variant}f5`, backdropFilter: 'blur(32px)', WebkitBackdropFilter: 'blur(32px)',
-      borderRadius: 16, padding: 18, overflow: 'hidden',
+      ...popover({ alpha: 'f5', radius: 16 }), padding: 18, overflow: 'hidden',
       display: 'flex', flexDirection: 'column',
-      boxShadow: `0 12px 48px rgba(0,0,0,0.6), inset 0 1px 0 ${C.outline}20`,
-      fontFamily: "'Plus Jakarta Sans', -apple-system, sans-serif", color: C.text,
     }}>
       {/* Header */}
       <div data-drag-handle style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 10, cursor: 'grab', flexShrink: 0 }}>
@@ -291,7 +292,7 @@ export default function SkillsPanel({ sessionId, onClose, onSay, onDance }: Prop
         <button onClick={handleSearch} disabled={searching}
           style={{
             padding: '5px 10px', borderRadius: 8, border: 'none',
-            background: `${C.primaryDim}`, color: '#fff', fontSize: 14,
+            background: `${C.primaryDim}`, color: T.accentText, fontSize: 14,
             cursor: 'pointer', fontFamily: 'inherit', opacity: searching ? 0.5 : 1,
           }}
         >{searching ? '...' : '🔍'}</button>
@@ -324,10 +325,10 @@ export default function SkillsPanel({ sessionId, onClose, onSay, onDance }: Prop
                 {installedNames.has(r.name) ? (
                   <span style={{ fontSize: 12, color: C.green, flexShrink: 0 }}>已安装</span>
                 ) : (
-                  <button onClick={() => handleInstall(r.name)} disabled={installing === r.name}
+                   <button onClick={() => handleInstall(r.name)} disabled={installing === r.name}
                     style={{
                       padding: '4px 12px', borderRadius: 6, border: 'none',
-                      background: C.green, color: '#fff', fontSize: 13,
+                      background: C.green, color: T.accentText, fontSize: 13,
                       cursor: 'pointer', fontFamily: 'inherit', flexShrink: 0,
                       opacity: installing === r.name ? 0.5 : 1,
                     }}
@@ -393,7 +394,7 @@ export default function SkillsPanel({ sessionId, onClose, onSay, onDance }: Prop
               <div style={{ display: 'flex', alignItems: 'center', gap: 6, padding: '4px 0' }}>
                 <div
                   onClick={() => toggleCollapse(key)}
-                  style={{ fontSize: 14, color: '#d97706', cursor: 'pointer', userSelect: 'none', flex: 1 }}
+                  style={{ fontSize: 14, color: T.warning, cursor: 'pointer', userSelect: 'none', flex: 1 }}
                 >
                   {isCollapsed ? '▸' : '▾'} {g.name} <span style={{ color: C.textDim }}>(group · {g.skills.length})</span>
                 </div>
@@ -441,7 +442,7 @@ export default function SkillsPanel({ sessionId, onClose, onSay, onDance }: Prop
               <div key={key} style={{ marginBottom: 6 }}>
                 <div
                   onClick={() => toggleCollapse(key)}
-                  style={{ fontSize: 14, color: '#06b6d4', cursor: 'pointer', padding: '4px 0', userSelect: 'none' }}
+                  style={{ fontSize: 14, color: T.info, cursor: 'pointer', padding: '4px 0', userSelect: 'none' }}
                 >
                   {isCollapsed ? '▸' : '▾'} {source} <span style={{ color: C.textDim }}>({items.length})</span>
                 </div>
@@ -459,7 +460,7 @@ export default function SkillsPanel({ sessionId, onClose, onSay, onDance }: Prop
                           cursor: s.children?.length ? 'pointer' : 'default',
                         }}
                       >
-                        <span style={{ color: s.enabled !== false ? '#06b6d4' : C.textDim, fontSize: 14 }}>
+                        <span style={{ color: s.enabled !== false ? T.info : C.textDim, fontSize: 14 }}>
                           {s.enabled !== false ? '◆' : '◇'}
                         </span>
                         {s.children?.length
@@ -511,7 +512,7 @@ export default function SkillsPanel({ sessionId, onClose, onSay, onDance }: Prop
             disabled={!!mcpOperating || !mcpInput.trim()}
             style={{
               padding: '5px 12px', borderRadius: 8, border: 'none',
-              background: C.green, color: '#fff', fontSize: 14,
+              background: C.green, color: T.accentText, fontSize: 14,
               cursor: 'pointer', fontFamily: 'inherit',
               opacity: !!mcpOperating || !mcpInput.trim() ? 0.5 : 1,
             }}
@@ -546,7 +547,7 @@ export default function SkillsPanel({ sessionId, onClose, onSay, onDance }: Prop
                   disabled={!!mcpOperating || !mcpManualText.trim()}
                   style={{
                     padding: '4px 12px', borderRadius: 6, border: 'none',
-                    background: C.primaryDim, color: '#fff', fontSize: 13,
+                    background: C.primaryDim, color: T.accentText, fontSize: 13,
                     cursor: 'pointer', fontFamily: 'inherit',
                     opacity: !!mcpOperating || !mcpManualText.trim() ? 0.5 : 1,
                   }}

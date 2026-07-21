@@ -1,7 +1,7 @@
 import { basename } from 'path'
 
 export const PANE_BORDER_STATUS = 'bottom'
-export const PANE_BORDER_FORMAT = '#[fg=#{?pane_active,#645efb,#46465c},bg=#1e1e36,align=right] #{?@kitty_label,#{@kitty_label},#{b:pane_current_path}} '
+export const PANE_BORDER_FORMAT = '#[fg=#{?pane_active,#8ab8ff,#5a6378},bg=#1b1e2a,align=right] #{?@kitty_label,#{@kitty_label},#{b:pane_current_path}} '
 
 export interface PaneLocation {
   paneId: string

@@ -15,9 +15,12 @@ export const DEFAULT_BUBBLE_CONFIG: BubbleConfig = {
   skin: 'calico',
 }
 
+// Bubble accent presets. Keys are stored in user config — never rename.
+// Values follow the neutral macOS-native palette (see renderer/pet/ui-tokens.ts);
+// `glass` is the neutral popover surface shared by all themes.
 export const COLOR_THEMES: Record<string, { primary: string; dim: string; glass: string }> = {
-  indigo:  { primary: '#a7a5ff', dim: '#645efb', glass: '#23233f' },
-  emerald: { primary: '#6ee7b7', dim: '#10b981', glass: '#1a2f2a' },
-  rose:    { primary: '#fda4af', dim: '#e11d48', glass: '#2f1a23' },
-  amber:   { primary: '#fcd34d', dim: '#d97706', glass: '#2f2a1a' },
+  indigo:  { primary: '#8ab8ff', dim: '#5b93f0', glass: '#191b27' },
+  emerald: { primary: '#7dd8b0', dim: '#4fae8d', glass: '#191b27' },
+  rose:    { primary: '#f5a3b3', dim: '#e0607a', glass: '#191b27' },
+  amber:   { primary: '#eec96e', dim: '#d19a3f', glass: '#191b27' },
 }
