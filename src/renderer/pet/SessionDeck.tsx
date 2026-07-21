@@ -31,6 +31,7 @@ interface Props {
   onRename: (id: string, title: string) => Promise<void> | void
   onRestart: (id: string) => void
   onForceRestart: (id: string) => void
+  forceRestartingSessionIds: ReadonlySet<string>
   onClearConversation: (id: string) => void
   onEditEnv: (id: string) => void
   onOpenSkills: (sessionId: string) => void
@@ -104,6 +105,7 @@ export default function SessionDeck({
   onRename,
   onRestart,
   onForceRestart,
+  forceRestartingSessionIds,
   onClearConversation,
   onEditEnv,
   onOpenSkills,
@@ -525,6 +527,9 @@ export default function SessionDeck({
   const selectedSession = sessionMenu
     ? sessions.find((session) => session.id === sessionMenu.id)
     : undefined
+  const selectedSessionForceRestarting = selectedSession
+    ? forceRestartingSessionIds.has(selectedSession.id)
+    : false
   const selectedGroup = groupMenu
     ? groups.find((group) => group.id === groupMenu.id)
     : undefined
@@ -662,7 +667,14 @@ export default function SessionDeck({
           <button onClick={() => { attach(selectedSession); setSessionMenu(null) }}>打开会话</button>
           <button onClick={() => { onRestart(selectedSession.id); setSessionMenu(null) }}>重启</button>
           {(selectedSession.tool === 'codex' || selectedSession.tool === 'opencode') && (
-            <button onClick={() => { onForceRestart(selectedSession.id); setSessionMenu(null) }}>强制重启 Runtime</button>
+            <button
+              disabled={selectedSessionForceRestarting}
+              onClick={() => {
+                if (selectedSessionForceRestarting) return
+                onForceRestart(selectedSession.id)
+                setSessionMenu(null)
+              }}
+            >{selectedSessionForceRestarting ? '正在强制重启…' : '强制重启 Runtime'}</button>
           )}
           <button onClick={() => { onClearConversation(selectedSession.id); setSessionMenu(null) }}>清空对话</button>
           <button onClick={() => { onEditEnv(selectedSession.id); setSessionMenu(null) }}>环境与参数</button>

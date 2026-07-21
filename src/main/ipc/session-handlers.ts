@@ -11,7 +11,8 @@ import * as tmux from '../tmux/session-manager'
 import { generateLaunchScript, type LaunchMode, isToolInstalled, getInstallHint, getNtfyTopic, setNtfyTopic, getCodexHiveBridge, setCodexHiveBridge, needsDevChannelAutoAccept, generateCodexRemoteScript, generateOpenCodeAttachScript, injectHiveIdentity, injectSessionEnv, injectOpenCodeMemory } from '../tmux/cli-wrapper'
 import { registerCodexAgent, codexPaneWs, codexSetThread, renameAgent, hiveSupportsSwitchTool } from '../hive-codex'
 import { openCodePaneServer, openCodePromptAsync, openCodeSetSession, type OpenCodePaneServerResult } from '../hive-opencode'
-import { daemonRespawn } from '../hive-runtime'
+import { daemonRespawn, selectFreshDaemonAttach, type DaemonRespawnAttach } from '../hive-runtime'
+import { KeyedSingleFlight } from '../keyed-single-flight'
 import * as sessionRepo from '../db/session-repo'
 import { getDB } from '../db/database'
 import * as ntfy from '../ntfy'
@@ -24,6 +25,8 @@ import { syncManagedMcpsToTool } from '../mcps/mcps-manager'
 import { selectGroupRestartCandidates } from '../group-restart'
 import { getPetWindow } from '../windows/pet-window'
 import type { SessionInfo } from '@shared/types/session'
+
+const forceRestartSingleFlight = new KeyedSingleFlight()
 
 /**
  * Fire-and-forget kitty-hive CLI call. If hive isn't installed or the command fails,
@@ -748,7 +751,11 @@ export function registerSessionHandlers(): void {
       sessionRepo.updateSessionStatus(id, 'dead')
       throw new Error('Session is not running')
     }
-    await forceRestartSessionRuntime(session)
+    const wasAlreadyRunning = forceRestartSingleFlight.has(id)
+    if (wasAlreadyRunning) {
+      log('session', `force runtime restart coalesced: ${session.title} (${session.tool})`)
+    }
+    await forceRestartSingleFlight.run(id, () => forceRestartSessionRuntime(session))
     return { success: true, message: 'runtime 已彻底重启，会话保持不变' }
   })
 
@@ -2180,22 +2187,51 @@ async function forceRestartSessionRuntime(session: sessionRepo.SessionRow): Prom
     throw new Error(`Hive 返回的工具不匹配: ${restarted.tool}`)
   }
 
+  // Re-query Hive after respawn. If another caller queued a second respawn,
+  // the URL returned above can already be stale by the time the pane starts.
+  let currentAttach: DaemonRespawnAttach
+  if (session.tool === 'codex') {
+    const current = await codexPaneWs({ key: session.id, timeoutMs: 10_000 })
+    if (current.status !== 'ready' || !current.ws_url || !current.thread_id) {
+      throw new Error(`Hive 当前 Codex runtime 未就绪 (${current.status})`)
+    }
+    currentAttach = {
+      kind: 'codex-remote',
+      ws_url: current.ws_url,
+      thread_id: current.thread_id,
+    }
+  } else {
+    const current = await openCodePaneServer({ key: session.id, timeoutMs: 10_000 })
+    if (current.status !== 'ready' || !current.server_url || !current.session_id
+      || !current.server_username || !current.server_password) {
+      throw new Error(`Hive 当前 OpenCode runtime 未就绪 (${current.status})`)
+    }
+    currentAttach = {
+      kind: 'opencode-attach',
+      server_url: current.server_url,
+      session_id: current.session_id,
+      server_username: current.server_username,
+      server_password: current.server_password,
+    }
+  }
+  const freshAttach = selectFreshDaemonAttach(restarted.attach, currentAttach)
+
   let launch: string
   let externalSessionId: string
-  if (session.tool === 'codex' && restarted.attach.kind === 'codex-remote') {
-    externalSessionId = restarted.attach.thread_id
+  if (session.tool === 'codex' && freshAttach.kind === 'codex-remote') {
+    externalSessionId = freshAttach.thread_id
     launch = generateCodexRemoteScript(
-      restarted.attach.ws_url,
-      restarted.attach.thread_id,
+      freshAttach.ws_url,
+      freshAttach.thread_id,
       session.cwd || undefined,
     )
-  } else if (session.tool === 'opencode' && restarted.attach.kind === 'opencode-attach') {
-    externalSessionId = restarted.attach.session_id
+  } else if (session.tool === 'opencode' && freshAttach.kind === 'opencode-attach') {
+    externalSessionId = freshAttach.session_id
     launch = generateOpenCodeAttachScript({
-      serverUrl: restarted.attach.server_url,
-      sessionId: restarted.attach.session_id,
-      username: restarted.attach.server_username,
-      password: restarted.attach.server_password,
+      serverUrl: freshAttach.server_url,
+      sessionId: freshAttach.session_id,
+      username: freshAttach.server_username,
+      password: freshAttach.server_password,
     }, session.cwd, launchArgsFor(session))
   } else {
     throw new Error('Hive 返回的 attach 类型与当前工具不匹配')
