@@ -321,6 +321,24 @@ export default function PetCanvas() {
     }
   }, [machine, say, sessions, startProgressHeartbeat])
 
+  const doForceRestart = useCallback(async (id: string) => {
+    const title = sessions.find((session) => session.id === id)?.title || ''
+    const stopBeat = startProgressHeartbeat(id, title, '彻底重启 runtime')
+    try {
+      machine.forceState('dance', 90000)
+      say(`${title} 正在彻底重启 runtime…`)
+      const result = await window.api.invoke('session:force-restart-agent', id)
+      stopBeat()
+      machine.forceState('happy', 2000)
+      say(result?.message || 'runtime 已彻底重启，会话保持不变')
+      await loadSessions()
+    } catch (err: any) {
+      stopBeat()
+      machine.forceState('sad', 2000)
+      say(err?.message || 'runtime 强制重启失败')
+    }
+  }, [loadSessions, machine, say, sessions, startProgressHeartbeat])
+
   const handleAttach = useCallback(async (id: string) => {
     // Drift check: if claude/codex has rolled over to a newer jsonl (e.g. after
     // /clear), prompt before attaching. We check both detached AND running rows
@@ -663,6 +681,7 @@ export default function PetCanvas() {
           } catch { /* drift failure shouldn't block restart */ }
           void doRestart(id)
         }}
+        onForceRestart={(id) => { void doForceRestart(id) }}
         onClearConversation={async (id) => {
           try {
             const { clearConversation } = await import('../lib/ipc')

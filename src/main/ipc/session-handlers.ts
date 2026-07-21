@@ -11,6 +11,7 @@ import * as tmux from '../tmux/session-manager'
 import { generateLaunchScript, type LaunchMode, isToolInstalled, getInstallHint, getNtfyTopic, setNtfyTopic, getCodexHiveBridge, setCodexHiveBridge, needsDevChannelAutoAccept, generateCodexRemoteScript, generateOpenCodeAttachScript, injectHiveIdentity, injectSessionEnv, injectOpenCodeMemory } from '../tmux/cli-wrapper'
 import { registerCodexAgent, codexPaneWs, codexSetThread, renameAgent, hiveSupportsSwitchTool } from '../hive-codex'
 import { openCodePaneServer, openCodePromptAsync, openCodeSetSession, type OpenCodePaneServerResult } from '../hive-opencode'
+import { daemonRespawn } from '../hive-runtime'
 import * as sessionRepo from '../db/session-repo'
 import { getDB } from '../db/database'
 import * as ntfy from '../ntfy'
@@ -732,6 +733,23 @@ export function registerSessionHandlers(): void {
     }
     await restartSessionPane(session)
     return { success: true }
+  })
+
+  // Force-restart one Hive-supervised runtime while preserving its current
+  // Codex thread / OpenCode session. Group restart intentionally keeps using
+  // the ordinary pane-only restart path.
+  ipcMain.handle('session:force-restart-agent', async (_event, id: string) => {
+    const session = sessionRepo.listSessions().find((row) => row.id === id)
+    if (!session) throw new Error('Session not found')
+    if (session.tool !== 'codex' && session.tool !== 'opencode') {
+      throw new Error('只有 Codex 和 OpenCode 会话支持彻底重启 runtime')
+    }
+    if (!tmux.isSessionAlive(session.tmuxName)) {
+      sessionRepo.updateSessionStatus(id, 'dead')
+      throw new Error('Session is not running')
+    }
+    await forceRestartSessionRuntime(session)
+    return { success: true, message: 'runtime 已彻底重启，会话保持不变' }
   })
 
   // Clear conversation = start a fresh thread/jsonl in the same cwd.
@@ -2019,9 +2037,9 @@ async function restartSessionPane(session: sessionRepo.SessionRow, initialPrompt
     }
   }
 
-  // Codex with hive bridge: restart the hive-managed daemon app-server for the
-  // target thread, then attach the pane via `codex --remote <ws>`. Restarting
-  // the app-server is intentional: it refreshes Codex's MCP tool registry.
+  // Codex with hive bridge: reuse a healthy daemon for the same thread and
+  // attach the pane via `codex --remote <ws>`. A deliberate runtime replacement
+  // is handled only by the separate session:force-restart-agent path.
   let launch: string
   let bridgedHiveAgentId = ''
   let bridgedExternalId = ''
@@ -2095,9 +2113,30 @@ async function restartSessionPane(session: sessionRepo.SessionRow, initialPrompt
     launch = generateLaunchScript(session.tool, mode, session.externalSessionId || undefined, session.cwd || undefined, sid, launchArgsFor(session), initialPrompt)
   }
 
+  respawnSessionPaneWithLaunch(session, target, launch)
+  if (bridgedHiveAgentId && bridgedHiveAgentId !== session.hiveAgentId) {
+    sessionRepo.updateSessionHiveAgentId(session.id, bridgedHiveAgentId)
+  }
+  if (bridgedExternalId) {
+    sessionRepo.updateSessionExternalId(session.id, bridgedExternalId)
+    clearMark(session.id)
+  }
+  log('session', `restart: ${session.title}`)
+
+  // For claude --dangerously-load-development-channels: auto-accept the prompt
+  if (needsDevChannelAutoAccept(session.tool)) {
+    pollAndAcceptDevChannelPrompt(target)
+  }
+}
+
+function respawnSessionPaneWithLaunch(
+  session: sessionRepo.SessionRow,
+  target: string,
+  launch: string,
+): void {
   prepareProjectForTool(session.cwd, session.tool, launch)
 
-  // Parse per-session env and pass via respawn-pane -e KEY=VALUE
+  // Parse per-session env and pass via respawn-pane -e KEY=VALUE.
   let envFlags = ''
   if (session.env) {
     try {
@@ -2119,19 +2158,54 @@ async function restartSessionPane(session: sessionRepo.SessionRow, initialPrompt
   injectSessionEnv(launch, session.env)
 
   execSync(`${tmux.TMUX} respawn-pane -k${envFlags} -t "${target}" "${launch}"`, { stdio: 'ignore' })
-  if (bridgedHiveAgentId && bridgedHiveAgentId !== session.hiveAgentId) {
-    sessionRepo.updateSessionHiveAgentId(session.id, bridgedHiveAgentId)
-  }
-  if (bridgedExternalId) {
-    sessionRepo.updateSessionExternalId(session.id, bridgedExternalId)
-    clearMark(session.id)
-  }
-  log('session', `restart: ${session.title}`)
+}
 
-  // For claude --dangerously-load-development-channels: auto-accept the prompt
-  if (needsDevChannelAutoAccept(session.tool)) {
-    pollAndAcceptDevChannelPrompt(target)
+async function forceRestartSessionRuntime(session: sessionRepo.SessionRow): Promise<void> {
+  // Never create a replacement agent here: a new Hive row may start on a new
+  // conversation and would violate force restart's preservation contract.
+  if (!session.hiveAgentId) {
+    throw new Error('当前会话没有受管的 Hive runtime，无法执行强制重启')
   }
+  if (session.tool === 'codex' && !getCodexHiveBridge()) {
+    throw new Error('Codex Hive Bridge 未开启，当前会话不能强制重启 runtime')
+  }
+  await syncManagedMcpsToTool(session.cwd, session.tool)
+  const target = resolveRestartPaneTarget(session)
+    ?? resolvePaneTarget(session.tmuxName, session.mainPane || '0.0')
+
+  sendTransferProgress(session.id, 'daemon')
+  const restarted = await daemonRespawn(session.hiveAgentId)
+  if (restarted.kind !== 'ok') throw new Error(restarted.message)
+  if (restarted.tool !== session.tool) {
+    throw new Error(`Hive 返回的工具不匹配: ${restarted.tool}`)
+  }
+
+  let launch: string
+  let externalSessionId: string
+  if (session.tool === 'codex' && restarted.attach.kind === 'codex-remote') {
+    externalSessionId = restarted.attach.thread_id
+    launch = generateCodexRemoteScript(
+      restarted.attach.ws_url,
+      restarted.attach.thread_id,
+      session.cwd || undefined,
+    )
+  } else if (session.tool === 'opencode' && restarted.attach.kind === 'opencode-attach') {
+    externalSessionId = restarted.attach.session_id
+    launch = generateOpenCodeAttachScript({
+      serverUrl: restarted.attach.server_url,
+      sessionId: restarted.attach.session_id,
+      username: restarted.attach.server_username,
+      password: restarted.attach.server_password,
+    }, session.cwd, launchArgsFor(session))
+  } else {
+    throw new Error('Hive 返回的 attach 类型与当前工具不匹配')
+  }
+
+  sendTransferProgress(session.id, 'restart')
+  respawnSessionPaneWithLaunch(session, target, launch)
+  sessionRepo.updateSessionExternalId(session.id, externalSessionId)
+  clearMark(session.id)
+  log('session', `force runtime restart: ${session.title} (${session.tool})`)
 }
 
 /**
