@@ -30,8 +30,8 @@ const FRAME_INDEX: Record<string, string[]> = (() => {
 
 const BASE_SPRITE_PIXELS = 256
 const FRAME_CANVAS: Record<string, { width: number; height: number }> = {
-  'calico/idle': { width: 384, height: 256 },
-  'calico/deck-open': { width: 288, height: 512 },
+  'calico/idle': { width: 448, height: 256 },
+  'calico/deck-open': { width: 320, height: 512 },
 }
 
 export function getPngSpriteDisplaySize(
@@ -104,7 +104,12 @@ export default function PngSprite({ state, skin, size = 128 }: Props) {
   }, [state, skin])
 
   const interval = INTERVAL_MS[urls.resolved] ?? 600
-  const frameIdx = useFrameAnimation(urls.urls.length, interval, PING_PONG.has(urls.resolved))
+  const frameIdx = useFrameAnimation(
+    `${skin}/${urls.resolved}`,
+    urls.urls.length,
+    interval,
+    PING_PONG.has(urls.resolved),
+  )
   const displaySize = getPngSpriteDisplaySize(skin, urls.resolved, size)
 
   const src = urls.urls[frameIdx] ?? urls.urls[0]
@@ -130,16 +135,27 @@ export default function PngSprite({ state, skin, size = 128 }: Props) {
   )
 }
 
-function useFrameAnimation(frameCount: number, intervalMs: number, pingpong = false): number {
-  const [tick, setTick] = useState(0)
+function useFrameAnimation(
+  animationKey: string,
+  frameCount: number,
+  intervalMs: number,
+  pingpong = false,
+): number {
+  const [clock, setClock] = useState({ key: animationKey, tick: 0 })
   useEffect(() => {
-    setTick(0)
+    setClock({ key: animationKey, tick: 0 })
     if (frameCount <= 1) return
-    const id = setInterval(() => setTick((t) => t + 1), intervalMs)
+    const id = setInterval(() => {
+      setClock((current) => ({
+        key: animationKey,
+        tick: current.key === animationKey ? current.tick + 1 : 1,
+      }))
+    }, intervalMs)
     return () => clearInterval(id)
-  }, [frameCount, intervalMs])
+  }, [animationKey, frameCount, intervalMs])
 
   if (frameCount <= 1) return 0
+  const tick = clock.key === animationKey ? clock.tick : 0
   if (!pingpong) return tick % frameCount
   // 0,1,…,n-1,n-2,…,1 then repeat — seamless forward/back with no jump.
   const period = (frameCount - 1) * 2

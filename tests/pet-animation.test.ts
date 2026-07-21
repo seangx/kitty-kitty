@@ -22,8 +22,8 @@ test('approved calico animations keep a stable 2x canvas scale', async () => {
 
   assert.equal(idle.length, 10)
   assert.equal(deckOpen.length, 12)
-  for (const name of idle) assert.deepEqual(await pngSize(name), { width: 384, height: 256 })
-  for (const name of deckOpen) assert.deepEqual(await pngSize(name), { width: 288, height: 512 })
+  for (const name of idle) assert.deepEqual(await pngSize(name), { width: 448, height: 256 })
+  for (const name of deckOpen) assert.deepEqual(await pngSize(name), { width: 320, height: 512 })
 })
 
 test('deck opens only after the one-shot stretch animation', async () => {
@@ -35,9 +35,10 @@ test('deck opens only after the one-shot stretch animation', async () => {
   ])
 
   assert.match(types, /\| 'deck-open'/)
-  assert.match(pngSprite, /'calico\/idle': \{ width: 384, height: 256 \}/)
-  assert.match(pngSprite, /'calico\/deck-open': \{ width: 288, height: 512 \}/)
+  assert.match(pngSprite, /'calico\/idle': \{ width: 448, height: 256 \}/)
+  assert.match(pngSprite, /'calico\/deck-open': \{ width: 320, height: 512 \}/)
   assert.match(pngSprite, /'deck-open': 90/)
+  assert.match(pngSprite, /clock\.key === animationKey \? clock\.tick : 0/)
   assert.match(fallback, /'deck-open': \{ frames:/)
   assert.match(canvas, /const DECK_OPEN_TRANSITION_MS = 1080/)
   assert.match(canvas, /machine\.forceState\('deck-open'\)/)
@@ -48,6 +49,8 @@ test('deck opens only after the one-shot stretch animation', async () => {
 test('asset extractor can preserve anchor scale instead of shrinking the cat', async () => {
   const extractor = await source('tools/extract-pet-animation.py')
   assert.match(extractor, /--anchor-image/)
+  assert.match(extractor, /--anchor-first-frame/)
+  assert.match(extractor, /--first-frame-bottom-inset/)
   assert.match(extractor, /anchor_subject_width/)
   assert.match(extractor, /Anchored subject does not fit the requested canvas/)
   assert.match(extractor, /choices=\("center", "bottom"\), default="bottom"/)
