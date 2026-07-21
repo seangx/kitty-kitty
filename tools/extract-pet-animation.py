@@ -28,6 +28,16 @@ def parse_args() -> argparse.Namespace:
         type=Path,
         help="Preserve the first frame's subject width from this RGBA sprite.",
     )
+    parser.add_argument(
+        "--anchor-first-frame",
+        action="store_true",
+        help="Center the first-frame subject instead of centering the full motion union.",
+    )
+    parser.add_argument(
+        "--first-frame-bottom-inset",
+        type=int,
+        help="Bottom inset for the first-frame subject when --anchor-first-frame is used.",
+    )
     parser.add_argument("--align-y", choices=("center", "bottom"), default="bottom")
     return parser.parse_args()
 
@@ -127,12 +137,36 @@ def main() -> None:
             scale = min(available_width / (x2 - x1), available_height / (y2 - y1))
         width = max(1, round((x2 - x1) * scale))
         height = max(1, round((y2 - y1) * scale))
-        left = (canvas_width - width) // 2
-        top = (
-            canvas_height - args.margin - height
-            if args.align_y == "bottom"
-            else (canvas_height - height) // 2
-        )
+        if args.anchor_first_frame:
+            first_x1, first_y1, first_x2, first_y2 = bounds[0]
+            first_center_x = ((first_x1 + first_x2) / 2 - x1) * scale
+            first_bottom = (first_y2 - y1) * scale
+            bottom_inset = (
+                args.first_frame_bottom_inset
+                if args.first_frame_bottom_inset is not None
+                else args.margin
+            )
+            left = round(canvas_width / 2 - first_center_x)
+            top = round(canvas_height - bottom_inset - first_bottom)
+        else:
+            left = (canvas_width - width) // 2
+            top = (
+                canvas_height - args.margin - height
+                if args.align_y == "bottom"
+                else (canvas_height - height) // 2
+            )
+
+        if (
+            left < args.margin
+            or top < args.margin
+            or left + width > canvas_width - args.margin
+            or top + height > canvas_height - args.margin
+        ):
+            raise RuntimeError(
+                "Placed motion does not fit the requested canvas: "
+                f"box ({left}, {top}, {left + width}, {top + height}), "
+                f"canvas {canvas_width}x{canvas_height}, margin {args.margin}"
+            )
 
         for old in args.output.glob(f"{args.state}-*.png"):
             old.unlink()
