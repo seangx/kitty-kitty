@@ -17,7 +17,7 @@ interface SessionState {
   createSessionInDir: (tool: string) => Promise<SessionInfo | null>
   attachSession: (id: string) => Promise<boolean>
   killSession: (id: string) => Promise<void>
-  renameSession: (id: string, title: string) => void
+  renameSession: (id: string, title: string) => Promise<void>
   setAgentMetadata: (id: string, roles: string, expertise: string) => Promise<void>
 }
 
@@ -80,15 +80,15 @@ export const useSessionStore = create<SessionState>((set, get) => ({
     await get().loadSessions()
   },
 
-  renameSession: (id: string, title: string) => {
-    // Optimistic update
-    set((state) => ({
-      sessions: state.sessions.map((s) =>
-        s.id === id ? { ...s, title } : s
-      )
-    }))
-    // Persist to DB
-    window.api.invoke('session:rename', id, title).catch(console.error)
+  renameSession: async (id: string, title: string) => {
+    const result = await window.api.invoke('session:rename', id, title) as {
+      success?: boolean
+      message?: string
+    }
+    await get().loadSessions()
+    if (result?.success === false) {
+      throw new Error(result.message || '重命名失败')
+    }
   },
 
   setAgentMetadata: async (id, roles, expertise) => {
