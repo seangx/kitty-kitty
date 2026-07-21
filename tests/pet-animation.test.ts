@@ -1,6 +1,10 @@
 import assert from 'node:assert/strict'
 import { readFile, readdir } from 'node:fs/promises'
 import { test } from 'node:test'
+import {
+  getPetAnimationStageSize,
+  getPngSpriteDisplaySize,
+} from '../src/renderer/pet/sprite-layout.ts'
 
 const ROOT = new URL('../', import.meta.url)
 const SPRITES = new URL('../src/renderer/pet/sprites/calico/', import.meta.url)
@@ -19,8 +23,9 @@ test('calico idle is normalized from the deck transition anchor', async () => {
   const names = await readdir(SPRITES)
   const idle = names.filter((name) => /^idle-\d+\.png$/.test(name)).sort()
   const deckOpen = names.filter((name) => /^deck-open-\d+\.png$/.test(name)).sort()
-  const [pngSprite, normalizer] = await Promise.all([
+  const [pngSprite, layout, normalizer] = await Promise.all([
     source('src/renderer/pet/PngSprite.tsx'),
+    source('src/renderer/pet/sprite-layout.ts'),
     source('tools/normalize-pet-idle-strip.py'),
   ])
 
@@ -28,7 +33,7 @@ test('calico idle is normalized from the deck transition anchor', async () => {
   assert.equal(deckOpen.length, 12)
   for (const name of idle) assert.deepEqual(await pngSize(name), { width: 320, height: 256 })
   for (const name of deckOpen) assert.deepEqual(await pngSize(name), { width: 320, height: 512 })
-  assert.match(pngSprite, /'calico\/idle': \{ width: 320, height: 256 \}/)
+  assert.match(layout, /'calico\/idle': \{ width: 320, height: 256 \}/)
   assert.match(pngSprite, /'idle': 80/)
   assert.match(normalizer, /shared_scale = anchor_width \/ first_width/)
   assert.match(normalizer, /anchor\.crop\(\(0, anchor\.height - height, width, anchor\.height\)\)/)
@@ -49,16 +54,17 @@ test('PNG pet animation crossfades state changes without changing its bottom anc
 })
 
 test('deck opens only after the one-shot stretch animation', async () => {
-  const [types, pngSprite, canvas, fallback] = await Promise.all([
+  const [types, pngSprite, layout, canvas, fallback] = await Promise.all([
     source('src/shared/types/pet.ts'),
     source('src/renderer/pet/PngSprite.tsx'),
+    source('src/renderer/pet/sprite-layout.ts'),
     source('src/renderer/pet/PetCanvas.tsx'),
     source('src/renderer/pet/animations/pixel-sprites.ts'),
   ])
 
   assert.match(types, /\| 'deck-open'/)
-  assert.match(pngSprite, /'calico\/idle': \{ width: 320, height: 256 \}/)
-  assert.match(pngSprite, /'calico\/deck-open': \{ width: 320, height: 512 \}/)
+  assert.match(layout, /'calico\/idle': \{ width: 320, height: 256 \}/)
+  assert.match(layout, /'calico\/deck-open': \{ width: 320, height: 512 \}/)
   assert.match(pngSprite, /'deck-open': 90/)
   assert.match(pngSprite, /clock\.key === animationKey \? clock\.tick : 0/)
   assert.match(fallback, /'deck-open': \{ frames:/)
@@ -68,15 +74,24 @@ test('deck opens only after the one-shot stretch animation', async () => {
   assert.match(canvas, /machine\.forceState\('idle'\)[\s\S]*?setDeckOpen\(false\)/)
 })
 
-test('deck handoff removes the cat before resizing the native window', async () => {
+test('tall deck animation overflows upward from the idle-sized stage', async () => {
   const canvas = await source('src/renderer/pet/PetCanvas.tsx')
-  const hideCat = canvas.indexOf('setDeckHandoff(true)')
-  const resizeWindow = canvas.indexOf("window.api.invoke('pet:set-deck-open', true)")
+  const stage = getPetAnimationStageSize('calico', 128)
+  const idle = getPngSpriteDisplaySize('calico', 'idle', 128)
+  const deckOpen = getPngSpriteDisplaySize('calico', 'deck-open', 128)
 
-  assert.ok(hideCat >= 0)
-  assert.ok(resizeWindow > hideCat)
-  assert.match(canvas, /setDeckHandoff\(true\)[\s\S]*?await waitForPaint\(\)[\s\S]*?pet:set-deck-open/)
-  assert.match(canvas, /!deckOpen && !deckHandoff && <div/)
+  assert.deepEqual(stage, { width: 160, height: 128 })
+  assert.deepEqual(idle, { width: 160, height: 128 })
+  assert.deepEqual(deckOpen, { width: 160, height: 256 })
+  const idleTop = stage.height - idle.height
+  const deckOpenTop = stage.height - deckOpen.height
+  assert.equal(idleTop, 0)
+  assert.equal(deckOpenTop, -128)
+  assert.equal(idleTop + idle.height, stage.height)
+  assert.equal(deckOpenTop + deckOpen.height, stage.height)
+  assert.match(canvas, /const petStageSize = getPetAnimationStageSize\(bubble\.skin, 128\)/)
+  assert.match(canvas, /width: petStageSize\.width, height: petStageSize\.height,[\s\S]*?overflow: 'visible'/)
+  assert.doesNotMatch(canvas, /petDisplaySize/)
 })
 
 test('asset extractor can preserve anchor scale instead of shrinking the cat', async () => {

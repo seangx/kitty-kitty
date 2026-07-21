@@ -1,5 +1,6 @@
 import { useState, useEffect, useLayoutEffect, useMemo, useRef } from 'react'
 import type { AnimationState, SkinId } from '@shared/types/pet'
+import { getPngSpriteDisplaySize } from './sprite-layout'
 import './PngSprite.css'
 
 /**
@@ -28,27 +29,6 @@ const FRAME_INDEX: Record<string, string[]> = (() => {
   }
   return out
 })()
-
-const BASE_SPRITE_PIXELS = 256
-const FRAME_CANVAS: Record<string, { width: number; height: number }> = {
-  'calico/idle': { width: 320, height: 256 },
-  'calico/deck-open': { width: 320, height: 512 },
-}
-
-export function getPngSpriteDisplaySize(
-  skin: SkinId,
-  state: AnimationState,
-  size = 128,
-): { width: number; height: number } {
-  const canvas = FRAME_CANVAS[`${skin}/${state}`] ?? {
-    width: BASE_SPRITE_PIXELS,
-    height: BASE_SPRITE_PIXELS,
-  }
-  return {
-    width: Math.round(size * canvas.width / BASE_SPRITE_PIXELS),
-    height: Math.round(size * canvas.height / BASE_SPRITE_PIXELS),
-  }
-}
 
 /** Whether a skin has any PNG sprites at all */
 export function skinHasPngSprites(skin: SkinId): boolean {
