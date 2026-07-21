@@ -68,6 +68,17 @@ test('deck opens only after the one-shot stretch animation', async () => {
   assert.match(canvas, /machine\.forceState\('idle'\)[\s\S]*?setDeckOpen\(false\)/)
 })
 
+test('deck handoff removes the cat before resizing the native window', async () => {
+  const canvas = await source('src/renderer/pet/PetCanvas.tsx')
+  const hideCat = canvas.indexOf('setDeckHandoff(true)')
+  const resizeWindow = canvas.indexOf("window.api.invoke('pet:set-deck-open', true)")
+
+  assert.ok(hideCat >= 0)
+  assert.ok(resizeWindow > hideCat)
+  assert.match(canvas, /setDeckHandoff\(true\)[\s\S]*?await waitForPaint\(\)[\s\S]*?pet:set-deck-open/)
+  assert.match(canvas, /!deckOpen && !deckHandoff && <div/)
+})
+
 test('asset extractor can preserve anchor scale instead of shrinking the cat', async () => {
   const extractor = await source('tools/extract-pet-animation.py')
   assert.match(extractor, /--anchor-image/)
