@@ -18,6 +18,33 @@ export type DaemonRespawnResult =
   | { kind: 'error'; message: string }
 
 /**
+ * Prefer coordinates queried after daemon-respawn over the response payload.
+ * A second respawn may already have replaced the returned server; reusing the
+ * latest coordinates is safe only while the preserved conversation is equal.
+ */
+export function selectFreshDaemonAttach(
+  returned: DaemonRespawnAttach,
+  current: DaemonRespawnAttach,
+): DaemonRespawnAttach {
+  if (returned.kind !== current.kind) {
+    throw new Error('Hive 当前 runtime 类型与重启结果不一致')
+  }
+  if (returned.kind === 'codex-remote' && current.kind === 'codex-remote') {
+    if (returned.thread_id !== current.thread_id) {
+      throw new Error('Hive 当前 Codex 对话已变化，已停止重连以避免接错会话')
+    }
+    return current
+  }
+  if (returned.kind === 'opencode-attach' && current.kind === 'opencode-attach') {
+    if (returned.session_id !== current.session_id) {
+      throw new Error('Hive 当前 OpenCode 对话已变化，已停止重连以避免接错会话')
+    }
+    return current
+  }
+  throw new Error('Hive 当前 runtime 类型与重启结果不一致')
+}
+
+/**
  * Ask Hive to replace an agent's supervised runtime while preserving its
  * current conversation. Kitty never kills or identifies the concrete server
  * process; Hive owns the lifecycle and returns fresh attach coordinates.

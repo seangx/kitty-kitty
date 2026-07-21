@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
-import { daemonRespawn } from '../src/main/hive-runtime.ts'
+import { daemonRespawn, selectFreshDaemonAttach } from '../src/main/hive-runtime.ts'
 
 test('force respawn preserves a Codex thread and returns fresh remote coordinates', async () => {
   let requestedUrl = ''
@@ -72,4 +72,37 @@ test('force respawn does not reuse stale coordinates after a Hive timeout', asyn
   })) as typeof fetch)
 
   assert.equal(result.kind, 'timeout')
+})
+
+test('fresh attach selection replaces stale coordinates for the same conversation', () => {
+  assert.deepEqual(
+    selectFreshDaemonAttach(
+      { kind: 'codex-remote', ws_url: 'ws://stale', thread_id: 'thread-1' },
+      { kind: 'codex-remote', ws_url: 'ws://current', thread_id: 'thread-1' },
+    ),
+    { kind: 'codex-remote', ws_url: 'ws://current', thread_id: 'thread-1' },
+  )
+  assert.deepEqual(
+    selectFreshDaemonAttach(
+      {
+        kind: 'opencode-attach', server_url: 'http://stale', session_id: 'ses-1',
+        server_username: 'old', server_password: 'old-secret',
+      },
+      {
+        kind: 'opencode-attach', server_url: 'http://current', session_id: 'ses-1',
+        server_username: 'new', server_password: 'new-secret',
+      },
+    ),
+    {
+      kind: 'opencode-attach', server_url: 'http://current', session_id: 'ses-1',
+      server_username: 'new', server_password: 'new-secret',
+    },
+  )
+})
+
+test('fresh attach selection fails closed when the conversation changes', () => {
+  assert.throws(() => selectFreshDaemonAttach(
+    { kind: 'codex-remote', ws_url: 'ws://old', thread_id: 'thread-1' },
+    { kind: 'codex-remote', ws_url: 'ws://new', thread_id: 'thread-2' },
+  ), /对话已变化/)
 })

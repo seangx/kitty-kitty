@@ -41,6 +41,8 @@ export default function PetCanvas() {
   const dragOffset = useRef({ x: 0, y: 0 })
   const deckOpenTimer = useRef<ReturnType<typeof setTimeout> | null>(null)
   const deckCloseTimer = useRef<ReturnType<typeof setTimeout> | null>(null)
+  const forceRestartingIdsRef = useRef(new Set<string>())
+  const [forceRestartingSessionIds, setForceRestartingSessionIds] = useState<Set<string>>(() => new Set())
 
   const { sessions, loadSessions, createSession, attachSession, killSession, renameSession, needsInput, loadNeedsInput, markNeedsInput, clearNeedsInput } = useSessionStore()
   const { bubble, lastTool, setLastTool } = useConfigStore()
@@ -323,6 +325,9 @@ export default function PetCanvas() {
   }, [machine, say, sessions, startProgressHeartbeat])
 
   const doForceRestart = useCallback(async (id: string) => {
+    if (forceRestartingIdsRef.current.has(id)) return
+    forceRestartingIdsRef.current.add(id)
+    setForceRestartingSessionIds(new Set(forceRestartingIdsRef.current))
     const title = sessions.find((session) => session.id === id)?.title || ''
     const stopBeat = startProgressHeartbeat(id, title, '彻底重启 runtime')
     try {
@@ -337,6 +342,9 @@ export default function PetCanvas() {
       stopBeat()
       machine.forceState('sad', 2000)
       say(err?.message || 'runtime 强制重启失败')
+    } finally {
+      forceRestartingIdsRef.current.delete(id)
+      setForceRestartingSessionIds(new Set(forceRestartingIdsRef.current))
     }
   }, [loadSessions, machine, say, sessions, startProgressHeartbeat])
 
@@ -690,6 +698,7 @@ export default function PetCanvas() {
           void doRestart(id)
         }}
         onForceRestart={(id) => { void doForceRestart(id) }}
+        forceRestartingSessionIds={forceRestartingSessionIds}
         onClearConversation={async (id) => {
           try {
             const { clearConversation } = await import('../lib/ipc')
