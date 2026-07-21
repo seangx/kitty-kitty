@@ -15,30 +15,42 @@ async function source(path: string): Promise<string> {
   return readFile(new URL(path, ROOT), 'utf8')
 }
 
-async function pngSize(name: string): Promise<{ width: number; height: number }> {
-  const png = await readFile(new URL(name, SPRITES))
-  assert.equal(png.toString('ascii', 1, 4), 'PNG')
-  return { width: png.readUInt32BE(16), height: png.readUInt32BE(20) }
+async function imageSize(name: string): Promise<{ width: number; height: number }> {
+  const image = await readFile(new URL(name, SPRITES))
+  if (image.toString('ascii', 1, 4) === 'PNG') {
+    return { width: image.readUInt32BE(16), height: image.readUInt32BE(20) }
+  }
+  assert.equal(image.toString('ascii', 0, 4), 'RIFF')
+  assert.equal(image.toString('ascii', 8, 12), 'WEBP')
+  assert.equal(image.toString('ascii', 12, 16), 'VP8X')
+  return {
+    width: image.readUIntLE(24, 3) + 1,
+    height: image.readUIntLE(27, 3) + 1,
+  }
 }
 
-test('calico idle is normalized from the deck transition anchor', async () => {
+test('calico idle is a native-rate loop aligned to the deck transition anchor', async () => {
   const names = await readdir(SPRITES)
-  const idle = names.filter((name) => /^idle-\d+\.png$/.test(name)).sort()
+  const idle = names.filter((name) => /^idle-\d+\.(?:png|webp)$/.test(name)).sort()
   const deckOpen = names.filter((name) => /^deck-open-\d+\.png$/.test(name)).sort()
-  const [pngSprite, layout, normalizer] = await Promise.all([
+  const [pngSprite, layout] = await Promise.all([
     source('src/renderer/pet/PngSprite.tsx'),
     source('src/renderer/pet/sprite-layout.ts'),
-    source('tools/normalize-pet-idle-strip.py'),
   ])
 
-  assert.equal(idle.length, 13)
+  assert.equal(idle.length, 73)
   assert.equal(deckOpen.length, 12)
-  for (const name of idle) assert.deepEqual(await pngSize(name), { width: 320, height: 256 })
-  for (const name of deckOpen) assert.deepEqual(await pngSize(name), { width: 320, height: 512 })
-  assert.match(layout, /'calico\/idle': \{ width: 320, height: 256 \}/)
-  assert.match(pngSprite, /'idle': 80/)
-  assert.match(normalizer, /shared_scale = anchor_width \/ first_width/)
-  assert.match(normalizer, /anchor\.crop\(\(0, anchor\.height - height, width, anchor\.height\)\)/)
+  assert.ok(idle.every((name) => name.endsWith('.webp')))
+  for (const name of idle) assert.deepEqual(await imageSize(name), { width: 420, height: 256 })
+  for (const name of deckOpen) assert.deepEqual(await imageSize(name), { width: 320, height: 512 })
+  assert.match(layout, /'calico\/idle': \{ width: 420, height: 256 \}/)
+  assert.match(pngSprite, /'idle': 42/)
+  const pingPong = pngSprite.slice(pngSprite.indexOf('const PING_PONG'), pngSprite.indexOf('const ONE_SHOT'))
+  assert.doesNotMatch(pingPong, /'idle'/)
+  assert.deepEqual(
+    await readFile(new URL('idle-0.webp', SPRITES)),
+    await readFile(new URL('idle-72.webp', SPRITES)),
+  )
 })
 
 test('PNG pet animation crossfades state changes without changing its bottom anchor', async () => {
@@ -65,7 +77,7 @@ test('deck opens only after the one-shot stretch animation', async () => {
   ])
 
   assert.match(types, /\| 'deck-open'/)
-  assert.match(layout, /'calico\/idle': \{ width: 320, height: 256 \}/)
+  assert.match(layout, /'calico\/idle': \{ width: 420, height: 256 \}/)
   assert.match(layout, /'calico\/deck-open': \{ width: 320, height: 512 \}/)
   assert.match(pngSprite, /'deck-open': 90/)
   assert.match(pngSprite, /ONE_SHOT: Set<AnimationState> = new Set\(\['deck-open'\]\)/)
@@ -135,8 +147,8 @@ test('tall deck animation overflows upward from the idle-sized stage', async () 
   const idle = getPngSpriteDisplaySize('calico', 'idle', 128)
   const deckOpen = getPngSpriteDisplaySize('calico', 'deck-open', 128)
 
-  assert.deepEqual(stage, { width: 160, height: 128 })
-  assert.deepEqual(idle, { width: 160, height: 128 })
+  assert.deepEqual(stage, { width: 210, height: 128 })
+  assert.deepEqual(idle, { width: 210, height: 128 })
   assert.deepEqual(deckOpen, { width: 160, height: 256 })
   const idleTop = stage.height - idle.height
   const deckOpenTop = stage.height - deckOpen.height

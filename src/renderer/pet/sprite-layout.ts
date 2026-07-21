@@ -3,7 +3,7 @@ import type { AnimationState, SkinId } from '@shared/types/pet'
 const BASE_SPRITE_PIXELS = 256
 
 const FRAME_CANVAS: Record<string, { width: number; height: number }> = {
-  'calico/idle': { width: 320, height: 256 },
+  'calico/idle': { width: 420, height: 256 },
   'calico/deck-open': { width: 320, height: 512 },
 }
 
