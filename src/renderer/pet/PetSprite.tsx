@@ -6,8 +6,21 @@ interface Props {
   skin?: SkinId
   size?: number
   onFrameChange?: (state: AnimationState, frame: number) => void
+  settleIdleToRest?: boolean
 }
 
-export default function PetSprite({ state, skin = 'calico', size = 128, onFrameChange }: Props) {
-  return <PixelSprite state={state} skin={skin} size={size} onFrameChange={onFrameChange} />
+export default function PetSprite({
+  state,
+  skin = 'calico',
+  size = 128,
+  onFrameChange,
+  settleIdleToRest = false,
+}: Props) {
+  return <PixelSprite
+    state={state}
+    skin={skin}
+    size={size}
+    onFrameChange={onFrameChange}
+    settleIdleToRest={settleIdleToRest}
+  />
 }

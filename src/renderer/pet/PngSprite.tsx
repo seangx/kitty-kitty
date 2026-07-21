@@ -1,7 +1,7 @@
 import { useState, useEffect, useLayoutEffect, useMemo, useRef } from 'react'
 import type { AnimationState, SkinId } from '@shared/types/pet'
 import { getPngSpriteDisplaySize } from './sprite-layout'
-import { resolveAnimationFrame } from './frame-animation'
+import { resolveAnimationFrame, stepTowardNearestEndpoint } from './frame-animation'
 import './PngSprite.css'
 
 /**
@@ -78,6 +78,7 @@ interface Props {
   skin: SkinId
   size?: number
   onFrameChange?: (state: AnimationState, frame: number) => void
+  settleIdleToRest?: boolean
 }
 
 interface RenderedFrame {
@@ -90,7 +91,13 @@ interface RenderedFrame {
 
 const STATE_CROSSFADE_MS = 120
 
-export default function PngSprite({ state, skin, size = 128, onFrameChange }: Props) {
+export default function PngSprite({
+  state,
+  skin,
+  size = 128,
+  onFrameChange,
+  settleIdleToRest = false,
+}: Props) {
   const urls = useMemo(() => {
     // Prefer state-specific frames; for walk-left fall back to walk-right with horizontal flip
     const key = `${skin}/${state}`
@@ -109,6 +116,7 @@ export default function PngSprite({ state, skin, size = 128, onFrameChange }: Pr
     interval,
     PING_PONG.has(urls.resolved),
     ONE_SHOT.has(urls.resolved),
+    settleIdleToRest && urls.resolved === 'idle',
   )
   const displaySize = getPngSpriteDisplaySize(skin, urls.resolved, size)
 
@@ -171,20 +179,31 @@ function useFrameAnimation(
   intervalMs: number,
   pingpong = false,
   oneShot = false,
+  settleToNearestEndpoint = false,
 ): number {
   const [clock, setClock] = useState({ key: animationKey, tick: 0 })
+
   useEffect(() => {
     setClock({ key: animationKey, tick: 0 })
+  }, [animationKey])
+
+  useEffect(() => {
     if (frameCount <= 1) return
     const id = setInterval(() => {
       setClock((current) => {
         const tick = current.key === animationKey ? current.tick : 0
+        if (settleToNearestEndpoint) {
+          const frame = resolveAnimationFrame(tick, frameCount, pingpong, oneShot)
+          const next = stepTowardNearestEndpoint(frame, frameCount)
+          if (next === frame) return current
+          return { key: animationKey, tick: tick + next - frame }
+        }
         if (oneShot && tick >= frameCount - 1) return current
         return { key: animationKey, tick: tick + 1 }
       })
-    }, intervalMs)
+    }, settleToNearestEndpoint ? Math.max(1, Math.round(intervalMs / 3)) : intervalMs)
     return () => clearInterval(id)
-  }, [animationKey, frameCount, intervalMs, oneShot])
+  }, [animationKey, frameCount, intervalMs, oneShot, pingpong, settleToNearestEndpoint])
 
   if (frameCount <= 1) return 0
   const tick = clock.key === animationKey ? clock.tick : 0
