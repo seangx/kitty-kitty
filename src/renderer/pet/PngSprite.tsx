@@ -1,6 +1,7 @@
 import { useState, useEffect, useLayoutEffect, useMemo, useRef } from 'react'
 import type { AnimationState, SkinId } from '@shared/types/pet'
 import { getPngSpriteDisplaySize } from './sprite-layout'
+import { resolveAnimationFrame } from './frame-animation'
 import './PngSprite.css'
 
 /**
@@ -66,6 +67,9 @@ const PING_PONG: Set<AnimationState> = new Set([
   'idle', 'sleep', 'sad', 'stretch', 'think', 'lick', 'talk', 'happy',
 ])
 
+/** Transition clips must hold their final pose until the destination UI is ready. */
+const ONE_SHOT: Set<AnimationState> = new Set(['deck-open'])
+
 interface Props {
   state: AnimationState
   skin: SkinId
@@ -100,6 +104,7 @@ export default function PngSprite({ state, skin, size = 128 }: Props) {
     urls.urls.length,
     interval,
     PING_PONG.has(urls.resolved),
+    ONE_SHOT.has(urls.resolved),
   )
   const displaySize = getPngSpriteDisplaySize(skin, urls.resolved, size)
 
@@ -157,25 +162,23 @@ function useFrameAnimation(
   frameCount: number,
   intervalMs: number,
   pingpong = false,
+  oneShot = false,
 ): number {
   const [clock, setClock] = useState({ key: animationKey, tick: 0 })
   useEffect(() => {
     setClock({ key: animationKey, tick: 0 })
     if (frameCount <= 1) return
     const id = setInterval(() => {
-      setClock((current) => ({
-        key: animationKey,
-        tick: current.key === animationKey ? current.tick + 1 : 1,
-      }))
+      setClock((current) => {
+        const tick = current.key === animationKey ? current.tick : 0
+        if (oneShot && tick >= frameCount - 1) return current
+        return { key: animationKey, tick: tick + 1 }
+      })
     }, intervalMs)
     return () => clearInterval(id)
-  }, [animationKey, frameCount, intervalMs])
+  }, [animationKey, frameCount, intervalMs, oneShot])
 
   if (frameCount <= 1) return 0
   const tick = clock.key === animationKey ? clock.tick : 0
-  if (!pingpong) return tick % frameCount
-  // 0,1,…,n-1,n-2,…,1 then repeat — seamless forward/back with no jump.
-  const period = (frameCount - 1) * 2
-  const pos = tick % period
-  return pos < frameCount ? pos : period - pos
+  return resolveAnimationFrame(tick, frameCount, pingpong, oneShot)
 }
