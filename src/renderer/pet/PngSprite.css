@@ -1,0 +1,44 @@
+.png-sprite {
+  position: relative;
+  display: block;
+  flex: none;
+  overflow: visible;
+  pointer-events: none;
+  user-select: none;
+}
+
+.png-sprite__frame {
+  position: absolute;
+  left: 50%;
+  bottom: 0;
+  display: block;
+  max-width: none;
+  filter: drop-shadow(0 2px 6px rgba(0, 0, 0, 0.45));
+  pointer-events: none;
+  user-select: none;
+}
+
+.png-sprite__frame.is-previous {
+  animation: png-sprite-state-fade-out 120ms linear both;
+}
+
+.png-sprite__frame.is-current.is-crossfading {
+  animation: png-sprite-state-fade-in 120ms linear both;
+}
+
+@keyframes png-sprite-state-fade-in {
+  from { opacity: 0; }
+  to { opacity: 1; }
+}
+
+@keyframes png-sprite-state-fade-out {
+  from { opacity: 1; }
+  to { opacity: 0; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .png-sprite__frame.is-previous,
+  .png-sprite__frame.is-current.is-crossfading {
+    animation-duration: 1ms;
+  }
+}

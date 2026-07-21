@@ -1,5 +1,6 @@
-import { useState, useEffect, useMemo } from 'react'
+import { useState, useEffect, useLayoutEffect, useMemo, useRef } from 'react'
 import type { AnimationState, SkinId } from '@shared/types/pet'
+import './PngSprite.css'
 
 /**
  * Load all PNG sprite frames at build time via Vite glob import.
@@ -57,10 +58,10 @@ export function skinHasPngSprites(skin: SkinId): boolean {
   return false
 }
 
-/** Frame timing per animation state (ms per frame). Slower than 12fps so the
- *  motion reads calmly; locomotion (walk/run/jump) a touch quicker than idle. */
+/** Frame timing per animation state (ms per frame). Generated idle in-betweens
+ *  run at 12.5fps; sparse legacy clips retain their calmer per-frame timing. */
 const INTERVAL_MS: Record<AnimationState, number> = {
-  'idle': 220,
+  'idle': 80,
   'walk-left': 110,
   'walk-right': 110,
   'sleep': 180,
@@ -91,6 +92,16 @@ interface Props {
   size?: number
 }
 
+interface RenderedFrame {
+  animationKey: string
+  src: string
+  width: number
+  height: number
+  flip: boolean
+}
+
+const STATE_CROSSFADE_MS = 120
+
 export default function PngSprite({ state, skin, size = 128 }: Props) {
   const urls = useMemo(() => {
     // Prefer state-specific frames; for walk-left fall back to walk-right with horizontal flip
@@ -112,26 +123,52 @@ export default function PngSprite({ state, skin, size = 128 }: Props) {
   )
   const displaySize = getPngSpriteDisplaySize(skin, urls.resolved, size)
 
-  const src = urls.urls[frameIdx] ?? urls.urls[0]
+  const src = urls.urls[frameIdx] ?? urls.urls[0] ?? ''
+
+  const renderedFrame: RenderedFrame = {
+    animationKey: `${skin}/${urls.resolved}`,
+    src,
+    width: displaySize.width,
+    height: displaySize.height,
+    flip: urls.flip,
+  }
+  const lastFrameRef = useRef(renderedFrame)
+  const [previousFrame, setPreviousFrame] = useState<RenderedFrame | null>(null)
+
+  useLayoutEffect(() => {
+    const previous = lastFrameRef.current
+    if (previous.animationKey === renderedFrame.animationKey) return
+    setPreviousFrame(previous)
+    const timeout = window.setTimeout(() => setPreviousFrame(null), STATE_CROSSFADE_MS)
+    return () => window.clearTimeout(timeout)
+  }, [renderedFrame.animationKey])
+
+  useLayoutEffect(() => {
+    lastFrameRef.current = renderedFrame
+  }, [renderedFrame])
+
   if (!src) return null
 
-  return (
+  const renderImage = (frame: RenderedFrame, className: string) => (
     <img
-      src={src}
-      width={displaySize.width}
-      height={displaySize.height}
+      src={frame.src}
+      width={frame.width}
+      height={frame.height}
       alt=""
       draggable={false}
+      className={className}
       style={{
-        // Calico set is 256px photoreal RGBA, scaled down — keep it smooth.
         imageRendering: 'auto',
-        display: 'block',
-        filter: 'drop-shadow(0 2px 6px rgba(0,0,0,0.45))',
-        transform: urls.flip ? 'scaleX(-1)' : undefined,
-        pointerEvents: 'none',
-        userSelect: 'none',
+        transform: frame.flip ? 'translateX(-50%) scaleX(-1)' : 'translateX(-50%)',
       }}
     />
+  )
+
+  return (
+    <span className="png-sprite" style={{ width: displaySize.width, height: displaySize.height }}>
+      {previousFrame && renderImage(previousFrame, 'png-sprite__frame is-previous')}
+      {renderImage(renderedFrame, `png-sprite__frame is-current${previousFrame ? ' is-crossfading' : ''}`)}
+    </span>
   )
 }
 
