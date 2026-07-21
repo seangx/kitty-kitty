@@ -33,6 +33,8 @@ export default function SessionPicker({ dir, defaultTool, sessions: initialSessi
 
   const handleDelete = async (id: string, tool: string, e: React.MouseEvent) => {
     e.stopPropagation()
+    const target = sessions.find((s) => s.id === id)
+    if (!window.confirm(`确定删除会话记录「${target?.summary || id.slice(0, 8)}」？\n仅删除历史记录，不影响正在运行的会话。`)) return
     try {
       await window.api.invoke('session:delete-external-session', tool, dir, id)
       setSessions((prev) => prev.filter((s) => s.id !== id))
