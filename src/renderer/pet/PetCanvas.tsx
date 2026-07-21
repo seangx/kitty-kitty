@@ -51,6 +51,8 @@ export default function PetCanvas() {
   const dragOffset = useRef({ x: 0, y: 0 })
   const deckOpenTimer = useRef<ReturnType<typeof setTimeout> | null>(null)
   const deckCloseTimer = useRef<ReturnType<typeof setTimeout> | null>(null)
+  const idleFrameRef = useRef(0)
+  const deckOpenPendingRef = useRef(false)
   const forceRestartingIdsRef = useRef(new Set<string>())
   const [forceRestartingSessionIds, setForceRestartingSessionIds] = useState<Set<string>>(() => new Set())
 
@@ -106,6 +108,7 @@ export default function PetCanvas() {
       if (deckCloseTimer.current) clearTimeout(deckCloseTimer.current)
       deckOpenTimer.current = null
       deckCloseTimer.current = null
+      deckOpenPendingRef.current = false
       machine.forceState('idle')
       setDeckOpening(false)
       setDeckHandoff(false)
@@ -500,11 +503,26 @@ export default function PetCanvas() {
       machine.forceState('sad', 1500)
       say('打开边栏失败了喵...')
     } finally {
+      deckOpenPendingRef.current = false
       deckOpenTimer.current = null
       setDeckOpening(false)
       setDeckHandoff(false)
     }
   }, [machine, say])
+
+  const startDeckOpenAnimation = useCallback(() => {
+    if (!deckOpenPendingRef.current) return
+    deckOpenPendingRef.current = false
+    machine.forceState('deck-open')
+    deckOpenTimer.current = setTimeout(() => void finishOpenDeck(), DECK_OPEN_TRANSITION_MS)
+  }, [finishOpenDeck, machine])
+
+  const handlePetFrameChange = useCallback((state: AnimationState, frame: number) => {
+    if (state === 'idle') idleFrameRef.current = frame
+    if (deckOpenPendingRef.current && state === 'idle' && frame === 0) {
+      startDeckOpenAnimation()
+    }
+  }, [startDeckOpenAnimation])
 
   const openDeck = useCallback((event: React.MouseEvent) => {
     event.stopPropagation()
@@ -514,9 +532,13 @@ export default function PetCanvas() {
       return
     }
     setDeckOpening(true)
-    machine.forceState('deck-open')
-    deckOpenTimer.current = setTimeout(() => void finishOpenDeck(), DECK_OPEN_TRANSITION_MS)
-  }, [bubble.skin, deckClosing, deckOpen, deckOpening, finishOpenDeck, machine])
+    deckOpenPendingRef.current = true
+    if (machine.getState() !== 'idle') {
+      machine.forceState('idle')
+    } else if (idleFrameRef.current === 0) {
+      startDeckOpenAnimation()
+    }
+  }, [bubble.skin, deckClosing, deckOpen, deckOpening, finishOpenDeck, machine, startDeckOpenAnimation])
 
   const closeDeck = useCallback(() => {
     if (!deckOpen || deckClosing) return
@@ -754,7 +776,12 @@ export default function PetCanvas() {
         title="打开会话边栏"
       >
         {speech && <SpeechBubble text={speech} onDone={() => setSpeech(null)} />}
-        <PetSprite state={animation} skin={bubble.skin} size={128} />
+        <PetSprite
+          state={animation}
+          skin={bubble.skin}
+          size={128}
+          onFrameChange={handlePetFrameChange}
+        />
       </div>}
       {contextMenu && (
         <ContextMenu x={contextMenu.x} y={contextMenu.y} onClose={() => setContextMenu(null)} items={menuItems} />
