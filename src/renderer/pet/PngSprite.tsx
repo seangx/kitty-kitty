@@ -30,7 +30,7 @@ const FRAME_INDEX: Record<string, string[]> = (() => {
 
 const BASE_SPRITE_PIXELS = 256
 const FRAME_CANVAS: Record<string, { width: number; height: number }> = {
-  'calico/idle': { width: 448, height: 256 },
+  'calico/idle': { width: 320, height: 256 },
   'calico/deck-open': { width: 320, height: 512 },
 }
 
@@ -60,7 +60,7 @@ export function skinHasPngSprites(skin: SkinId): boolean {
 /** Frame timing per animation state (ms per frame). Slower than 12fps so the
  *  motion reads calmly; locomotion (walk/run/jump) a touch quicker than idle. */
 const INTERVAL_MS: Record<AnimationState, number> = {
-  'idle': 140,
+  'idle': 220,
   'walk-left': 110,
   'walk-right': 110,
   'sleep': 180,
