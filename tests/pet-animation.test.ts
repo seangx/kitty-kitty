@@ -5,6 +5,7 @@ import {
   getPetAnimationStageSize,
   getPngSpriteDisplaySize,
 } from '../src/renderer/pet/sprite-layout.ts'
+import { PET_ANIMATION_HEADROOM } from '../src/shared/pet-window-position.ts'
 
 const ROOT = new URL('../', import.meta.url)
 const SPRITES = new URL('../src/renderer/pet/sprites/calico/', import.meta.url)
@@ -89,7 +90,13 @@ test('tall deck animation overflows upward from the idle-sized stage', async () 
   assert.equal(deckOpenTop, -128)
   assert.equal(idleTop + idle.height, stage.height)
   assert.equal(deckOpenTop + deckOpen.height, stage.height)
+  const stageTopInWindow = PET_ANIMATION_HEADROOM
+  assert.equal(stageTopInWindow + idleTop, 128)
+  assert.equal(stageTopInWindow + deckOpenTop, 0)
+  assert.equal(stageTopInWindow + idleTop + idle.height, 256)
+  assert.equal(stageTopInWindow + deckOpenTop + deckOpen.height, 256)
   assert.match(canvas, /const petStageSize = getPetAnimationStageSize\(bubble\.skin, 128\)/)
+  assert.match(canvas, /paddingTop: deckOpen \? 0 : PET_ANIMATION_HEADROOM/)
   assert.match(canvas, /width: petStageSize\.width, height: petStageSize\.height,[\s\S]*?overflow: 'visible'/)
   assert.doesNotMatch(canvas, /petDisplaySize/)
 })

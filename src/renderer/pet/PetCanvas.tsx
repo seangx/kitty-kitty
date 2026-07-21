@@ -15,6 +15,7 @@ import { useSessionStore } from '../store/session-store'
 import { useConfigStore } from '../store/config-store'
 import type { ToolId } from '../store/config-store'
 import type { DirectoryPickResult } from '@shared/directory-session'
+import { PET_ANIMATION_HEADROOM } from '@shared/pet-window-position'
 import { T, btnClose, btnGhost, inputWell, popover, popupHeader } from './ui-tokens'
 
 interface DirPickState extends DirectoryPickResult { defaultTool: ToolId }
@@ -501,7 +502,7 @@ export default function PetCanvas() {
         onMouseEnter={() => window.api.invoke('set-ignore-mouse', false)}
         onMouseLeave={() => { if (!anyPopup) window.api.invoke('set-ignore-mouse', true) }}
         style={{
-          position: 'fixed', top: 6, right: 6, zIndex: 300,
+          position: 'fixed', top: 6 + (deckOpen ? 0 : PET_ANIMATION_HEADROOM), right: 6, zIndex: 300,
           display: 'flex', flexDirection: 'column', gap: 4, alignItems: 'flex-end',
           pointerEvents: 'auto',
           /* container doesn't animate — each card does */
@@ -557,10 +558,10 @@ export default function PetCanvas() {
     )}
 
     {/* Floating popups — outside pet area */}
-    {showInput && <DraggablePopup><InputPopup defaultTool={lastTool} onSubmit={handleCreateSession} onClose={() => setShowInput(false)} /></DraggablePopup>}
-    {showSettings && <DraggablePopup><SettingsPanel onClose={() => setShowSettings(false)} /></DraggablePopup>}
+    {showInput && <DraggablePopup topOffset={deckOpen ? 0 : PET_ANIMATION_HEADROOM}><InputPopup defaultTool={lastTool} onSubmit={handleCreateSession} onClose={() => setShowInput(false)} /></DraggablePopup>}
+    {showSettings && <DraggablePopup topOffset={deckOpen ? 0 : PET_ANIMATION_HEADROOM}><SettingsPanel onClose={() => setShowSettings(false)} /></DraggablePopup>}
     {dirPick && (
-      <DraggablePopup>
+      <DraggablePopup topOffset={deckOpen ? 0 : PET_ANIMATION_HEADROOM}>
         <SessionPicker
           dir={dirPick.dir}
           defaultTool={dirPick.defaultTool}
@@ -572,7 +573,7 @@ export default function PetCanvas() {
     )}
     {/* Skills panel opens in a separate window */}
     {envEditor && (
-      <DraggablePopup>
+      <DraggablePopup topOffset={deckOpen ? 0 : PET_ANIMATION_HEADROOM}>
         <EnvEditor
           sessionId={envEditor}
           sessionTitle={sessions.find(s => s.id === envEditor)?.title || ''}
@@ -585,7 +586,7 @@ export default function PetCanvas() {
       </DraggablePopup>
     )}
     {groupPrompt && (
-      <DraggablePopup>
+      <DraggablePopup topOffset={deckOpen ? 0 : PET_ANIMATION_HEADROOM}>
         <GroupNamePrompt
           onSubmit={async (name) => {
             await window.api.invoke('group:create', name)
@@ -599,7 +600,7 @@ export default function PetCanvas() {
       </DraggablePopup>
     )}
     {driftPrompt && (
-      <DraggablePopup>
+      <DraggablePopup topOffset={deckOpen ? 0 : PET_ANIMATION_HEADROOM}>
         <SessionDriftPrompt
           sessionTitle={sessions.find(s => s.id === driftPrompt.sessionId)?.title || ''}
           isRunning={(sessions.find(s => s.id === driftPrompt.sessionId)?.status === 'running')}
@@ -638,7 +639,14 @@ export default function PetCanvas() {
 
     {/* Pet area — cat, tagcloud, context menu */}
     <div
-      style={{ width: '100%', height: '100%', display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'flex-end', userSelect: 'none', position: 'relative' }}
+      style={{
+        width: '100%',
+        height: deckOpen ? '100%' : petStageSize.height + PET_ANIMATION_HEADROOM,
+        boxSizing: 'border-box',
+        paddingTop: deckOpen ? 0 : PET_ANIMATION_HEADROOM,
+        display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'flex-end',
+        userSelect: 'none', position: 'relative',
+      }}
       onMouseDown={handleMouseDown} onClick={handleClick} onContextMenu={handleContextMenu}
       onMouseMove={handleMouseMove} onMouseLeave={handleMouseLeave}
     >
@@ -995,7 +1003,7 @@ function SessionDriftPrompt({
 
 // ─── Draggable Popup ──────────────────
 
-function DraggablePopup({ children }: { children: React.ReactNode }) {
+function DraggablePopup({ children, topOffset = 0 }: { children: React.ReactNode; topOffset?: number }) {
   const ref = useRef<HTMLDivElement>(null)
   const dragOff = useRef({ x: 0, y: 0 })
   const onDragStart = (e: React.MouseEvent) => {
@@ -1021,7 +1029,7 @@ function DraggablePopup({ children }: { children: React.ReactNode }) {
   }
   return (
     <div ref={ref}
-      style={{ position: 'fixed', top: 8, left: 8, right: 8, zIndex: 200, maxHeight: 'calc(100vh - 16px)', overflow: 'auto' }}
+      style={{ position: 'fixed', top: 8 + topOffset, left: 8, right: 8, zIndex: 200, maxHeight: `calc(100vh - ${16 + topOffset}px)`, overflow: 'auto' }}
       onClick={(e) => e.stopPropagation()} onMouseDown={(e) => { e.stopPropagation(); onDragStart(e) }}>
       {children}
     </div>
