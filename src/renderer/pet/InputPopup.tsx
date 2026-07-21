@@ -1,5 +1,6 @@
 import { useState, useRef, useEffect } from 'react'
 import type { ToolId } from '../store/config-store'
+import { T, btnPrimary, inputWell, popover } from './ui-tokens'
 
 interface Props {
   onSubmit: (message: string, tool: ToolId) => void
@@ -12,18 +13,6 @@ const TOOLS: { id: ToolId; label: string }[] = [
   { id: 'codex',  label: '✦ Codex' },
   { id: 'opencode', label: '◈ OpenCode' },
 ]
-
-// Aether Glass tokens
-const C = {
-  surface: '#0c0c1f',
-  container: '#17172f',
-  variant: '#23233f',
-  primary: '#a7a5ff',
-  primaryDim: '#645efb',
-  text: '#e5e3ff',
-  textDim: '#aaa8c3',
-  outline: '#46465c',
-}
 
 export default function InputPopup({ onSubmit, onClose, defaultTool = 'claude' }: Props) {
   const [message, setMessage] = useState('')
@@ -43,40 +32,34 @@ export default function InputPopup({ onSubmit, onClose, defaultTool = 'claude' }
   }
 
   return (
-    <div style={{
-      background: `${C.variant}99`,
-      backdropFilter: 'blur(32px)',
-      WebkitBackdropFilter: 'blur(32px)',
-      borderRadius: 16,
-      padding: 10,
-      width: 280,
-      boxShadow: `0 10px 40px rgba(0,0,0,0.5), inset 0 1px 0 ${C.outline}26`,
-      fontFamily: "'Plus Jakarta Sans', -apple-system, sans-serif"
-    }}>
+    <div style={{ ...popover({ alpha: 'f0', radius: 16 }), padding: 10, width: 280 }}>
       <div data-drag-handle style={{ height: 4, cursor: 'grab' }} />
 
       {/* Tool tabs */}
       <div style={{ display: 'flex', gap: 4, padding: '0 2px 6px' }}>
-        {TOOLS.map((t) => (
-          <button
-            key={t.id}
-            onClick={() => setTool(t.id)}
-            style={{
-              flex: 1,
-              padding: '5px 8px',
-              borderRadius: 9999,
-              border: 'none',
-              background: tool === t.id ? `${C.primaryDim}cc` : `${C.container}80`,
-              color: tool === t.id ? C.surface : C.textDim,
-              fontSize: 10,
-              fontWeight: 600,
-              cursor: 'pointer',
-              fontFamily: 'inherit',
-            }}
-          >
-            {t.label}
-          </button>
-        ))}
+        {TOOLS.map((t) => {
+          const active = tool === t.id
+          return (
+            <button
+              key={t.id}
+              onClick={() => setTool(t.id)}
+              style={{
+                flex: 1,
+                padding: '5px 8px',
+                borderRadius: 8,
+                border: `1px solid ${active ? `${T.accent}55` : `${T.border}12`}`,
+                background: active ? `${T.accent}1f` : 'rgba(255,255,255,0.03)',
+                color: active ? T.accent : T.faint,
+                fontSize: 10,
+                fontWeight: 600,
+                cursor: 'pointer',
+                fontFamily: 'inherit',
+              }}
+            >
+              {t.label}
+            </button>
+          )
+        })}
       </div>
 
       {/* Input row */}
@@ -91,36 +74,17 @@ export default function InputPopup({ onSubmit, onClose, defaultTool = 'claude' }
             if (e.key === 'Escape') onClose()
           }}
           placeholder="输入第一句话..."
-          style={{
-            flex: 1,
-            padding: '7px 12px',
-            borderRadius: 9999,
-            border: `1px solid ${C.outline}33`,
-            background: `${C.container}cc`,
-            color: C.text,
-            fontSize: 12,
-            outline: 'none',
-            fontFamily: 'inherit'
-          }}
+          style={{ ...inputWell({ radius: 9999 }), flex: 1, padding: '7px 12px' }}
         />
         <button
           onClick={handleSubmit}
-          style={{
-            padding: '7px 16px',
-            borderRadius: 9999,
-            border: 'none',
-            background: `linear-gradient(135deg, ${C.primary}, ${C.primaryDim})`,
-            color: C.surface,
-            fontSize: 12,
-            cursor: 'pointer',
-            fontWeight: 600
-          }}
+          style={{ ...btnPrimary({ radius: 9999 }), padding: '7px 16px' }}
         >
           ▶
         </button>
       </div>
 
-      <div style={{ marginTop: 6, fontSize: 9, color: C.textDim, textAlign: 'center', opacity: 0.6 }}>
+      <div style={{ marginTop: 6, fontSize: 9, color: T.faint, textAlign: 'center', opacity: 0.8 }}>
         Enter 发送 · Esc 取消
       </div>
     </div>

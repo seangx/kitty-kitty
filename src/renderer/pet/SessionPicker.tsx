@@ -5,6 +5,7 @@ import {
   createDirectoryStartAction,
 } from '@shared/directory-session'
 import type { ExternalDirectorySession } from '@shared/directory-session'
+import { T, btnClose, btnGhost, btnPrimary, popover, popupHeader } from './ui-tokens'
 
 export type PickAction =
   | { type: 'new'; tool: string }
@@ -19,16 +20,10 @@ interface Props {
   onClose: () => void
 }
 
-const C = {
-  variant: '#23233f', container: '#17172f',
-  text: '#e5e3ff', textDim: '#aaa8c3',
-  primaryDim: '#645efb', primary: '#a7a5ff', outline: '#46465c',
-}
-
 const TOOL_BADGE: Record<string, { label: string; color: string }> = {
-  claude: { label: '⚡ Claude', color: '#a7a5ff' },
-  codex:  { label: '✦ Codex',  color: '#fcd34d' },
-  opencode: { label: '◈ OpenCode', color: '#65d8c8' },
+  claude: { label: '⚡ Claude', color: '#78a9ff' },
+  codex:  { label: '✦ Codex',  color: '#f0b45a' },
+  opencode: { label: '◈ OpenCode', color: '#6fd7c8' },
 }
 
 export default function SessionPicker({ dir, defaultTool, sessions: initialSessions, onPick, onClose }: Props) {
@@ -48,19 +43,17 @@ export default function SessionPicker({ dir, defaultTool, sessions: initialSessi
 
   return (
     <div style={{
-      background: `${C.variant}f5`, backdropFilter: 'blur(32px)', WebkitBackdropFilter: 'blur(32px)',
-      borderRadius: 16, padding: 14, width: 320, maxHeight: 420, overflow: 'auto',
-      boxShadow: `0 12px 48px rgba(0,0,0,0.6), inset 0 1px 0 ${C.outline}20`,
-      fontFamily: "'Plus Jakarta Sans', -apple-system, sans-serif", color: C.text,
+      ...popover({ alpha: 'f5', radius: 16 }), padding: 14, width: 320,
+      maxHeight: 420, overflow: 'auto',
     }}>
-      <div data-drag-handle style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 10, cursor: 'grab' }}>
+      <div data-drag-handle style={{ ...popupHeader(), marginBottom: 10 }}>
         <div>
           <div style={{ fontSize: 13, fontWeight: 600 }}>📂 {dirName}</div>
-          <div style={{ fontSize: 10, color: C.textDim, marginTop: 2 }}>
+          <div style={{ fontSize: 10, color: T.faint, marginTop: 2 }}>
             选择工具后继续或新建
           </div>
         </div>
-        <button onClick={onClose} style={{ background: 'none', border: 'none', color: C.textDim, cursor: 'pointer', fontSize: 14 }}>✕</button>
+        <button onClick={onClose} style={{ ...btnClose(), fontSize: 14 }}>✕</button>
       </div>
 
       <div style={{ display: 'flex', gap: 4, marginBottom: 8 }}>
@@ -72,10 +65,10 @@ export default function SessionPicker({ dir, defaultTool, sessions: initialSessi
               key={toolOption}
               onClick={() => setTool(toolOption)}
               style={{
-                flex: 1, padding: '6px 5px', borderRadius: 9999,
-                border: `1px solid ${active ? `${badge.color}88` : `${C.outline}33`}`,
-                background: active ? `${badge.color}22` : `${C.container}80`,
-                color: active ? badge.color : C.textDim,
+                flex: 1, padding: '6px 5px', borderRadius: 8,
+                border: `1px solid ${active ? `${badge.color}66` : `${T.border}12`}`,
+                background: active ? `${badge.color}1c` : 'rgba(255,255,255,0.03)',
+                color: active ? badge.color : T.faint,
                 fontSize: 10, fontWeight: 600, cursor: 'pointer', fontFamily: 'inherit',
               }}
             >
@@ -89,33 +82,26 @@ export default function SessionPicker({ dir, defaultTool, sessions: initialSessi
         <button
           onClick={() => onPick(createDirectoryStartAction('new', tool))}
           style={{
-            flex: 1, padding: '8px 12px', borderRadius: 10,
-            background: `${C.container}cc`, border: `1px solid ${C.outline}44`,
-            color: C.text, fontSize: 12, fontWeight: 600,
-            cursor: 'pointer', fontFamily: 'inherit', textAlign: 'center',
+            ...btnGhost({ radius: 10 }), flex: 1, padding: '8px 12px',
+            color: T.text, fontWeight: 600, textAlign: 'center',
           }}
         >
           🆕 新建
         </button>
         <button
           onClick={() => onPick(createDirectoryStartAction('continue-latest', tool))}
-          style={{
-            flex: 1, padding: '8px 12px', borderRadius: 10,
-            background: `linear-gradient(135deg, ${C.primary}, ${C.primaryDim})`,
-            border: 'none', color: '#0c0c1f', fontSize: 12, fontWeight: 600,
-            cursor: 'pointer', fontFamily: 'inherit', textAlign: 'center',
-          }}
+          style={{ ...btnPrimary({ radius: 10 }), flex: 1, padding: '8px 12px', textAlign: 'center' }}
         >
           ✨ 继续最近
         </button>
       </div>
 
       {sessions.length > 0 && (
-        <div style={{ fontSize: 10, color: C.textDim, marginTop: 8, marginBottom: 4 }}>指定会话恢复：</div>
+        <div style={{ fontSize: 10, color: T.faint, marginTop: 8, marginBottom: 4 }}>指定会话恢复：</div>
       )}
       {sessions.map((s) => {
         const sTool = s.tool || defaultTool
-        const badge = TOOL_BADGE[sTool] || { label: sTool, color: C.textDim }
+        const badge = TOOL_BADGE[sTool] || { label: sTool, color: T.faint }
         return (
           <div key={`${sTool}:${s.id}`} style={{
             display: 'flex', alignItems: 'center', gap: 6, marginBottom: 4,
@@ -124,12 +110,12 @@ export default function SessionPicker({ dir, defaultTool, sessions: initialSessi
               onClick={() => onPick({ type: 'resume', tool: sTool, id: s.id })}
               style={{
                 flex: 1, padding: '8px 12px', borderRadius: 10,
-                background: `${C.container}cc`, border: `1px solid ${C.outline}33`,
-                color: C.text, fontSize: 12, cursor: 'pointer', fontFamily: 'inherit',
-                textAlign: 'left', transition: 'all 0.2s', overflow: 'hidden',
+                background: 'rgba(255,255,255,0.03)', border: `1px solid ${T.border}12`,
+                color: T.text, fontSize: 12, cursor: 'pointer', fontFamily: 'inherit',
+                textAlign: 'left', transition: 'border-color 0.2s, background 0.2s', overflow: 'hidden',
               }}
-              onMouseEnter={(e) => { (e.currentTarget as HTMLElement).style.borderColor = `${C.primaryDim}66` }}
-              onMouseLeave={(e) => { (e.currentTarget as HTMLElement).style.borderColor = `${C.outline}33` }}
+              onMouseEnter={(e) => { (e.currentTarget as HTMLElement).style.borderColor = `${T.accent}55` }}
+              onMouseLeave={(e) => { (e.currentTarget as HTMLElement).style.borderColor = `${T.border}12` }}
             >
               <div style={{ display: 'flex', alignItems: 'center', gap: 6, overflow: 'hidden' }}>
                 <span style={{
@@ -140,19 +126,19 @@ export default function SessionPicker({ dir, defaultTool, sessions: initialSessi
                   {s.summary}
                 </span>
               </div>
-              <div style={{ fontSize: 10, color: C.textDim, marginTop: 2 }}>{s.date}</div>
+              <div style={{ fontSize: 10, color: T.faint, marginTop: 2 }}>{s.date}</div>
             </button>
             <button
               onClick={(e) => handleDelete(s.id, sTool, e)}
               title="删除此会话"
               style={{
                 width: 28, height: 28, borderRadius: 8, flexShrink: 0,
-                background: 'none', border: `1px solid ${C.outline}33`,
-                color: '#ff6e84', fontSize: 12, cursor: 'pointer',
+                background: 'none', border: `1px solid ${T.border}12`,
+                color: T.dangerText, fontSize: 12, cursor: 'pointer',
                 display: 'flex', alignItems: 'center', justifyContent: 'center',
-                transition: 'all 0.2s',
+                transition: 'background 0.2s',
               }}
-              onMouseEnter={(e) => { (e.currentTarget as HTMLElement).style.background = '#ff6e8422' }}
+              onMouseEnter={(e) => { (e.currentTarget as HTMLElement).style.background = `${T.danger}1f` }}
               onMouseLeave={(e) => { (e.currentTarget as HTMLElement).style.background = 'none' }}
             >
               🗑

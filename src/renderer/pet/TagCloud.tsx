@@ -6,6 +6,7 @@ import { COLOR_THEMES } from '@shared/types/config'
 import { useAutoClose } from './useAutoClose'
 import AgentMetadataPopup from './AgentMetadataPopup'
 import { clampMenuPosition } from './menu-position'
+import { ACCENT_PRESETS, MENU_ITEM_HOVER, T, menuSurface } from './ui-tokens'
 
 interface Props {
   sessions: SessionInfo[]
@@ -27,7 +28,7 @@ function setBubbleColorLS(id: string, color: string | null) {
   else localStorage.removeItem(`kitty-bubble-color-${id}`)
 }
 
-const BUBBLE_PRESETS = ['#645efb', '#10b981', '#e11d48', '#d97706', '#06b6d4', '#8b5cf6']
+const BUBBLE_PRESETS = ACCENT_PRESETS
 
 // Tier config: [baseFontSize, verticalPad, horizontalPad, opacity]
 const TIERS: Array<[number, number, number, number]> = [
@@ -158,7 +159,7 @@ export default function TagCloud({ sessions, onAttach, onKill, onRename, onResta
   }, [])
 
   const theme = bubble.colorTheme === 'custom' && bubble.customColor
-    ? { primary: bubble.customColor, dim: bubble.customColor, glass: '#23233f' }
+    ? { primary: bubble.customColor, dim: bubble.customColor, glass: T.surface }
     : COLOR_THEMES[bubble.colorTheme] || COLOR_THEMES.indigo
 
   const scale = bubble.sizeScale
@@ -386,17 +387,17 @@ export default function TagCloud({ sessions, onAttach, onKill, onRename, onResta
           padding: `${Math.round(vPad * scale)}px ${Math.round(hPad * scale)}px`,
           borderRadius: 9999, fontSize,
           fontFamily: "'Plus Jakarta Sans', -apple-system, sans-serif",
-          color: '#e5e3ff', opacity: isBeingDragged ? 0.4 : (isHovered ? 1 : opacity),
+          color: T.text, opacity: isBeingDragged ? 0.4 : (isHovered ? 1 : opacity),
           background: isHovered
-            ? `${accent}cc`
-            : isHero
-              ? `${accent}bb`
-              : `${accent}aa`,
+            ? `${T.surfaceStrong}f0`
+            : `${T.surface}d9`,
           backdropFilter: 'blur(16px)', WebkitBackdropFilter: 'blur(16px)',
           boxShadow: isHero
-            ? `0 0 ${18 * scale}px ${accent}40, 0 4px 14px rgba(0,0,0,0.3)`
-            : `0 0 10px ${accent}25, 0 3px 10px rgba(0,0,0,0.2)`,
-          border: `1px solid ${accent}${isHero ? '55' : '30'}`,
+            ? `0 0 ${18 * scale}px ${accent}33, 0 4px 14px rgba(0,0,0,0.3)`
+            : `0 3px 10px rgba(0,0,0,0.25)`,
+          border: isHero
+            ? `1px solid ${accent}66`
+            : `1px solid ${T.border}${isHovered ? '2e' : '14'}`,
           cursor: dragState?.active ? 'grabbing' : 'grab',
           transition: 'opacity 0.15s ease, background 0.25s ease',
           whiteSpace: 'nowrap',
@@ -413,14 +414,25 @@ export default function TagCloud({ sessions, onAttach, onKill, onRename, onResta
               position: 'absolute',
               top: -3, right: -3,
               width: 10, height: 10, borderRadius: 9999,
-              background: '#ff3b5c',
-              boxShadow: '0 0 6px #ff3b5c, 0 0 0 2px rgba(12,12,31,0.85)',
+              background: T.danger,
+              boxShadow: `0 0 6px ${T.danger}, 0 0 0 2px rgba(12,14,20,0.85)`,
               animation: 'kitty-needs-input-pulse 1.4s ease-in-out infinite',
               pointerEvents: 'none',
               zIndex: 2,
             }}
           />
         )}
+        <span
+          aria-hidden="true"
+          style={{
+            width: Math.max(Math.round(6 * scale), 4),
+            height: Math.max(Math.round(6 * scale), 4),
+            borderRadius: '50%',
+            background: accent,
+            boxShadow: `0 0 ${6 * scale}px ${accent}66`,
+            flexShrink: 0,
+          }}
+        />
         <div style={{ overflow: 'hidden', minWidth: 0 }}>
           {isEditing ? (
             <input autoFocus value={editTitle}
@@ -429,7 +441,7 @@ export default function TagCloud({ sessions, onAttach, onKill, onRename, onResta
               onBlur={finishRename}
               onMouseDown={(e) => e.stopPropagation()}
               onClick={(e) => e.stopPropagation()}
-              style={{ background: 'transparent', border: 'none', color: '#e5e3ff', fontSize, outline: 'none', width: 80, padding: 0, fontFamily: 'inherit' }}
+              style={{ background: 'transparent', border: 'none', color: T.text, fontSize, outline: 'none', width: 80, padding: 0, fontFamily: 'inherit' }}
             />
           ) : (
             <div style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', fontWeight: isHero ? 600 : 500 }}>
@@ -456,9 +468,9 @@ export default function TagCloud({ sessions, onAttach, onKill, onRename, onResta
             <div style={{
               display: 'inline-flex', gap: 3,
               padding: '2px 3px', borderRadius: 10,
-              background: '#0d0d1fee', backdropFilter: 'blur(16px)', WebkitBackdropFilter: 'blur(16px)',
+              background: `${T.well}ee`, backdropFilter: 'blur(16px)', WebkitBackdropFilter: 'blur(16px)',
               boxShadow: '0 4px 12px rgba(0,0,0,0.4)',
-              border: `1px solid ${accent}33`,
+              border: `1px solid ${T.border}1c`,
             }}>
               <button
                 onMouseDown={(e) => e.stopPropagation()}
@@ -504,7 +516,7 @@ export default function TagCloud({ sessions, onAttach, onKill, onRename, onResta
       {/* Status summary */}
       {statusSummary && (
         <div style={{
-          fontSize: Math.round(9 * scale), color: '#aaa8c3', opacity: 0.7,
+          fontSize: Math.round(9 * scale), color: T.faint, opacity: 0.8,
           fontFamily: "'Plus Jakarta Sans', -apple-system, sans-serif",
           letterSpacing: 0.3, textAlign: 'center',
         }}>
@@ -522,8 +534,8 @@ export default function TagCloud({ sessions, onAttach, onKill, onRename, onResta
           <div key={groupId} style={{
             display: 'flex', flexDirection: 'column', alignItems: 'stretch',
             borderRadius: Math.round(10 * scale),
-            background: g.color ? `${g.color}22` : '#23233f88',
-            border: g.color ? `1px solid ${g.color}44` : '1px solid #46465c33',
+            background: g.color ? `${g.color}1c` : `${T.surface}88`,
+            border: g.color ? `1px solid ${g.color}3d` : `1px solid ${T.border}14`,
             maxWidth: Math.round(400 * scale),
           }}>
             <div
@@ -535,19 +547,19 @@ export default function TagCloud({ sessions, onAttach, onKill, onRename, onResta
                 padding: `${Math.round(5 * scale)}px ${Math.round(10 * scale)}px`,
                 cursor: 'pointer', userSelect: 'none',
                 fontFamily: "'Plus Jakarta Sans', -apple-system, sans-serif",
-                outline: isActiveDrop ? '2px solid #645efb' : 'none',
+                outline: isActiveDrop ? `2px solid ${T.accent}` : 'none',
                 outlineOffset: isActiveDrop ? -2 : 0,
                 borderRadius: Math.round(10 * scale),
                 transition: 'outline 0.1s ease',
               }}
             >
-              <span style={{ fontSize: 9, color: '#aaa8c3' }}>{isExpanded ? '▾' : '▸'}</span>
-              <span style={{ fontSize: Math.round(11 * scale), color: '#a7a5ff', fontWeight: 600, flex: 1, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+              <span style={{ fontSize: 9, color: T.faint }}>{isExpanded ? '▾' : '▸'}</span>
+              <span style={{ fontSize: Math.round(11 * scale), color: T.text, fontWeight: 600, flex: 1, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
                 {g.name}
               </span>
-              {runningCount > 0 && <span style={{ fontSize: 9, color: '#10b981' }}>●{runningCount > 1 ? runningCount : ''}</span>}
-              {detachedCount > 0 && <span style={{ fontSize: 9, color: '#d97706' }}>●{detachedCount > 1 ? detachedCount : ''}</span>}
-              <span style={{ fontSize: 9, color: '#aaa8c3' }}>({g.sessions.length})</span>
+              {runningCount > 0 && <span style={{ fontSize: 9, color: T.success }}>●{runningCount > 1 ? runningCount : ''}</span>}
+              {detachedCount > 0 && <span style={{ fontSize: 9, color: T.warning }}>●{detachedCount > 1 ? detachedCount : ''}</span>}
+              <span style={{ fontSize: 9, color: T.faint }}>({g.sessions.length})</span>
             </div>
             {isExpanded && (
               <div style={{
@@ -597,8 +609,8 @@ export default function TagCloud({ sessions, onAttach, onKill, onRename, onResta
               <button
                 onClick={() => setShowAllUngrouped(true)}
                 style={{
-                  fontSize: Math.round(9 * scale), color: '#aaa8c3', background: '#23233f66',
-                  border: '1px solid #46465c33', borderRadius: 9999,
+                  fontSize: Math.round(9 * scale), color: T.faint, background: `${T.surface}66`,
+                  border: `1px solid ${T.border}14`, borderRadius: 9999,
                   padding: `${Math.round(3 * scale)}px ${Math.round(10 * scale)}px`,
                   cursor: 'pointer', fontFamily: "'Plus Jakarta Sans', -apple-system, sans-serif", alignSelf: 'center',
                 }}
@@ -630,14 +642,14 @@ export default function TagCloud({ sessions, onAttach, onKill, onRename, onResta
               gap: Math.round(4 * scale),
               padding: `${Math.round(5 * scale)}px ${Math.round(8 * scale)}px`,
               borderRadius: Math.round(10 * scale),
-              background: isActiveDrop ? '#645efb44' : '#645efb22',
-              border: isActiveDrop ? '2px dashed #a7a5ff' : '1px dashed #645efb88',
+              background: isActiveDrop ? `${T.accent}2e` : `${T.accent}14`,
+              border: isActiveDrop ? `2px dashed ${T.accent}` : `1px dashed ${T.accent}66`,
               minWidth: Math.round(160 * scale),
               transition: 'all 0.1s ease',
             }}
           >
             <div style={{
-              fontSize: Math.round(9 * scale), color: '#a7a5ff',
+              fontSize: Math.round(9 * scale), color: T.accent,
               fontFamily: "'Plus Jakarta Sans', -apple-system, sans-serif",
               letterSpacing: 0.3, pointerEvents: 'none',
             }}>
@@ -663,11 +675,11 @@ export default function TagCloud({ sessions, onAttach, onKill, onRename, onResta
               onClick={() => setShowHidden(!showHidden)}
               style={{
                 fontSize: Math.round(9 * scale),
-                color: isHideTarget ? '#a7a5ff' : '#8886a5',
-                background: isActiveDrop ? '#645efb44' : (isHideTarget ? '#645efb22' : '#23233f44'),
+                color: isHideTarget ? T.accent : T.faint,
+                background: isActiveDrop ? `${T.accent}2e` : (isHideTarget ? `${T.accent}14` : `${T.surface}44`),
                 border: isActiveDrop
-                  ? '2px dashed #a7a5ff'
-                  : isHideTarget ? '1px dashed #645efb88' : '1px dashed #46465c44',
+                  ? `2px dashed ${T.accent}`
+                  : isHideTarget ? `1px dashed ${T.accent}66` : `1px dashed ${T.border}1c`,
                 borderRadius: 9999,
                 padding: `${Math.round(2 * scale)}px ${Math.round(8 * scale)}px`,
                 cursor: 'pointer', fontFamily: "'Plus Jakarta Sans', -apple-system, sans-serif",
@@ -687,8 +699,8 @@ export default function TagCloud({ sessions, onAttach, onKill, onRename, onResta
                 style={{
                   display: 'inline-block',
                   position: 'relative',
-                  fontSize: Math.round(9 * scale), color: '#e5e3ff', background: '#23233fcc',
-                  border: '1px solid #46465c55', borderRadius: 9999,
+                  fontSize: Math.round(9 * scale), color: T.text, background: `${T.surface}cc`,
+                  border: `1px solid ${T.border}1c`, borderRadius: 9999,
                   padding: `${Math.round(2 * scale)}px ${Math.round(8 * scale)}px`,
                   cursor: dragState?.sessionId === s.id && dragState?.active ? 'grabbing' : 'grab',
                   fontFamily: "'Plus Jakarta Sans', -apple-system, sans-serif",
@@ -701,8 +713,8 @@ export default function TagCloud({ sessions, onAttach, onKill, onRename, onResta
                     style={{
                       position: 'absolute', top: -3, right: -3,
                       width: 8, height: 8, borderRadius: 9999,
-                      background: '#ff3b5c',
-                      boxShadow: '0 0 5px #ff3b5c, 0 0 0 2px rgba(12,12,31,0.85)',
+                      background: T.danger,
+                      boxShadow: `0 0 5px ${T.danger}, 0 0 0 2px rgba(12,14,20,0.85)`,
                       animation: 'kitty-needs-input-pulse 1.4s ease-in-out infinite',
                       pointerEvents: 'none',
                     }}
@@ -726,8 +738,9 @@ export default function TagCloud({ sessions, onAttach, onKill, onRename, onResta
             zIndex: 9999,
             padding: '4px 10px',
             borderRadius: 9999,
-            background: '#645efbcc',
-            color: '#fff',
+            background: `${T.surfaceStrong}f0`,
+            border: `1px solid ${T.accent}55`,
+            color: T.text,
             fontSize: Math.round(10 * scale),
             fontFamily: "'Plus Jakarta Sans', -apple-system, sans-serif",
             boxShadow: '0 4px 12px rgba(0,0,0,0.4)',
@@ -741,11 +754,11 @@ export default function TagCloud({ sessions, onAttach, onKill, onRename, onResta
 
       {/* Context menu */}
       {ctxMenu && (
-        <TagCtxMenu x={ctxMenu.x} y={ctxMenu.y} glass={theme.glass} dim={theme.dim}
+        <TagCtxMenu x={ctxMenu.x} y={ctxMenu.y}
           onClose={() => setCtxMenu(null)}>
             {/* Color swatches */}
             <div style={{ padding: '6px 10px 4px', display: 'flex', gap: 5, alignItems: 'center' }}>
-              <span style={{ fontSize: 10, color: '#aaa8c3' }}>🎨</span>
+              <span style={{ fontSize: 10, color: T.faint }}>🎨</span>
               {BUBBLE_PRESETS.map((c) => (
                 <button key={c} onClick={() => handleSetColor(ctxMenu.id, c)}
                   style={{
@@ -754,10 +767,10 @@ export default function TagCloud({ sessions, onAttach, onKill, onRename, onResta
                   }} />
               ))}
               <button onClick={() => handleSetColor(ctxMenu.id, null)}
-                style={{ width: 16, height: 16, borderRadius: '50%', background: '#333', border: '1px dashed #666', cursor: 'pointer', fontSize: 8, color: '#999' }}
+                style={{ width: 16, height: 16, borderRadius: '50%', background: T.well, border: `1px dashed ${T.border}2e`, cursor: 'pointer', fontSize: 8, color: T.faint }}
                 title="恢复默认">✕</button>
             </div>
-            <div style={{ margin: '3px 8px', borderTop: '1px solid #46465c30' }} />
+            <div style={{ margin: '3px 8px', borderTop: `1px solid ${T.border}12` }} />
             {[
               { label: '✏️ 重命名', action: () => { const s = alive.find(x => x.id === ctxMenu.id); if (s) startRename(s) } },
               { label: '♻️ 重启会话', action: () => { onRestart(ctxMenu.id); setCtxMenu(null) } },
@@ -791,7 +804,7 @@ export default function TagCloud({ sessions, onAttach, onKill, onRename, onResta
                 }
               }] : []),
               null,
-              { label: '✕ 退出', action: () => { onKill(ctxMenu.id); setCtxMenu(null) }, color: '#ff6e84' },
+              { label: '✕ 退出', action: () => { onKill(ctxMenu.id); setCtxMenu(null) }, color: T.dangerText },
               { label: '🗑️ 退出并删除', action: async () => {
                 const s = alive.find(x => x.id === ctxMenu.id)
                 const toolName = s?.tool === 'codex' ? 'codex' : s?.tool === 'opencode' ? 'opencode' : 'claude'
@@ -800,13 +813,13 @@ export default function TagCloud({ sessions, onAttach, onKill, onRename, onResta
                   await window.api.invoke('session:kill-and-delete', ctxMenu.id)
                 }
                 setCtxMenu(null)
-              }, color: '#ff6e84' },
+              }, color: T.dangerText },
             ].map((item, i) => {
-              if (!item) return <div key={i} style={{ margin: '3px 8px', borderTop: '1px solid #46465c30' }} />
+              if (!item) return <div key={i} style={{ margin: '3px 8px', borderTop: `1px solid ${T.border}12` }} />
               return (
                 <button key={i} onClick={item.action}
-                  style={{ display: 'block', width: '100%', textAlign: 'left', padding: '6px 12px', fontSize: 12, color: item.color || '#e5e3ff', background: 'none', border: 'none', cursor: 'pointer', fontFamily: 'inherit' }}
-                  onMouseEnter={(e) => { (e.target as HTMLElement).style.background = `${theme.dim}33` }}
+                  style={{ display: 'block', width: '100%', textAlign: 'left', padding: '6px 12px', fontSize: 12, color: item.color || T.text, background: 'none', border: 'none', cursor: 'pointer', fontFamily: 'inherit' }}
+                  onMouseEnter={(e) => { (e.target as HTMLElement).style.background = MENU_ITEM_HOVER }}
                   onMouseLeave={(e) => { (e.target as HTMLElement).style.background = 'none' }}
                 >{item.label}</button>
               )
@@ -814,11 +827,11 @@ export default function TagCloud({ sessions, onAttach, onKill, onRename, onResta
             {/* Group submenu */}
             {groupMenuId && (
               <>
-                <div style={{ margin: '3px 8px', borderTop: '1px solid #46465c30' }} />
+                <div style={{ margin: '3px 8px', borderTop: `1px solid ${T.border}12` }} />
                 {/* Ungroup option */}
                 <button onClick={() => handleSetGroup(groupMenuId, null)}
-                  style={{ display: 'block', width: '100%', textAlign: 'left', padding: '5px 12px', fontSize: 11, color: '#aaa8c3', background: 'none', border: 'none', cursor: 'pointer', fontFamily: 'inherit' }}
-                  onMouseEnter={(e) => { (e.target as HTMLElement).style.background = `${theme.dim}33` }}
+                  style={{ display: 'block', width: '100%', textAlign: 'left', padding: '5px 12px', fontSize: 11, color: T.faint, background: 'none', border: 'none', cursor: 'pointer', fontFamily: 'inherit' }}
+                  onMouseEnter={(e) => { (e.target as HTMLElement).style.background = MENU_ITEM_HOVER }}
                   onMouseLeave={(e) => { (e.target as HTMLElement).style.background = 'none' }}
                 >— 不分组</button>
                 {groups.map((g) => {
@@ -826,8 +839,8 @@ export default function TagCloud({ sessions, onAttach, onKill, onRename, onResta
                   const isCurrent = current?.groupId === g.id
                   return (
                     <button key={g.id} onClick={() => handleSetGroup(groupMenuId, g.id)}
-                      style={{ display: 'block', width: '100%', textAlign: 'left', padding: '5px 12px', fontSize: 11, color: isCurrent ? '#a7a5ff' : '#e5e3ff', background: 'none', border: 'none', cursor: 'pointer', fontFamily: 'inherit' }}
-                      onMouseEnter={(e) => { (e.target as HTMLElement).style.background = `${theme.dim}33` }}
+                      style={{ display: 'block', width: '100%', textAlign: 'left', padding: '5px 12px', fontSize: 11, color: isCurrent ? T.accent : T.text, background: 'none', border: 'none', cursor: 'pointer', fontFamily: 'inherit' }}
+                      onMouseEnter={(e) => { (e.target as HTMLElement).style.background = MENU_ITEM_HOVER }}
                       onMouseLeave={(e) => { (e.target as HTMLElement).style.background = 'none' }}
                     >{isCurrent ? '✓ ' : '  '}{g.name}</button>
                   )
@@ -837,10 +850,10 @@ export default function TagCloud({ sessions, onAttach, onKill, onRename, onResta
                   <input value={newGroupName} onChange={(e) => setNewGroupName(e.target.value)}
                     onKeyDown={(e) => { if (e.key === 'Enter') handleCreateGroup(groupMenuId) }}
                     placeholder="新 Group 名..."
-                    style={{ flex: 1, padding: '3px 6px', borderRadius: 6, fontSize: 11, background: '#17172f', border: '1px solid #46465c44', color: '#e5e3ff', outline: 'none', fontFamily: 'inherit' }}
+                    style={{ flex: 1, padding: '3px 6px', borderRadius: 6, fontSize: 11, background: T.well, border: `1px solid ${T.border}1c`, color: T.text, outline: 'none', fontFamily: 'inherit' }}
                   />
                   <button onClick={() => handleCreateGroup(groupMenuId)}
-                    style={{ padding: '3px 8px', borderRadius: 6, fontSize: 11, background: '#645efb', border: 'none', color: '#fff', cursor: 'pointer', fontFamily: 'inherit' }}
+                    style={{ padding: '3px 8px', borderRadius: 6, fontSize: 11, background: T.accent, border: 'none', color: T.accentText, cursor: 'pointer', fontFamily: 'inherit' }}
                   >+</button>
                 </div>
               </>
@@ -850,7 +863,7 @@ export default function TagCloud({ sessions, onAttach, onKill, onRename, onResta
 
       {/* Group context menu */}
       {groupCtxMenu && (
-        <TagCtxMenu x={groupCtxMenu.x} y={groupCtxMenu.y} glass={theme.glass} dim={theme.dim}
+        <TagCtxMenu x={groupCtxMenu.x} y={groupCtxMenu.y}
           onClose={() => setGroupCtxMenu(null)}>
           {/* Create session in this group */}
           <button onClick={async () => {
@@ -866,10 +879,10 @@ export default function TagCloud({ sessions, onAttach, onKill, onRename, onResta
           }}
             style={{
               display: 'block', width: '100%', padding: '6px 12px', textAlign: 'left',
-              background: 'none', border: 'none', color: '#e5e3ff', cursor: 'pointer',
+              background: 'none', border: 'none', color: T.text, cursor: 'pointer',
               fontSize: 12, fontFamily: 'inherit', borderRadius: 6,
             }}
-            onMouseEnter={(e) => { (e.target as HTMLElement).style.background = `${theme.dim}33` }}
+            onMouseEnter={(e) => { (e.target as HTMLElement).style.background = MENU_ITEM_HOVER }}
             onMouseLeave={(e) => { (e.target as HTMLElement).style.background = 'none' }}
           >+ 在此组创建会话</button>
           <button onClick={async () => {
@@ -882,10 +895,10 @@ export default function TagCloud({ sessions, onAttach, onKill, onRename, onResta
           }}
             style={{
               display: 'block', width: '100%', padding: '6px 12px', textAlign: 'left',
-              background: 'none', border: 'none', color: '#e5e3ff', cursor: 'pointer',
+              background: 'none', border: 'none', color: T.text, cursor: 'pointer',
               fontSize: 12, fontFamily: 'inherit', borderRadius: 6,
             }}
-            onMouseEnter={(e) => { (e.target as HTMLElement).style.background = `${theme.dim}33` }}
+            onMouseEnter={(e) => { (e.target as HTMLElement).style.background = MENU_ITEM_HOVER }}
             onMouseLeave={(e) => { (e.target as HTMLElement).style.background = 'none' }}
           >♻️ 重启组内会话</button>
           <button onClick={async () => {
@@ -902,10 +915,10 @@ export default function TagCloud({ sessions, onAttach, onKill, onRename, onResta
           }}
             style={{
               display: 'block', width: '100%', padding: '6px 12px', textAlign: 'left',
-              background: 'none', border: 'none', color: '#e5e3ff', cursor: 'pointer',
+              background: 'none', border: 'none', color: T.text, cursor: 'pointer',
               fontSize: 12, fontFamily: 'inherit', borderRadius: 6,
             }}
-            onMouseEnter={(e) => { (e.target as HTMLElement).style.background = `${theme.dim}33` }}
+            onMouseEnter={(e) => { (e.target as HTMLElement).style.background = MENU_ITEM_HOVER }}
             onMouseLeave={(e) => { (e.target as HTMLElement).style.background = 'none' }}
           >📦 归档(结束组内会话)</button>
           {/* Rename group inline */}
@@ -922,11 +935,11 @@ export default function TagCloud({ sessions, onAttach, onKill, onRename, onResta
                 }
               }}
               placeholder="重命名..."
-              style={{ flex: 1, padding: '3px 6px', borderRadius: 6, fontSize: 11, background: '#17172f', border: '1px solid #46465c44', color: '#e5e3ff', outline: 'none', fontFamily: 'inherit' }}
+              style={{ flex: 1, padding: '3px 6px', borderRadius: 6, fontSize: 11, background: T.well, border: `1px solid ${T.border}1c`, color: T.text, outline: 'none', fontFamily: 'inherit' }}
             />
           </div>
           <div style={{ padding: '6px 10px 4px', display: 'flex', gap: 5, alignItems: 'center' }}>
-            <span style={{ fontSize: 10, color: '#aaa8c3' }}>🎨</span>
+            <span style={{ fontSize: 10, color: T.faint }}>🎨</span>
             {BUBBLE_PRESETS.map((c) => (
               <button key={c} onClick={async () => { await window.api.invoke('group:set-color', groupCtxMenu.id, c); setGroupCtxMenu(null) }}
                 style={{
@@ -935,7 +948,7 @@ export default function TagCloud({ sessions, onAttach, onKill, onRename, onResta
                 }} />
             ))}
             <button onClick={async () => { await window.api.invoke('group:set-color', groupCtxMenu.id, null); setGroupCtxMenu(null) }}
-              style={{ width: 16, height: 16, borderRadius: '50%', background: '#333', border: '1px dashed #666', cursor: 'pointer', fontSize: 8, color: '#999' }}
+              style={{ width: 16, height: 16, borderRadius: '50%', background: T.well, border: `1px dashed ${T.border}2e`, cursor: 'pointer', fontSize: 8, color: T.faint }}
               title="恢复默认">✕</button>
           </div>
         </TagCtxMenu>
@@ -972,8 +985,8 @@ export default function TagCloud({ sessions, onAttach, onKill, onRename, onResta
   )
 }
 
-function TagCtxMenu({ x, y, glass, onClose, children }: {
-  x: number; y: number; glass: string; dim?: string; onClose: () => void; children: React.ReactNode
+function TagCtxMenu({ x, y, onClose, children }: {
+  x: number; y: number; onClose: () => void; children: React.ReactNode
 }) {
   const autoCloseRef = useAutoClose(true, onClose)
   const nodeRef = useRef<HTMLDivElement | null>(null)
@@ -1020,11 +1033,10 @@ function TagCtxMenu({ x, y, glass, onClose, children }: {
 
   return (
     <div ref={setRef} style={{
+      ...menuSurface(),
       position: 'fixed', left: pos.left, top: pos.top, zIndex: 200,
-      background: `${glass}f0`, backdropFilter: 'blur(24px)', WebkitBackdropFilter: 'blur(24px)',
-      borderRadius: 12, padding: '4px 0', minWidth: 150,
+      minWidth: 150,
       maxHeight: 'calc(100vh - 8px)', overflowY: 'auto',
-      boxShadow: '0 8px 32px rgba(0,0,0,0.5)', fontFamily: "'Plus Jakarta Sans', -apple-system, sans-serif"
     }}>
       {children}
     </div>

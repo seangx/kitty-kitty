@@ -482,9 +482,9 @@ function applyStatusLineOptions(tmuxName: string): void {
   execSync(`${TMUX} set-option -t ${sq} status ${statusValue}`, { stdio: 'ignore' })
   for (let line = 0; line < lineCount; line++) {
     const clock = line === lineCount - 1
-      ? '#[fill=#1e1e36,align=right]#[fg=#aaa8c3] %H:%M '
-      : '#[fill=#1e1e36]'
-    const format = `#[bg=#1e1e36]#(${rowScript} ${line} #{session_name} #{pane_id} #{client_width})${clock}`
+      ? '#[fill=#1b1e2a,align=right]#[fg=#8f96b0] %H:%M '
+      : '#[fill=#1b1e2a]'
+    const format = `#[bg=#1b1e2a]#(${rowScript} ${line} #{session_name} #{pane_id} #{client_width})${clock}`
     execSync(`${TMUX} set-option -t ${sq} status-format[${line}] ${shellQuote(format)}`, { stdio: 'ignore' })
   }
 }
@@ -510,15 +510,15 @@ export function applyKittyStatusBar(tmuxName: string): void {
     const opts: string[] = [
       `set-option -t ${sq} status on`,
       `set-option -t ${sq} status-position bottom`,
-      `set-option -t ${sq} status-style "bg=#2a2a45,fg=#aaa8c3"`,
+      `set-option -t ${sq} status-style "bg=#1b1e2a,fg=#8f96b0"`,
       // No window list — everything is in status-format
       `set-window-option -t ${sq} window-status-format ""`,
       `set-window-option -t ${sq} window-status-current-format ""`,
       `set-option -t ${sq} status-interval 5`,
       `set-option -t ${sq} mouse on`,
       // Highlight active pane with border + top status label
-      `set-option -t ${sq} pane-active-border-style "fg=#645efb"`,
-      `set-option -t ${sq} pane-border-style "fg=#2a2a45"`,
+      `set-option -t ${sq} pane-active-border-style "fg=#5b93f0"`,
+      `set-option -t ${sq} pane-border-style "fg=#2e3446"`,
       `set-option -t ${sq} pane-border-lines single`,
       `set-option -t ${sq} pane-border-status ${PANE_BORDER_STATUS}`,
       `set-option -t ${sq} pane-border-format "${PANE_BORDER_FORMAT}"`,

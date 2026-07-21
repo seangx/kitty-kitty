@@ -14,6 +14,7 @@ import { useSessionStore } from '../store/session-store'
 import { useConfigStore } from '../store/config-store'
 import type { ToolId } from '../store/config-store'
 import type { DirectoryPickResult } from '@shared/directory-session'
+import { T, btnClose, btnGhost, inputWell, popover, popupHeader } from './ui-tokens'
 
 interface DirPickState extends DirectoryPickResult { defaultTool: ToolId }
 
@@ -184,7 +185,7 @@ export default function PetCanvas() {
       const tags: string[] = msg.tags || []
       const isError = tags.some((t: string) => /fail|error|x/i.test(t))
       const isSuccess = tags.some((t: string) => /success|check|white_check_mark/i.test(t))
-      const color = isError ? '#e11d48' : isSuccess ? '#10b981' : '#645efb'
+      const color = isError ? T.danger : isSuccess ? T.success : T.accent
       const now = new Date()
       const time = `${now.getHours().toString().padStart(2, '0')}:${now.getMinutes().toString().padStart(2, '0')}`
 
@@ -482,8 +483,8 @@ export default function PetCanvas() {
               onClick={() => { if (n.url) window.api.invoke('open-external', n.url) }}
               style={{
                 padding: '6px 10px 6px 12px', borderRadius: 10,
-                background: '#0d0d1fee', backdropFilter: 'blur(20px)', WebkitBackdropFilter: 'blur(20px)',
-                color: '#e5e3ff', fontSize: 12, lineHeight: 1.4,
+                background: `${T.well}ee`, backdropFilter: 'blur(20px)', WebkitBackdropFilter: 'blur(20px)',
+                color: T.text, fontSize: 12, lineHeight: 1.4,
                 fontFamily: "'Plus Jakarta Sans', -apple-system, sans-serif",
                 cursor: n.url ? 'pointer' : 'default',
                 boxShadow: `0 4px 16px rgba(0,0,0,0.5)`,
@@ -494,20 +495,20 @@ export default function PetCanvas() {
                   ? `ntfyFlyOut 0.2s cubic-bezier(0.55,0,1,0.45) ${dismissDelay}s forwards`
                   : `ntfySlideIn 0.4s cubic-bezier(0.34,1.56,0.64,1) ${i * 0.06}s both`,
               }}>
-              <div style={{ fontSize: 10, color: '#aaa8c3', marginBottom: 2 }}>{n.time}</div>
+              <div style={{ fontSize: 10, color: T.faint, marginBottom: 2 }}>{n.time}</div>
               <div style={{ wordBreak: 'break-word', whiteSpace: 'pre-wrap' }}>{n.text}</div>
             </div>
           )
         })}
         <button onClick={dismissNtfy} style={{
-          background: '#23233f99', border: `1px solid #46465c44`, borderRadius: 8,
-          color: '#aaa8c3', fontSize: 10, cursor: 'pointer',
+          background: `${T.surface}99`, border: `1px solid ${T.border}1c`, borderRadius: 8,
+          color: T.faint, fontSize: 10, cursor: 'pointer',
           fontFamily: 'inherit', padding: '3px 10px',
           transition: 'all 0.2s',
           opacity: ntfyDismissing ? 0 : 1,
         }}
-        onMouseEnter={(e) => (e.currentTarget.style.background = '#23233fff')}
-        onMouseLeave={(e) => (e.currentTarget.style.background = '#23233f99')}
+        onMouseEnter={(e) => (e.currentTarget.style.background = `${T.surface}ff`)}
+        onMouseLeave={(e) => (e.currentTarget.style.background = `${T.surface}99`)}
         >清除</button>
         <style>{`
           @keyframes ntfySlideIn {
@@ -663,14 +664,6 @@ export default function PetCanvas() {
   )
 }
 
-// ─── Shared popup colors ─────────────────────────────
-
-const skinC = {
-  variant: '#23233f', container: '#17172f',
-  text: '#e5e3ff', textDim: '#aaa8c3',
-  primaryDim: '#645efb', outline: '#46465c',
-}
-
 // ─── Env Editor ──────────────────
 
 function EnvEditor({ sessionId, sessionTitle, onClose, onSaved }: {
@@ -726,16 +719,13 @@ function EnvEditor({ sessionId, sessionTitle, onClose, onSaved }: {
 
   return (
     <div style={{
-      background: `${skinC.variant}f5`, backdropFilter: 'blur(32px)', WebkitBackdropFilter: 'blur(32px)',
-      borderRadius: 16, padding: 14, width: 340,
-      boxShadow: `0 12px 48px rgba(0,0,0,0.6), inset 0 1px 0 ${skinC.outline}20`,
-      fontFamily: "'Plus Jakarta Sans', -apple-system, sans-serif", color: skinC.text,
+      ...popover({ alpha: 'f5', radius: 16 }), padding: 14, width: 340,
     }}>
-      <div data-drag-handle style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 10, cursor: 'grab' }}>
+      <div data-drag-handle style={{ ...popupHeader(), marginBottom: 10 }}>
         <span style={{ fontSize: 13, fontWeight: 600 }}>⚙️ 会话设置 · {sessionTitle}</span>
-        <button onClick={onClose} style={{ background: 'none', border: 'none', color: skinC.textDim, cursor: 'pointer', fontSize: 16 }}>✕</button>
+        <button onClick={onClose} style={btnClose()}>✕</button>
       </div>
-      <div style={{ fontSize: 11, color: skinC.text, fontWeight: 600, marginBottom: 4 }}>🌱 环境变量</div>
+      <div style={{ fontSize: 11, color: T.text, fontWeight: 600, marginBottom: 4 }}>🌱 环境变量</div>
       <textarea
         value={loading ? '加载中...' : text}
         onChange={(e) => setText(e.target.value)}
@@ -744,17 +734,17 @@ function EnvEditor({ sessionId, sessionTitle, onClose, onSaved }: {
         style={{
           width: '100%', boxSizing: 'border-box', minHeight: 110,
           padding: '8px 10px', borderRadius: 8,
-          border: `1px solid ${skinC.outline}55`,
-          background: `${skinC.container}aa`,
-          color: skinC.text, fontSize: 12,
+          border: `1px solid ${T.border}1c`,
+          background: `${T.well}cc`,
+          color: T.text, fontSize: 12,
           fontFamily: 'ui-monospace, SFMono-Regular, Menlo, monospace',
           outline: 'none', resize: 'vertical',
         }}
       />
-      <div style={{ fontSize: 10, color: skinC.textDim, marginTop: 4 }}>
+      <div style={{ fontSize: 10, color: T.faint, marginTop: 4 }}>
         每行一个 KEY=VALUE
       </div>
-      <div style={{ fontSize: 11, color: skinC.text, fontWeight: 600, margin: '12px 0 4px' }}>🚀 启动参数（claude）</div>
+      <div style={{ fontSize: 11, color: T.text, fontWeight: 600, margin: '12px 0 4px' }}>🚀 启动参数（claude）</div>
       <input
         value={loading ? '加载中...' : argsClaudeText}
         onChange={(e) => setArgsClaudeText(e.target.value)}
@@ -763,14 +753,14 @@ function EnvEditor({ sessionId, sessionTitle, onClose, onSaved }: {
         style={{
           width: '100%', boxSizing: 'border-box',
           padding: '8px 10px', borderRadius: 8,
-          border: `1px solid ${skinC.outline}55`,
-          background: `${skinC.container}aa`,
-          color: skinC.text, fontSize: 12,
+          border: `1px solid ${T.border}1c`,
+          background: `${T.well}cc`,
+          color: T.text, fontSize: 12,
           fontFamily: 'ui-monospace, SFMono-Regular, Menlo, monospace',
           outline: 'none',
         }}
       />
-      <div style={{ fontSize: 11, color: skinC.text, fontWeight: 600, margin: '10px 0 4px' }}>🚀 启动参数（codex）</div>
+      <div style={{ fontSize: 11, color: T.text, fontWeight: 600, margin: '10px 0 4px' }}>🚀 启动参数（codex）</div>
       <input
         value={loading ? '加载中...' : argsCodexText}
         onChange={(e) => setArgsCodexText(e.target.value)}
@@ -779,14 +769,14 @@ function EnvEditor({ sessionId, sessionTitle, onClose, onSaved }: {
         style={{
           width: '100%', boxSizing: 'border-box',
           padding: '8px 10px', borderRadius: 8,
-          border: `1px solid ${skinC.outline}55`,
-          background: `${skinC.container}aa`,
-          color: skinC.text, fontSize: 12,
+          border: `1px solid ${T.border}1c`,
+          background: `${T.well}cc`,
+          color: T.text, fontSize: 12,
           fontFamily: 'ui-monospace, SFMono-Regular, Menlo, monospace',
           outline: 'none',
         }}
       />
-      <div style={{ fontSize: 11, color: skinC.text, fontWeight: 600, margin: '10px 0 4px' }}>🚀 启动参数（opencode）</div>
+      <div style={{ fontSize: 11, color: T.text, fontWeight: 600, margin: '10px 0 4px' }}>🚀 启动参数（opencode）</div>
       <input
         value={loading ? '加载中...' : argsOpenCodeText}
         onChange={(e) => setArgsOpenCodeText(e.target.value)}
@@ -795,26 +785,24 @@ function EnvEditor({ sessionId, sessionTitle, onClose, onSaved }: {
         style={{
           width: '100%', boxSizing: 'border-box',
           padding: '8px 10px', borderRadius: 8,
-          border: `1px solid ${skinC.outline}55`,
-          background: `${skinC.container}aa`,
-          color: skinC.text, fontSize: 12,
+          border: `1px solid ${T.border}1c`,
+          background: `${T.well}cc`,
+          color: T.text, fontSize: 12,
           fontFamily: 'ui-monospace, SFMono-Regular, Menlo, monospace',
           outline: 'none',
         }}
       />
-      <div style={{ fontSize: 10, color: skinC.textDim, marginTop: 4 }}>
+      <div style={{ fontSize: 10, color: T.faint, marginTop: 4 }}>
         按会话当前工具生效，追加在全局 toolArgs 之后。均需<b>重启会话</b>后生效
       </div>
       <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 6, marginTop: 10 }}>
         <button onClick={onClose} style={{
-          padding: '5px 12px', borderRadius: 8, background: `${skinC.container}aa`,
-          border: `1px solid ${skinC.outline}33`, color: skinC.textDim, fontSize: 11,
-          cursor: 'pointer', fontFamily: 'inherit',
+          ...btnGhost({ radius: 8 }), padding: '5px 12px', fontSize: 11,
         }}>取消</button>
         <button onClick={save} disabled={saving || loading} style={{
           padding: '5px 12px', borderRadius: 8,
-          background: skinC.primaryDim, border: 'none',
-          color: '#fff', fontSize: 11, cursor: 'pointer', fontFamily: 'inherit',
+          background: T.accent, border: 'none',
+          color: T.accentText, fontSize: 11, cursor: 'pointer', fontFamily: 'inherit',
           opacity: saving || loading ? 0.5 : 1,
         }}>{saving ? '保存中...' : '保存'}</button>
       </div>
@@ -835,20 +823,10 @@ function GroupNamePrompt({ onSubmit, onClose }: { onSubmit: (name: string) => vo
     const v = name.trim()
     if (v) onSubmit(v)
   }
-  const C = { surface: '#0c0c1f', container: '#17172f', variant: '#23233f', primary: '#a7a5ff', primaryDim: '#645efb', text: '#e5e3ff', textDim: '#aaa8c3', outline: '#46465c' }
   return (
-    <div style={{
-      background: `${C.variant}99`,
-      backdropFilter: 'blur(32px)',
-      WebkitBackdropFilter: 'blur(32px)',
-      borderRadius: 16,
-      padding: 10,
-      width: 260,
-      boxShadow: `0 10px 40px rgba(0,0,0,0.5), inset 0 1px 0 ${C.outline}26`,
-      fontFamily: "'Plus Jakarta Sans', -apple-system, sans-serif"
-    }}>
+    <div style={{ ...popover({ alpha: 'f0', radius: 16 }), padding: 10, width: 260 }}>
       <div data-drag-handle style={{ height: 4, cursor: 'grab' }} />
-      <div style={{ fontSize: 11, color: C.textDim, padding: '2px 4px 6px' }}>📁 新建分组</div>
+      <div style={{ fontSize: 11, color: T.faint, padding: '2px 4px 6px' }}>📁 新建分组</div>
       <div style={{ display: 'flex', gap: 6 }}>
         <input
           ref={inputRef}
@@ -860,17 +838,7 @@ function GroupNamePrompt({ onSubmit, onClose }: { onSubmit: (name: string) => vo
             if (e.key === 'Escape') onClose()
           }}
           placeholder="分组名称..."
-          style={{
-            flex: 1,
-            padding: '7px 12px',
-            borderRadius: 9999,
-            border: `1px solid ${C.outline}33`,
-            background: `${C.container}cc`,
-            color: C.text,
-            fontSize: 12,
-            outline: 'none',
-            fontFamily: 'inherit'
-          }}
+          style={{ ...inputWell({ radius: 9999 }), flex: 1, padding: '7px 12px' }}
         />
         <button
           onClick={submit}
@@ -878,8 +846,8 @@ function GroupNamePrompt({ onSubmit, onClose }: { onSubmit: (name: string) => vo
             padding: '7px 16px',
             borderRadius: 9999,
             border: 'none',
-            background: `linear-gradient(135deg, ${C.primary}, ${C.primaryDim})`,
-            color: C.surface,
+            background: T.accent,
+            color: T.accentText,
             fontSize: 12,
             cursor: 'pointer',
             fontWeight: 600
@@ -888,7 +856,7 @@ function GroupNamePrompt({ onSubmit, onClose }: { onSubmit: (name: string) => vo
           ▶
         </button>
       </div>
-      <div style={{ marginTop: 6, fontSize: 9, color: C.textDim, textAlign: 'center', opacity: 0.6 }}>
+      <div style={{ marginTop: 6, fontSize: 9, color: T.faint, textAlign: 'center', opacity: 0.8 }}>
         Enter 创建 · Esc 取消
       </div>
     </div>
@@ -912,61 +880,50 @@ function SessionDriftPrompt({
   onUseLatest: () => void
   onClose: () => void
 }) {
-  const C = { surface: '#0c0c1f', container: '#17172f', variant: '#23233f', primary: '#a7a5ff', primaryDim: '#645efb', text: '#e5e3ff', textDim: '#aaa8c3', outline: '#46465c' }
   const currentLabel = drift.currentId ? drift.currentId.slice(0, 8) : '(无)'
   return (
-    <div style={{
-      background: `${C.variant}f5`,
-      backdropFilter: 'blur(32px)',
-      WebkitBackdropFilter: 'blur(32px)',
-      borderRadius: 16,
-      padding: 14,
-      width: 320,
-      boxShadow: `0 12px 48px rgba(0,0,0,0.6), inset 0 1px 0 ${C.outline}26`,
-      fontFamily: "'Plus Jakarta Sans', -apple-system, sans-serif",
-      color: C.text,
-    }}>
-      <div data-drag-handle style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 10, cursor: 'grab' }}>
+    <div style={{ ...popover({ alpha: 'f5', radius: 16 }), padding: 14, width: 320 }}>
+      <div data-drag-handle style={{ ...popupHeader(), marginBottom: 10 }}>
         <div>
           <div style={{ fontSize: 13, fontWeight: 600 }}>⚠️ 检测到新对话</div>
-          <div style={{ fontSize: 10, color: C.textDim, marginTop: 2 }}>{sessionTitle}</div>
+          <div style={{ fontSize: 10, color: T.faint, marginTop: 2 }}>{sessionTitle}</div>
         </div>
-        <button onClick={onClose} style={{ background: 'none', border: 'none', color: C.textDim, cursor: 'pointer', fontSize: 14 }}>✕</button>
+        <button onClick={onClose} style={{ ...btnClose(), fontSize: 14 }}>✕</button>
       </div>
 
-      <div style={{ fontSize: 11, color: C.textDim, marginBottom: 8, lineHeight: 1.5 }}>
+      <div style={{ fontSize: 11, color: T.faint, marginBottom: 8, lineHeight: 1.5 }}>
         该目录下检测到比当前更新的对话。
-        {isRunning && <span style={{ color: C.primary }}>{' '}（仅更新记录，不重启 pane）</span>}
+        {isRunning && <span style={{ color: T.accent }}>{' '}（仅更新记录，不重启 pane）</span>}
       </div>
 
       <div style={{
-        background: `${C.container}cc`,
-        border: `1px solid ${C.outline}33`,
+        background: `${T.well}cc`,
+        border: `1px solid ${T.border}12`,
         borderRadius: 10,
         padding: '8px 10px',
         marginBottom: 8,
       }}>
-        <div style={{ fontSize: 10, color: C.textDim, marginBottom: 2 }}>当前绑定</div>
+        <div style={{ fontSize: 10, color: T.faint, marginBottom: 2 }}>当前绑定</div>
         <div style={{ fontSize: 12, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
-          {drift.currentSummary ? `📌 ${drift.currentSummary}` : <span style={{ color: C.textDim }}>📌 {currentLabel}（无预览，可能文件已被删/移动）</span>}
+          {drift.currentSummary ? `📌 ${drift.currentSummary}` : <span style={{ color: T.faint }}>📌 {currentLabel}（无预览，可能文件已被删/移动）</span>}
         </div>
-        <div style={{ fontSize: 10, color: C.textDim, marginTop: 2 }}>{drift.currentDate || '—'} · {currentLabel}</div>
+        <div style={{ fontSize: 10, color: T.faint, marginTop: 2 }}>{drift.currentDate || '—'} · {currentLabel}</div>
       </div>
 
       <div style={{
-        background: `${C.container}cc`,
-        border: `1px solid ${C.outline}33`,
+        background: `${T.well}cc`,
+        border: `1px solid ${T.border}12`,
         borderRadius: 10,
         padding: '8px 10px',
         marginBottom: 10,
       }}>
-        <div style={{ fontSize: 10, color: C.textDim, marginBottom: 2 }}>最新对话</div>
+        <div style={{ fontSize: 10, color: T.faint, marginBottom: 2 }}>最新对话</div>
         <div style={{ fontSize: 12, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
           🔄 {drift.latestSummary}
         </div>
-        <div style={{ fontSize: 10, color: C.textDim, marginTop: 2 }}>{drift.latestDate} · {drift.latestId.slice(0, 8)}</div>
+        <div style={{ fontSize: 10, color: T.faint, marginTop: 2 }}>{drift.latestDate} · {drift.latestId.slice(0, 8)}</div>
         {drift.latestCwd && (
-          <div style={{ fontSize: 10, marginTop: 4, color: drift.latestCwdMatch === false ? '#f59e0b' : C.textDim, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+          <div style={{ fontSize: 10, marginTop: 4, color: drift.latestCwdMatch === false ? T.warning : T.faint, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
             {drift.latestCwdMatch === false ? '⚠ 不同目录: ' : '目录: '}
             <span style={{ fontFamily: 'ui-monospace, Menlo, monospace' }}>{drift.latestCwd}</span>
           </div>
@@ -977,9 +934,8 @@ function SessionDriftPrompt({
         <button
           onClick={onKeepCurrent}
           style={{
-            flex: 1, padding: '8px 12px', borderRadius: 10,
-            background: `${C.container}cc`, border: `1px solid ${C.outline}44`,
-            color: C.text, fontSize: 12, fontWeight: 600, cursor: 'pointer', fontFamily: 'inherit',
+            ...btnGhost({ radius: 10 }),
+            flex: 1, padding: '8px 12px', color: T.text, fontWeight: 600,
           }}
         >
           继续当前
@@ -988,8 +944,8 @@ function SessionDriftPrompt({
           onClick={onUseLatest}
           style={{
             flex: 1, padding: '8px 12px', borderRadius: 10,
-            background: `linear-gradient(135deg, ${C.primary}, ${C.primaryDim})`,
-            border: 'none', color: C.surface, fontSize: 12, fontWeight: 600, cursor: 'pointer', fontFamily: 'inherit',
+            background: T.accent,
+            border: 'none', color: T.accentText, fontSize: 12, fontWeight: 600, cursor: 'pointer', fontFamily: 'inherit',
           }}
         >
           切到最新
