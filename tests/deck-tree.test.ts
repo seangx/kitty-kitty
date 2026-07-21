@@ -4,10 +4,11 @@ import { readFile } from 'node:fs/promises'
 import {
   buildDeckForest,
   chooseVerticalDirection,
+  collectDeckSubtreeGroupIds,
   countDeckDescendants,
   nextDeckAxis,
-  openDeckPath,
-  toggleDeckPath,
+  openDeckGroup,
+  toggleDeckSubtree,
 } from '../src/renderer/pet/deck-tree.ts'
 import type { GroupInfo, SessionInfo } from '../src/shared/types/session.ts'
 
@@ -57,13 +58,43 @@ test('Deck axes alternate and vertical branches choose the side with room', () =
   assert.equal(chooseVerticalDirection(500, 560, 180, 650), 'up')
 })
 
-test('toggleDeckPath keeps one active group per hierarchy depth', () => {
-  assert.deepEqual(toggleDeckPath(['monkey', 'workers'], 1, 'qa'), ['monkey', 'qa'])
-  assert.deepEqual(toggleDeckPath(['monkey', 'workers'], 1, 'workers'), ['monkey'])
+test('clicking a Deck group opens every descendant group in its subtree', () => {
+  const groups: GroupInfo[] = [
+    { id: 'monkey', name: 'monkey' },
+    { id: 'workers', name: 'workers', parentGroupId: 'monkey' },
+    { id: 'qa', name: 'qa', parentGroupId: 'monkey' },
+    { id: 'e2e', name: 'e2e', parentGroupId: 'qa' },
+  ]
+  const root = buildDeckForest(groups, [session('worker-a', 'workers'), session('tester', 'e2e')])[0]
+
+  assert.deepEqual(collectDeckSubtreeGroupIds(root), ['monkey', 'workers', 'qa', 'e2e'])
+  assert.deepEqual(toggleDeckSubtree([], root, true), ['monkey', 'workers', 'qa', 'e2e'])
+  assert.deepEqual(toggleDeckSubtree(['monkey', 'qa'], root, true), ['monkey', 'workers', 'qa', 'e2e'])
+  assert.deepEqual(toggleDeckSubtree(['monkey', 'workers', 'qa', 'e2e'], root, true), [])
 })
 
-test('openDeckPath opens a parent after creating its child group', () => {
-  assert.deepEqual(openDeckPath(['monkey', 'old-child'], 1, 'workers'), ['monkey', 'workers'])
+test('nested Deck groups toggle their own subtree without closing siblings', () => {
+  const groups: GroupInfo[] = [
+    { id: 'monkey', name: 'monkey' },
+    { id: 'workers', name: 'workers', parentGroupId: 'monkey' },
+    { id: 'qa', name: 'qa', parentGroupId: 'monkey' },
+    { id: 'e2e', name: 'e2e', parentGroupId: 'qa' },
+  ]
+  const root = buildDeckForest(groups, [])[0]
+  const qa = root.children.find((child) => child.group.id === 'qa')!
+  const allOpen = collectDeckSubtreeGroupIds(root)
+
+  assert.deepEqual(toggleDeckSubtree(allOpen, qa), ['monkey', 'workers'])
+  assert.deepEqual(toggleDeckSubtree(['monkey', 'workers'], qa), ['monkey', 'workers', 'qa', 'e2e'])
+  assert.deepEqual(openDeckGroup(['monkey'], 'monkey'), ['monkey'])
+  assert.deepEqual(openDeckGroup(['monkey'], 'workers'), ['monkey', 'workers'])
+})
+
+test('SessionDeck wires group clicks to recursive subtree expansion', async () => {
+  const source = await readFile(new URL('../src/renderer/pet/SessionDeck.tsx', import.meta.url), 'utf8')
+
+  assert.match(source, /toggleDeckSubtree\(openGroupIds, node, depth === 0\)/)
+  assert.match(source, /const isOpen = openGroupIds\.includes\(groupId\)/)
 })
 
 test('child group creation uses the in-app name dialog instead of Electron window.prompt', async () => {
@@ -79,7 +110,7 @@ test('Deck keeps one shared rail and dismisses expanded branches away from it', 
   const groupAddCss = css.match(/\.session-deck__group-add \{([^}]*)\}/)?.[1] || ''
 
   assert.match(source, /window\.api\.on\('window-blur', closeTransientSurfaces\)/)
-  assert.match(source, /const collapseBranches = useCallback\(\(\) => \{[\s\S]*?setOpenPath\(\[\]\)/)
+  assert.match(source, /const collapseBranches = useCallback\(\(\) => \{[\s\S]*?setOpenGroupIds\(\[\]\)/)
   assert.match(css, /\.session-deck__rail \{[\s\S]*?background: linear-gradient/)
   assert.match(groupAddCss, /bottom: -6px;/)
   assert.doesNotMatch(groupAddCss, /top: -6px;/)

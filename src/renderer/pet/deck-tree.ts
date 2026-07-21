@@ -71,12 +71,32 @@ export function chooseVerticalDirection(
   return roomBelow >= roomAbove ? 'down' : 'up'
 }
 
-export function toggleDeckPath(path: string[], depth: number, groupId: string): string[] {
-  const prefix = path.slice(0, depth)
-  if (path[depth] === groupId) return prefix
-  return [...prefix, groupId]
+export function collectDeckSubtreeGroupIds(node: DeckGroupNode): string[] {
+  return [
+    node.group.id,
+    ...node.children.flatMap(collectDeckSubtreeGroupIds),
+  ]
 }
 
-export function openDeckPath(path: string[], depth: number, groupId: string): string[] {
-  return [...path.slice(0, depth), groupId]
+export function toggleDeckSubtree(
+  openGroupIds: string[],
+  node: DeckGroupNode,
+  exclusive = false,
+): string[] {
+  const subtreeIds = collectDeckSubtreeGroupIds(node)
+  const subtree = new Set(subtreeIds)
+  const open = new Set(openGroupIds)
+  const fullyOpen = subtreeIds.every((id) => open.has(id))
+
+  if (fullyOpen) return openGroupIds.filter((id) => !subtree.has(id))
+  if (exclusive) return subtreeIds
+
+  return [
+    ...openGroupIds,
+    ...subtreeIds.filter((id) => !open.has(id)),
+  ]
+}
+
+export function openDeckGroup(openGroupIds: string[], groupId: string): string[] {
+  return openGroupIds.includes(groupId) ? openGroupIds : [...openGroupIds, groupId]
 }

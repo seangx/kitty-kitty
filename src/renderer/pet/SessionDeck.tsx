@@ -8,8 +8,8 @@ import {
   chooseVerticalDirection,
   countDeckDescendants,
   nextDeckAxis,
-  openDeckPath,
-  toggleDeckPath,
+  openDeckGroup,
+  toggleDeckSubtree,
   type DeckAxis,
   type DeckEdge,
   type DeckGroupNode,
@@ -102,7 +102,7 @@ export default function SessionDeck({
   const needsInput = useSessionStore((state) => state.needsInput)
   const loadSessions = useSessionStore((state) => state.loadSessions)
   const [groups, setGroups] = useState<GroupInfo[]>([])
-  const [openPath, setOpenPath] = useState<string[]>([])
+  const [openGroupIds, setOpenGroupIds] = useState<string[]>([])
   const [verticalDirections, setVerticalDirections] = useState<Record<string, VerticalDirection>>({})
   const [activeSessionId, setActiveSessionId] = useState<string | null>(null)
   const [drag, setDrag] = useState<DragState | null>(null)
@@ -119,7 +119,7 @@ export default function SessionDeck({
   const branchPortalRef = useRef<HTMLDivElement | null>(null)
 
   const collapseBranches = useCallback(() => {
-    setOpenPath([])
+    setOpenGroupIds([])
     setVerticalDirections({})
     setRootBranchStyle(null)
   }, [])
@@ -181,38 +181,50 @@ export default function SessionDeck({
     ...forest.map((node): DeckItem => ({ kind: 'group', node })),
   ], [ungrouped, forest])
 
-  const setExpandedPath = useCallback((next: string[]) => {
-    setOpenPath(next)
-  }, [])
+  // A root click can reveal several nested vertical branches in one render.
+  // Measure every newly visible group card so each branch chooses the side with
+  // usable viewport space, not only the group that received the original click.
+  useLayoutEffect(() => {
+    if (openGroupIds.length === 0) {
+      setVerticalDirections((current) => Object.keys(current).length === 0 ? current : {})
+      return
+    }
+    const next: Record<string, VerticalDirection> = {}
+    const cards = document.querySelectorAll<HTMLElement>('[data-deck-group-id][data-child-axis="vertical"]')
+    for (const card of cards) {
+      const groupId = card.dataset.deckGroupId
+      if (!groupId || !openGroupIds.includes(groupId)) continue
+      const itemCount = Number(card.dataset.childCount) || 1
+      const rect = card.getBoundingClientRect()
+      const height = Math.min(Math.max(itemCount, 1), 6) * 76 + 24
+      next[groupId] = chooseVerticalDirection(rect.top, rect.bottom, height, window.innerHeight)
+    }
+    setVerticalDirections((current) => {
+      const currentKeys = Object.keys(current)
+      const nextKeys = Object.keys(next)
+      const unchanged = currentKeys.length === nextKeys.length
+        && nextKeys.every((key) => current[key] === next[key])
+      return unchanged ? current : next
+    })
+  }, [groups, openGroupIds, visibleSessions])
 
   const toggleGroup = useCallback((
-    groupId: string,
+    node: DeckGroupNode,
     depth: number,
-    parentAxis: DeckAxis,
     target: HTMLElement,
-    itemCount: number,
   ) => {
-    const nextPath = toggleDeckPath(openPath, depth, groupId)
-    if (depth === 0) {
-      if (nextPath[0] === groupId) {
-        const rect = target.getBoundingClientRect()
-        setRootBranchStyle(edge === 'left'
-          ? { top: rect.top + rect.height / 2, left: rect.right + 14 }
-          : { top: rect.top + rect.height / 2, right: window.innerWidth - rect.left + 14 })
-      } else {
-        setRootBranchStyle(null)
-      }
-    }
-    if (nextDeckAxis(parentAxis) === 'vertical') {
+    const groupId = node.group.id
+    const next = toggleDeckSubtree(openGroupIds, node, depth === 0)
+    if (depth === 0 && next.includes(groupId)) {
       const rect = target.getBoundingClientRect()
-      const height = Math.min(Math.max(itemCount, 1), 6) * 76 + 24
-      setVerticalDirections((current) => ({
-        ...current,
-        [groupId]: chooseVerticalDirection(rect.top, rect.bottom, height, window.innerHeight),
-      }))
+      setRootBranchStyle(edge === 'left'
+        ? { top: rect.top + rect.height / 2, left: rect.right + 14 }
+        : { top: rect.top + rect.height / 2, right: window.innerWidth - rect.left + 14 })
+    } else if (depth === 0) {
+      setRootBranchStyle(null)
     }
-    setExpandedPath(nextPath)
-  }, [edge, openPath, setExpandedPath])
+    setOpenGroupIds(next)
+  }, [edge, openGroupIds])
 
   const refresh = useCallback(async () => {
     await Promise.all([loadGroups(), loadSessions()])
@@ -286,7 +298,7 @@ export default function SessionDeck({
       await refresh()
       if (depth !== undefined) {
         if (depth === 0 && nextRootBranchStyle) setRootBranchStyle(nextRootBranchStyle)
-        setOpenPath((current) => openDeckPath(current, depth, groupId))
+        setOpenGroupIds((current) => openDeckGroup(current, groupId))
       }
       setChildGroupDialog(null)
     } catch (error) {
@@ -391,7 +403,7 @@ export default function SessionDeck({
 
   const renderGroup = (node: DeckGroupNode, axis: DeckAxis, depth: number, compact = false) => {
     const groupId = node.group.id
-    const isOpen = openPath[depth] === groupId
+    const isOpen = openGroupIds.includes(groupId)
     const items = childItems(node)
     const childAxis = nextDeckAxis(axis)
     const direction = verticalDirections[groupId] || 'down'
@@ -418,13 +430,16 @@ export default function SessionDeck({
       <div className="session-deck__item-anchor" key={`group:${groupId}`}>
         <div
           data-drop={`group:${groupId}`}
+          data-deck-group-id={groupId}
+          data-child-axis={childAxis}
+          data-child-count={items.length}
           className={`session-deck__item session-deck__group${isOpen ? ' is-selected' : ''}${compact ? ' is-compact' : ''}${dragging ? ' is-dragging' : ''}${isDropTarget ? ' is-drop-target' : ''}`}
           onMouseDown={(event) => {
             const target = event.currentTarget
             startDrag(
               event,
               { kind: 'group', id: groupId, title: node.group.name },
-              () => toggleGroup(groupId, depth, axis, target, items.length),
+              () => toggleGroup(node, depth, target),
             )
           }}
           onContextMenu={(event) => {
