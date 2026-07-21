@@ -38,7 +38,8 @@ export function applyFloatingDeckBounds(
 
 /**
  * Deck 不再依赖屏幕吸附。它以猫当前的水平中心为基准扩展，并根据猫位于
- * 屏幕哪一半选择长条栏所在侧；最终窗口始终限制在当前显示器工作区内。
+ * 屏幕哪一半选择长条栏所在侧。展开后的窗口使用当前显示器完整工作区高度，
+ * 让长条栏随屏幕变化，同时避开菜单栏和 Dock。
  */
 export function getFloatingDeckLayout(
   current: DeckWindowBounds,
@@ -49,14 +50,13 @@ export function getFloatingDeckLayout(
   const width = Math.min(FLOATING_DECK_WIDTH, workArea.width)
   const idealX = petCenterX - width / 2
   const x = Math.max(workArea.x, Math.min(idealX, workArea.x + workArea.width - width))
-  const y = Math.max(workArea.y, Math.min(current.y, workArea.y + workArea.height - current.height))
   return {
     edge,
     bounds: {
       x: Math.round(x),
-      y: Math.round(y),
+      y: workArea.y,
       width,
-      height: current.height,
+      height: workArea.height,
     },
   }
 }
