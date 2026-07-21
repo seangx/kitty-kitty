@@ -15,15 +15,23 @@ async function pngSize(name: string): Promise<{ width: number; height: number }>
   return { width: png.readUInt32BE(16), height: png.readUInt32BE(20) }
 }
 
-test('approved calico animations keep a stable 2x canvas scale', async () => {
+test('calico idle is normalized from the deck transition anchor', async () => {
   const names = await readdir(SPRITES)
   const idle = names.filter((name) => /^idle-\d+\.png$/.test(name)).sort()
   const deckOpen = names.filter((name) => /^deck-open-\d+\.png$/.test(name)).sort()
+  const [pngSprite, normalizer] = await Promise.all([
+    source('src/renderer/pet/PngSprite.tsx'),
+    source('tools/normalize-pet-idle-strip.py'),
+  ])
 
-  assert.equal(idle.length, 10)
+  assert.equal(idle.length, 5)
   assert.equal(deckOpen.length, 12)
-  for (const name of idle) assert.deepEqual(await pngSize(name), { width: 448, height: 256 })
+  for (const name of idle) assert.deepEqual(await pngSize(name), { width: 320, height: 256 })
   for (const name of deckOpen) assert.deepEqual(await pngSize(name), { width: 320, height: 512 })
+  assert.match(pngSprite, /'calico\/idle': \{ width: 320, height: 256 \}/)
+  assert.match(pngSprite, /'idle': 220/)
+  assert.match(normalizer, /shared_scale = anchor_width \/ first_width/)
+  assert.match(normalizer, /anchor\.crop\(\(0, anchor\.height - height, width, anchor\.height\)\)/)
 })
 
 test('deck opens only after the one-shot stretch animation', async () => {
@@ -35,7 +43,7 @@ test('deck opens only after the one-shot stretch animation', async () => {
   ])
 
   assert.match(types, /\| 'deck-open'/)
-  assert.match(pngSprite, /'calico\/idle': \{ width: 448, height: 256 \}/)
+  assert.match(pngSprite, /'calico\/idle': \{ width: 320, height: 256 \}/)
   assert.match(pngSprite, /'calico\/deck-open': \{ width: 320, height: 512 \}/)
   assert.match(pngSprite, /'deck-open': 90/)
   assert.match(pngSprite, /clock\.key === animationKey \? clock\.tick : 0/)
