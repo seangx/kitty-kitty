@@ -28,7 +28,7 @@ interface Props {
   onCreateInDirectory: () => void
   onAttach: (id: string) => void
   onKill: (id: string) => void
-  onRename: (id: string, title: string) => void
+  onRename: (id: string, title: string) => Promise<void> | void
   onRestart: (id: string) => void
   onClearConversation: (id: string) => void
   onEditEnv: (id: string) => void
@@ -55,6 +55,14 @@ interface ChildGroupDialogState {
   x: number
   y: number
   rootBranchStyle?: React.CSSProperties
+}
+
+interface RenameDialogState {
+  kind: 'session' | 'group'
+  id: string
+  currentName: string
+  x: number
+  y: number
 }
 
 interface GroupRestartState extends GroupRestartProgress {
@@ -114,6 +122,9 @@ export default function SessionDeck({
   const [childGroupDialog, setChildGroupDialog] = useState<ChildGroupDialogState | null>(null)
   const [childGroupCreating, setChildGroupCreating] = useState(false)
   const [childGroupError, setChildGroupError] = useState('')
+  const [renameDialog, setRenameDialog] = useState<RenameDialogState | null>(null)
+  const [renameBusy, setRenameBusy] = useState(false)
+  const [renameError, setRenameError] = useState('')
   const [rootBranchStyle, setRootBranchStyle] = useState<React.CSSProperties | null>(null)
   const [groupRestart, setGroupRestart] = useState<GroupRestartState | null>(null)
   const branchPortalRef = useRef<HTMLDivElement | null>(null)
@@ -141,6 +152,7 @@ export default function SessionDeck({
       setSessionMenu(null)
       setGroupMenu(null)
       setCreateMenu(null)
+      setRenameDialog(null)
       setShowMoveMenu(false)
       collapseBranches()
     }
@@ -309,6 +321,26 @@ export default function SessionDeck({
       setChildGroupCreating(false)
     }
   }, [childGroupDialog, refresh])
+
+  const submitRename = useCallback(async (name: string) => {
+    if (!renameDialog) return
+    try {
+      setRenameBusy(true)
+      setRenameError('')
+      if (renameDialog.kind === 'session') {
+        await onRename(renameDialog.id, name)
+      } else {
+        await window.api.invoke('group:rename', renameDialog.id, name)
+        await refresh()
+      }
+      setRenameDialog(null)
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error)
+      setRenameError(`重命名失败：${message}`)
+    } finally {
+      setRenameBusy(false)
+    }
+  }, [onRename, refresh, renameDialog])
 
   const executeDrop = useCallback(async (state: DragState, target: string) => {
     try {
@@ -604,6 +636,25 @@ export default function SessionDeck({
         />
       )}
 
+      {renameDialog && (
+        <DeckNameDialog
+          key={`${renameDialog.kind}:${renameDialog.id}`}
+          x={renameDialog.x}
+          y={renameDialog.y}
+          title={renameDialog.kind === 'session' ? '重命名会话' : '重命名分组'}
+          initialValue={renameDialog.currentName}
+          placeholder={renameDialog.kind === 'session' ? '会话名称' : '分组名称'}
+          submitLabel="保存"
+          busyLabel="保存中…"
+          busy={renameBusy}
+          error={renameError}
+          onClose={() => {
+            if (!renameBusy) setRenameDialog(null)
+          }}
+          onSubmit={(name) => { void submitRename(name) }}
+        />
+      )}
+
       {sessionMenu && selectedSession && (
         <DeckMenu x={sessionMenu.x} y={sessionMenu.y} onClose={() => { setSessionMenu(null); setShowMoveMenu(false) }}>
           <button onClick={() => { attach(selectedSession); setSessionMenu(null) }}>打开会话</button>
@@ -612,8 +663,14 @@ export default function SessionDeck({
           <button onClick={() => { onEditEnv(selectedSession.id); setSessionMenu(null) }}>环境与参数</button>
           <button onClick={() => { onOpenSkills(selectedSession.id); setSessionMenu(null) }}>技能 / MCP</button>
           <button onClick={() => {
-            const title = window.prompt('会话名称', selectedSession.title)?.trim()
-            if (title) onRename(selectedSession.id, title)
+            setRenameError('')
+            setRenameDialog({
+              kind: 'session',
+              id: selectedSession.id,
+              currentName: selectedSession.title,
+              x: sessionMenu.x,
+              y: sessionMenu.y,
+            })
             setSessionMenu(null)
           }}>重命名</button>
           <button onClick={() => setShowMoveMenu((value) => !value)}>移动到分组…</button>
@@ -640,10 +697,15 @@ export default function SessionDeck({
             openChildGroupDialog(selectedGroup.id, undefined, groupMenu.x, groupMenu.y)
           }}>新建子分组</button>
           <button onClick={async () => {
-            const name = window.prompt('分组名称', selectedGroup.name)?.trim()
-            if (name) await window.api.invoke('group:rename', selectedGroup.id, name)
+            setRenameError('')
+            setRenameDialog({
+              kind: 'group',
+              id: selectedGroup.id,
+              currentName: selectedGroup.name,
+              x: groupMenu.x,
+              y: groupMenu.y,
+            })
             setGroupMenu(null)
-            await refresh()
           }}>重命名</button>
           {selectedGroup.parentGroupId && (
             <button onClick={async () => { await window.api.invoke('group:set-parent', selectedGroup.id, null); setGroupMenu(null); await refresh() }}>移到根层级</button>
@@ -701,10 +763,26 @@ function GroupRestartProgressCard({ progress, onClose }: {
   )
 }
 
-function DeckNameDialog({ x, y, title, busy, error, onClose, onSubmit }: {
+function DeckNameDialog({
+  x,
+  y,
+  title,
+  initialValue = '',
+  placeholder = '子分组名称',
+  submitLabel = '创建',
+  busyLabel = '创建中…',
+  busy,
+  error,
+  onClose,
+  onSubmit,
+}: {
   x: number
   y: number
   title: string
+  initialValue?: string
+  placeholder?: string
+  submitLabel?: string
+  busyLabel?: string
   busy: boolean
   error: string
   onClose: () => void
@@ -712,7 +790,7 @@ function DeckNameDialog({ x, y, title, busy, error, onClose, onSubmit }: {
 }) {
   const dialogRef = useRef<HTMLDivElement | null>(null)
   const inputRef = useRef<HTMLInputElement | null>(null)
-  const [name, setName] = useState('')
+  const [name, setName] = useState(initialValue)
   const [position, setPosition] = useState({ left: x, top: y })
 
   const submit = useCallback(() => {
@@ -730,6 +808,7 @@ function DeckNameDialog({ x, y, title, busy, error, onClose, onSubmit }: {
   useLayoutEffect(reposition, [reposition])
   useEffect(() => {
     inputRef.current?.focus()
+    if (initialValue) inputRef.current?.select()
     const onMouseDown = (event: MouseEvent) => {
       if (!dialogRef.current?.contains(event.target as Node)) onClose()
     }
@@ -740,7 +819,7 @@ function DeckNameDialog({ x, y, title, busy, error, onClose, onSubmit }: {
       document.removeEventListener('mousedown', onMouseDown)
       window.removeEventListener('resize', onResize)
     }
-  }, [onClose, reposition])
+  }, [initialValue, onClose, reposition])
 
   return (
     <div
@@ -757,7 +836,7 @@ function DeckNameDialog({ x, y, title, busy, error, onClose, onSubmit }: {
         ref={inputRef}
         value={name}
         disabled={busy}
-        placeholder="子分组名称"
+        placeholder={placeholder}
         onChange={(event) => setName(event.target.value)}
         onKeyDown={(event) => {
           if (event.key === 'Enter') submit()
@@ -768,7 +847,7 @@ function DeckNameDialog({ x, y, title, busy, error, onClose, onSubmit }: {
       <div className="session-deck__name-dialog-actions">
         <button onClick={onClose} disabled={busy}>取消</button>
         <button className="is-primary" onClick={submit} disabled={busy || !name.trim()}>
-          {busy ? '创建中…' : '创建'}
+          {busy ? busyLabel : submitLabel}
         </button>
       </div>
     </div>

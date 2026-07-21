@@ -104,6 +104,29 @@ test('child group creation uses the in-app name dialog instead of Electron windo
   assert.match(source, /<DeckNameDialog/)
 })
 
+test('Deck renames sessions and groups through the in-app name dialog', async () => {
+  const source = await readFile(new URL('../src/renderer/pet/SessionDeck.tsx', import.meta.url), 'utf8')
+
+  assert.doesNotMatch(source, /window\.prompt/)
+  assert.match(source, /interface RenameDialogState/)
+  assert.match(source, /initialValue=\{renameDialog\.currentName\}/)
+  assert.match(source, /await onRename\(renameDialog\.id, name\)/)
+  assert.match(source, /await window\.api\.invoke\('group:rename', renameDialog\.id, name\)/)
+})
+
+test('session rename uses Hive dedicated rename command and reports sync failures', async () => {
+  const handlers = await readFile(new URL('../src/main/ipc/session-handlers.ts', import.meta.url), 'utf8')
+  const start = handlers.indexOf("ipcMain.handle('session:rename'")
+  const end = handlers.indexOf("ipcMain.handle('session:set-roles'", start)
+  const renameHandler = handlers.slice(start, end)
+
+  assert.notEqual(start, -1)
+  assert.notEqual(end, -1)
+  assert.match(renameHandler, /await renameAgent\(session\.hiveAgentId, cleanTitle\)/)
+  assert.doesNotMatch(renameHandler, /hiveCli\(\['agent', 'register'/)
+  assert.match(renameHandler, /localRenamed: true/)
+})
+
 test('Deck keeps one shared rail and dismisses expanded branches away from it', async () => {
   const source = await readFile(new URL('../src/renderer/pet/SessionDeck.tsx', import.meta.url), 'utf8')
   const css = await readFile(new URL('../src/renderer/pet/SessionDeck.css', import.meta.url), 'utf8')

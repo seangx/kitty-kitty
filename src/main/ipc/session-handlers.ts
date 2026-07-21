@@ -622,21 +622,34 @@ export function registerSessionHandlers(): void {
   })
 
   // Rename a session
-  ipcMain.handle('session:rename', (_event, id: string, title: string) => {
+  ipcMain.handle('session:rename', async (_event, id: string, title: string) => {
+    const cleanTitle = title.trim()
+    if (!cleanTitle) return { success: false, message: '会话名称不能为空' }
     const session = sessionRepo.listSessions().find((row) => row.id === id)
-    sessionRepo.updateSessionTitle(id, title)
+    if (!session) return { success: false, message: '会话不存在' }
+    sessionRepo.updateSessionTitle(id, cleanTitle)
     tmux.refreshAllStatusBars()
-    if (session && !tmux.refreshPaneLabelForSession({
+    if (!tmux.refreshPaneLabelForSession({
       tmuxName: session.tmuxName,
       paneId: session.paneId,
       cwd: session.cwd,
-      title,
+      title: cleanTitle,
     })) {
       log('session', `rename pane label refresh missed: ${id}`)
     }
-    // Sync display_name to hive so agents keep the same id but show the new title
-    if (title && title.trim()) {
-      hiveCli(['agent', 'register', '--key', id, '--display-name', title])
+    // Hive rejects display-name changes through the registration path. Preserve
+    // the agent identity and use its dedicated rename command instead.
+    if (session.hiveAgentId) {
+      const result = await renameAgent(session.hiveAgentId, cleanTitle)
+      if (!result.success) {
+        const detail = result.error || '未知错误'
+        log('session', `rename hive sync failed: ${id}: ${detail}`)
+        return {
+          success: false,
+          localRenamed: true,
+          message: `Kitty 已改名，但 Hive 同步失败：${detail}`,
+        }
+      }
     }
     return { success: true }
   })
