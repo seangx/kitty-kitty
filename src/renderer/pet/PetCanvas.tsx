@@ -23,6 +23,14 @@ interface DirPickState extends DirectoryPickResult { defaultTool: ToolId }
 
 const DECK_OPEN_TRANSITION_MS = 1080
 
+function waitForNextPaint(): Promise<void> {
+  return new Promise((resolve) => {
+    window.requestAnimationFrame(() => {
+      window.requestAnimationFrame(() => resolve())
+    })
+  })
+}
+
 export default function PetCanvas() {
   const [animation, setAnimation] = useState<AnimationState>('idle')
   const [showInput, setShowInput] = useState(false)
@@ -514,14 +522,26 @@ export default function PetCanvas() {
     if (!deckOpen || deckClosing) return
     setDeckClosing(true)
     deckCloseTimer.current = setTimeout(async () => {
-      // 先让主进程瞬时收回窗口，再挂载猫，避免猫在宽窗口里横跳一帧。
-      await window.api.invoke('pet:set-deck-open', false)
-      machine.forceState('idle')
-      setDeckOpen(false)
-      setDeckClosing(false)
-      deckCloseTimer.current = null
+      // Unmount Deck before shrinking, then keep one transparent painted frame
+      // after the resize before mounting the pet in the restored coordinates.
+      flushSync(() => setDeckHandoff(true))
+      try {
+        await window.api.invoke('pet:set-deck-open', false)
+        flushSync(() => {
+          machine.forceState('idle')
+          setDeckOpen(false)
+        })
+        await waitForNextPaint()
+      } catch (err) {
+        console.error('[kitty] close deck failed:', err)
+        say('收起边栏失败了喵...')
+      } finally {
+        setDeckHandoff(false)
+        setDeckClosing(false)
+        deckCloseTimer.current = null
+      }
     }, 150)
-  }, [deckClosing, deckOpen, machine])
+  }, [deckClosing, deckOpen, machine, say])
 
   const petStageSize = getPetAnimationStageSize(bubble.skin, 128)
 
@@ -683,7 +703,7 @@ export default function PetCanvas() {
       onMouseDown={handleMouseDown} onClick={handleClick} onContextMenu={handleContextMenu}
       onMouseMove={handleMouseMove} onMouseLeave={handleMouseLeave}
     >
-      {deckOpen && <SessionDeck
+      {deckOpen && !deckHandoff && <SessionDeck
         sessions={sessions}
         edge={deckEdge}
         closing={deckClosing}
