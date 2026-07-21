@@ -5,10 +5,13 @@ import { resolveAnimationFrame } from './frame-animation'
 import './PngSprite.css'
 
 /**
- * Load all PNG sprite frames at build time via Vite glob import.
- * File layout: src/renderer/pet/sprites/<skin>/<state>-<idx>.png
+ * Load all raster sprite frames at build time via Vite glob import.
+ * File layout: src/renderer/pet/sprites/<skin>/<state>-<idx>.(png|webp)
  */
-const FRAME_URLS = import.meta.glob('./sprites/*/*.png', { eager: true, query: '?url', import: 'default' }) as Record<string, string>
+const FRAME_URLS = import.meta.glob(
+  ['./sprites/*/*.png', './sprites/*/*.webp'],
+  { eager: true, query: '?url', import: 'default' },
+) as Record<string, string>
 
 /**
  * Group urls by `${skin}/${state}` → sorted frame URLs.
@@ -16,8 +19,8 @@ const FRAME_URLS = import.meta.glob('./sprites/*/*.png', { eager: true, query: '
 const FRAME_INDEX: Record<string, string[]> = (() => {
   const map: Record<string, { idx: number; url: string }[]> = {}
   for (const [path, url] of Object.entries(FRAME_URLS)) {
-    // path example: ./sprites/calico/idle-0.png
-    const match = path.match(/\/sprites\/([^/]+)\/([\w-]+?)-(\d+)\.png$/)
+    // path example: ./sprites/calico/idle-0.webp
+    const match = path.match(/\/sprites\/([^/]+)\/([\w-]+?)-(\d+)\.(?:png|webp)$/)
     if (!match) continue
     const [, skin, state, idx] = match
     const key = `${skin}/${state}`
@@ -39,10 +42,10 @@ export function skinHasPngSprites(skin: SkinId): boolean {
   return false
 }
 
-/** Frame timing per animation state (ms per frame). Generated idle in-betweens
- *  run at 12.5fps; sparse legacy clips retain their calmer per-frame timing. */
+/** Frame timing per animation state (ms per frame). The generated idle clip
+ *  keeps its native 24fps cadence; sparse legacy clips stay deliberately calmer. */
 const INTERVAL_MS: Record<AnimationState, number> = {
-  'idle': 80,
+  'idle': 42,
   'walk-left': 110,
   'walk-right': 110,
   'sleep': 180,
@@ -64,7 +67,7 @@ const INTERVAL_MS: Record<AnimationState, number> = {
  *  back-and-forth read is seamless. Locomotion/tumbling clips are left as plain
  *  forward loops since reversing them would look like walking backwards. */
 const PING_PONG: Set<AnimationState> = new Set([
-  'idle', 'sleep', 'sad', 'stretch', 'think', 'lick', 'talk', 'happy',
+  'sleep', 'sad', 'stretch', 'think', 'lick', 'talk', 'happy',
 ])
 
 /** Transition clips must hold their final pose until the destination UI is ready. */
