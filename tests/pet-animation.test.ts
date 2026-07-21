@@ -87,6 +87,26 @@ test('one-shot deck animation holds its last frame instead of wrapping to idle',
   assert.equal(resolveAnimationFrame(12, 12), 0)
 })
 
+test('deck close keeps a transparent handoff frame before mounting idle', async () => {
+  const canvas = await source('src/renderer/pet/PetCanvas.tsx')
+  const closeStart = canvas.indexOf('const closeDeck = useCallback')
+  const closeEnd = canvas.indexOf('const petStageSize', closeStart)
+  const closeBlock = canvas.slice(closeStart, closeEnd)
+  const hideDeck = closeBlock.indexOf('setDeckHandoff(true)')
+  const shrinkWindow = closeBlock.indexOf("window.api.invoke('pet:set-deck-open', false)")
+  const unmountDeck = closeBlock.indexOf('setDeckOpen(false)')
+  const waitForPaint = closeBlock.indexOf('await waitForNextPaint()')
+  const showPet = closeBlock.indexOf('setDeckHandoff(false)')
+
+  assert.ok(hideDeck >= 0 && hideDeck < shrinkWindow)
+  assert.ok(shrinkWindow < unmountDeck)
+  assert.ok(unmountDeck < waitForPaint)
+  assert.ok(waitForPaint < showPet)
+  assert.match(canvas, /window\.requestAnimationFrame\(\(\) => \{[\s\S]*window\.requestAnimationFrame\(\(\) => resolve\(\)\)/)
+  assert.match(canvas, /deckOpen && !deckHandoff && <SessionDeck/)
+  assert.match(canvas, /!deckOpen && !deckHandoff && <div/)
+})
+
 test('tall deck animation overflows upward from the idle-sized stage', async () => {
   const canvas = await source('src/renderer/pet/PetCanvas.tsx')
   const stage = getPetAnimationStageSize('calico', 128)
