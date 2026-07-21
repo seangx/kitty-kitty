@@ -15,6 +15,7 @@ export type AnimationState =
   | 'lick'
   | 'jump'
   | 'sneak'
+  | 'deck-open'
 
 export type SkinId = 'calico' | 'sheep' | 'chicken'
 

@@ -28,6 +28,27 @@ const FRAME_INDEX: Record<string, string[]> = (() => {
   return out
 })()
 
+const BASE_SPRITE_PIXELS = 256
+const FRAME_CANVAS: Record<string, { width: number; height: number }> = {
+  'calico/idle': { width: 384, height: 256 },
+  'calico/deck-open': { width: 288, height: 512 },
+}
+
+export function getPngSpriteDisplaySize(
+  skin: SkinId,
+  state: AnimationState,
+  size = 128,
+): { width: number; height: number } {
+  const canvas = FRAME_CANVAS[`${skin}/${state}`] ?? {
+    width: BASE_SPRITE_PIXELS,
+    height: BASE_SPRITE_PIXELS,
+  }
+  return {
+    width: Math.round(size * canvas.width / BASE_SPRITE_PIXELS),
+    height: Math.round(size * canvas.height / BASE_SPRITE_PIXELS),
+  }
+}
+
 /** Whether a skin has any PNG sprites at all */
 export function skinHasPngSprites(skin: SkinId): boolean {
   for (const key of Object.keys(FRAME_INDEX)) {
@@ -53,6 +74,7 @@ const INTERVAL_MS: Record<AnimationState, number> = {
   'lick': 150,
   'jump': 110,
   'sneak': 150,
+  'deck-open': 90,
 }
 
 /** States that play forward-then-backward (ping-pong) instead of looping 0→11→0.
@@ -83,6 +105,7 @@ export default function PngSprite({ state, skin, size = 128 }: Props) {
 
   const interval = INTERVAL_MS[urls.resolved] ?? 600
   const frameIdx = useFrameAnimation(urls.urls.length, interval, PING_PONG.has(urls.resolved))
+  const displaySize = getPngSpriteDisplaySize(skin, urls.resolved, size)
 
   const src = urls.urls[frameIdx] ?? urls.urls[0]
   if (!src) return null
@@ -90,8 +113,8 @@ export default function PngSprite({ state, skin, size = 128 }: Props) {
   return (
     <img
       src={src}
-      width={size}
-      height={size}
+      width={displaySize.width}
+      height={displaySize.height}
       alt=""
       draggable={false}
       style={{

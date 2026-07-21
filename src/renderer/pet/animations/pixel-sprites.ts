@@ -315,6 +315,7 @@ function buildSpriteSet(pattern: 'tabby' | 'calico' | 'none'): Record<AnimationS
     'lick': { frames: [apply(LICK_FRAME), apply(IDLE_OPEN)], intervalMs: 400 },
     'jump': { frames: [apply(IDLE_OPEN), apply(JUMP)], intervalMs: 250 },
     'sneak': { frames: [apply(IDLE_HALF), apply(IDLE_OPEN)], intervalMs: 500 },
+    'deck-open': { frames: [apply(IDLE_OPEN), apply(STRETCH)], intervalMs: 180 },
   }
 }
 

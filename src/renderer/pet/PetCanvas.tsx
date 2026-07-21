@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
-import PetSprite from './PetSprite'
+import PetSprite, { getPngSpriteDisplaySize } from './PetSprite'
 import SessionDeck from './SessionDeck'
 import InputPopup from './InputPopup'
 import ContextMenu from './ContextMenu'
@@ -18,6 +18,8 @@ import { T, btnClose, btnGhost, inputWell, popover, popupHeader } from './ui-tok
 
 interface DirPickState extends DirectoryPickResult { defaultTool: ToolId }
 
+const DECK_OPEN_TRANSITION_MS = 1080
+
 export default function PetCanvas() {
   const [animation, setAnimation] = useState<AnimationState>('idle')
   const [showInput, setShowInput] = useState(false)
@@ -28,12 +30,14 @@ export default function PetCanvas() {
   const [envEditor, setEnvEditor] = useState<string | null>(null)
   const [deckEdge, setDeckEdge] = useState<'left' | 'right'>('right')
   const [deckOpen, setDeckOpen] = useState(false)
+  const [deckOpening, setDeckOpening] = useState(false)
   const [deckClosing, setDeckClosing] = useState(false)
   const [groupPrompt, setGroupPrompt] = useState(false)
   const [driftPrompt, setDriftPrompt] = useState<{ sessionId: string; drift: import('../lib/ipc').SessionDrift; kind: 'attach' | 'restart' } | null>(null)
   const isDragging = useRef(false)
   const clickTimer = useRef<ReturnType<typeof setTimeout> | null>(null)
   const dragOffset = useRef({ x: 0, y: 0 })
+  const deckOpenTimer = useRef<ReturnType<typeof setTimeout> | null>(null)
   const deckCloseTimer = useRef<ReturnType<typeof setTimeout> | null>(null)
 
   const { sessions, loadSessions, createSession, attachSession, killSession, renameSession, needsInput, loadNeedsInput, markNeedsInput, clearNeedsInput } = useSessionStore()
@@ -84,14 +88,19 @@ export default function PetCanvas() {
       if (msg?.sessionId && msg?.stage) progressStageRef.current = { id: msg.sessionId, stage: msg.stage }
     })
     const resetDeck = () => {
+      if (deckOpenTimer.current) clearTimeout(deckOpenTimer.current)
       if (deckCloseTimer.current) clearTimeout(deckCloseTimer.current)
+      deckOpenTimer.current = null
       deckCloseTimer.current = null
+      machine.forceState('idle')
+      setDeckOpening(false)
       setDeckClosing(false)
       setDeckOpen(false)
     }
     const unsubDeckClosed = window.api.on('pet:deck-closed', resetDeck)
     return () => {
       scheduler.stop(); machine.destroy(); clearInterval(poll)
+      if (deckOpenTimer.current) clearTimeout(deckOpenTimer.current)
       if (deckCloseTimer.current) clearTimeout(deckCloseTimer.current)
       unsub(); unsubProgress(); unsubDeckClosed()
     }
@@ -210,7 +219,7 @@ export default function PetCanvas() {
   const clickIndex = useRef(0)
 
   const handleClick = useCallback((e: React.MouseEvent) => {
-    if (isDragging.current || anyPopup) return
+    if (isDragging.current || anyPopup || deckOpening) return
     e.stopPropagation()
     if (clickTimer.current) {
       clearTimeout(clickTimer.current); clickTimer.current = null
@@ -236,7 +245,7 @@ export default function PetCanvas() {
         machine.forceState(anim, 2000)
       }, 250)
     }
-  }, [machine, anyPopup, createSession, say, lastTool])
+  }, [machine, anyPopup, createSession, say, lastTool, deckOpening])
 
   const handleContextMenu = useCallback((e: React.MouseEvent) => {
     e.preventDefault(); e.stopPropagation()
@@ -245,7 +254,7 @@ export default function PetCanvas() {
   }, [])
 
   const handleMouseDown = useCallback((e: React.MouseEvent) => {
-    if (e.button !== 0 || anyPopup) return
+    if (e.button !== 0 || anyPopup || deckOpening) return
     dragOffset.current = { x: e.screenX, y: e.screenY }; isDragging.current = false
     const onMove = (ev: MouseEvent) => {
       const dx = ev.screenX - dragOffset.current.x, dy = ev.screenY - dragOffset.current.y
@@ -263,7 +272,7 @@ export default function PetCanvas() {
       setTimeout(() => { isDragging.current = false }, 150)
     }
     document.addEventListener('mousemove', onMove); document.addEventListener('mouseup', onUp)
-  }, [anyPopup])
+  }, [anyPopup, deckOpening])
 
   const handleCreateSession = useCallback(async (message: string, tool: ToolId) => {
     setLastTool(tool)
@@ -439,13 +448,32 @@ export default function PetCanvas() {
     }
   }, [anyPopup, deckOpen])
 
-  const openDeck = useCallback(async (event: React.MouseEvent) => {
+  const finishOpenDeck = useCallback(async () => {
+    try {
+      const result = await window.api.invoke('pet:set-deck-open', true) as { edge?: string }
+      setDeckEdge(result?.edge === 'left' ? 'left' : 'right')
+      setDeckOpen(true)
+    } catch (err) {
+      console.error('[kitty] open deck failed:', err)
+      machine.forceState('sad', 1500)
+      say('打开边栏失败了喵...')
+    } finally {
+      deckOpenTimer.current = null
+      setDeckOpening(false)
+    }
+  }, [machine, say])
+
+  const openDeck = useCallback((event: React.MouseEvent) => {
     event.stopPropagation()
-    if (isDragging.current || deckOpen || deckClosing) return
-    const result = await window.api.invoke('pet:set-deck-open', true) as { edge?: string }
-    setDeckEdge(result?.edge === 'left' ? 'left' : 'right')
-    setDeckOpen(true)
-  }, [deckClosing, deckOpen])
+    if (isDragging.current || deckOpen || deckOpening || deckClosing) return
+    if (bubble.skin !== 'calico') {
+      void finishOpenDeck()
+      return
+    }
+    setDeckOpening(true)
+    machine.forceState('deck-open')
+    deckOpenTimer.current = setTimeout(() => void finishOpenDeck(), DECK_OPEN_TRANSITION_MS)
+  }, [bubble.skin, deckClosing, deckOpen, deckOpening, finishOpenDeck, machine])
 
   const closeDeck = useCallback(() => {
     if (!deckOpen || deckClosing) return
@@ -453,11 +481,14 @@ export default function PetCanvas() {
     deckCloseTimer.current = setTimeout(async () => {
       // 先让主进程瞬时收回窗口，再挂载猫，避免猫在宽窗口里横跳一帧。
       await window.api.invoke('pet:set-deck-open', false)
+      machine.forceState('idle')
       setDeckOpen(false)
       setDeckClosing(false)
       deckCloseTimer.current = null
     }, 150)
-  }, [deckClosing, deckOpen])
+  }, [deckClosing, deckOpen, machine])
+
+  const petDisplaySize = getPngSpriteDisplaySize(bubble.skin, animation, 128)
 
 
 
@@ -646,9 +677,10 @@ export default function PetCanvas() {
       />}
       {!deckOpen && <div
         style={{
-          position: 'relative', flexShrink: 0, width: 128, height: 128,
-          pointerEvents: 'auto', cursor: 'pointer',
-          display: 'block',
+          position: 'relative', flexShrink: 0,
+          width: petDisplaySize.width, height: petDisplaySize.height,
+          pointerEvents: 'auto', cursor: deckOpening ? 'progress' : 'pointer',
+          display: 'flex', alignItems: 'flex-end', justifyContent: 'center',
         }}
         onClick={openDeck}
         title="打开会话边栏"
