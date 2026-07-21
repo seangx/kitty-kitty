@@ -74,6 +74,7 @@ interface Props {
   state: AnimationState
   skin: SkinId
   size?: number
+  onFrameChange?: (state: AnimationState, frame: number) => void
 }
 
 interface RenderedFrame {
@@ -86,7 +87,7 @@ interface RenderedFrame {
 
 const STATE_CROSSFADE_MS = 120
 
-export default function PngSprite({ state, skin, size = 128 }: Props) {
+export default function PngSprite({ state, skin, size = 128, onFrameChange }: Props) {
   const urls = useMemo(() => {
     // Prefer state-specific frames; for walk-left fall back to walk-right with horizontal flip
     const key = `${skin}/${state}`
@@ -107,6 +108,10 @@ export default function PngSprite({ state, skin, size = 128 }: Props) {
     ONE_SHOT.has(urls.resolved),
   )
   const displaySize = getPngSpriteDisplaySize(skin, urls.resolved, size)
+
+  useEffect(() => {
+    onFrameChange?.(urls.resolved, frameIdx)
+  }, [frameIdx, onFrameChange, urls.resolved])
 
   const src = urls.urls[frameIdx] ?? urls.urls[0] ?? ''
 

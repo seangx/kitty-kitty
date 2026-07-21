@@ -79,6 +79,28 @@ test('deck opens only after the one-shot stretch animation', async () => {
   assert.match(canvas, /machine\.forceState\('idle'\)[\s\S]*?setDeckOpen\(false\)/)
 })
 
+test('deck stretch starts only when idle reaches its first frame', async () => {
+  const [canvas, petSprite, pixelSprite, pngSprite] = await Promise.all([
+    source('src/renderer/pet/PetCanvas.tsx'),
+    source('src/renderer/pet/PetSprite.tsx'),
+    source('src/renderer/pet/PixelSprite.tsx'),
+    source('src/renderer/pet/PngSprite.tsx'),
+  ])
+  const openStart = canvas.indexOf('const openDeck = useCallback')
+  const openEnd = canvas.indexOf('const closeDeck = useCallback', openStart)
+  const openBlock = canvas.slice(openStart, openEnd)
+
+  assert.match(canvas, /deckOpenPendingRef\.current && state === 'idle' && frame === 0/)
+  assert.match(canvas, /onFrameChange=\{handlePetFrameChange\}/)
+  assert.match(canvas, /machine\.getState\(\) !== 'idle'[\s\S]*machine\.forceState\('idle'\)/)
+  assert.match(openBlock, /deckOpenPendingRef\.current = true/)
+  assert.match(openBlock, /idleFrameRef\.current === 0[\s\S]*startDeckOpenAnimation\(\)/)
+  assert.doesNotMatch(openBlock, /machine\.forceState\('deck-open'\)/)
+  assert.match(petSprite, /onFrameChange=\{onFrameChange\}/)
+  assert.match(pixelSprite, /onFrameChange=\{onFrameChange\}/)
+  assert.match(pngSprite, /onFrameChange\?\.\(urls\.resolved, frameIdx\)/)
+})
+
 test('one-shot deck animation holds its last frame instead of wrapping to idle', () => {
   assert.equal(resolveAnimationFrame(0, 12, false, true), 0)
   assert.equal(resolveAnimationFrame(11, 12, false, true), 11)

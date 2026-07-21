@@ -7,12 +7,13 @@ interface Props {
   state: AnimationState
   skin?: SkinId
   size?: number
+  onFrameChange?: (state: AnimationState, frame: number) => void
 }
 
-export default function PixelSprite({ state, skin = 'calico', size = 128 }: Props) {
+export default function PixelSprite({ state, skin = 'calico', size = 128, onFrameChange }: Props) {
   // If the skin has real PNG sprites, use them
   if (skin && skinHasPngSprites(skin)) {
-    return <PngSprite state={state} skin={skin} size={size} />
+    return <PngSprite state={state} skin={skin} size={size} onFrameChange={onFrameChange} />
   }
 
   // Fallback: SVG-rendered ASCII pixel sprites for skins without PNG assets yet
@@ -20,6 +21,7 @@ export default function PixelSprite({ state, skin = 'calico', size = 128 }: Prop
   const palette = PIXEL_PALETTES[skin] ?? PIXEL_PALETTES.calico
   const config = spriteSet[state] ?? spriteSet.idle
   const frameIdx = useFrameAnimation(config.frames.length, config.intervalMs)
+  useEffect(() => onFrameChange?.(state, frameIdx), [frameIdx, onFrameChange, state])
   // Clamp frame index: state change races can leave frameIdx pointing past the new array
   const current = config.frames[frameIdx] ?? config.frames[0]
   if (!current) return null
