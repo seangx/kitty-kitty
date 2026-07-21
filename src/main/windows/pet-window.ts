@@ -4,6 +4,11 @@ import { readFileSync, writeFileSync, mkdirSync } from 'fs'
 import { homedir } from 'os'
 import { is } from '@electron-toolkit/utils'
 import { PET_WINDOW } from '@shared/constants'
+import {
+  PET_ANIMATION_HEADROOM,
+  toPetAnchorPosition,
+  toPetWindowPosition,
+} from '@shared/pet-window-position'
 import { log } from '../logger'
 import {
   ANIMATE_FLOATING_DECK_BOUNDS,
@@ -38,8 +43,9 @@ function loadPosition(): { x: number; y: number } | null {
 
 function savePosition(x: number, y: number): void {
   try {
+    const anchor = toPetAnchorPosition({ x, y })
     mkdirSync(join(homedir(), '.kitty-kitty'), { recursive: true })
-    writeFileSync(POS_FILE, JSON.stringify({ x, y }))
+    writeFileSync(POS_FILE, JSON.stringify(anchor))
   } catch { /* ignore */ }
 }
 
@@ -111,8 +117,11 @@ export function createPetWindow(): BrowserWindow {
   const { width: screenWidth, height: screenHeight } = display.workAreaSize
 
   const saved = loadPosition()
-  const startX = saved?.x ?? (screenWidth - PET_WINDOW.WIDTH - 50)
-  const startY = saved?.y ?? (screenHeight - PET_WINDOW.HEIGHT)
+  const anchor = saved ?? {
+    x: screenWidth - PET_WINDOW.WIDTH - 50,
+    y: screenHeight - PET_WINDOW.HEIGHT,
+  }
+  const { x: startX, y: startY } = toPetWindowPosition(anchor)
 
   petWindow = new BrowserWindow({
     width: PET_WINDOW.WIDTH,
@@ -192,11 +201,12 @@ export function createPetWindow(): BrowserWindow {
       if (!pet) return
       const petBounds = pet.getBounds()
       const { x: px, y: py } = petBounds
+      const anchorY = py + PET_ANIMATION_HEADROOM
       const popupW = 480
       const popupH = 520
       // Position to the left of the pet window
       let popupX = px - popupW - 12
-      let popupY = py
+      let popupY = anchorY
       // If goes off-screen left, place to the right
       const display = screen.getDisplayMatching(pet.getBounds())
       if (popupX < display.workArea.x) {
