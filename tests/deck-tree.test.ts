@@ -124,6 +124,8 @@ test('Deck keeps session creation in its footer and offers both start paths', as
   assert.match(source, /className="session-deck__footer"/)
   assert.match(source, /📂 从目录开始/)
   assert.match(source, /💬 直接开始/)
+  assert.match(source, /ref=\{createButtonRef\}/)
+  assert.match(source, /anchorRef=\{createButtonRef\}/)
   assert.match(canvas, /onCreateDirect=\{\(\) => setShowInput\(true\)\}/)
   assert.match(canvas, /onCreateInDirectory=\{handleOpenInDir\}/)
   assert.match(css, /\.session-deck__footer \{[\s\S]*?z-index: 30;/)
