@@ -13,3 +13,13 @@ export function resolveAnimationFrame(
   const pos = tick % period
   return pos < frameCount ? pos : period - pos
 }
+
+/** Move one frame toward the closest endpoint. Both endpoints may represent
+ * the same rest pose, so callers can settle without waiting for a full loop. */
+export function stepTowardNearestEndpoint(frame: number, frameCount: number): number {
+  if (frameCount <= 1) return 0
+  const last = frameCount - 1
+  const current = Math.min(Math.max(frame, 0), last)
+  if (current === 0 || current === last) return current
+  return current <= last / 2 ? current - 1 : current + 1
+}

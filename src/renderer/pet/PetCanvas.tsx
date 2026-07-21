@@ -22,6 +22,11 @@ import { T, btnClose, btnGhost, inputWell, popover, popupHeader } from './ui-tok
 interface DirPickState extends DirectoryPickResult { defaultTool: ToolId }
 
 const DECK_OPEN_TRANSITION_MS = 1080
+const CALICO_IDLE_LAST_FRAME = 72
+
+function isCalicoIdleRestFrame(frame: number): boolean {
+  return frame === 0 || frame === CALICO_IDLE_LAST_FRAME
+}
 
 function waitForNextPaint(): Promise<void> {
   return new Promise((resolve) => {
@@ -519,7 +524,7 @@ export default function PetCanvas() {
 
   const handlePetFrameChange = useCallback((state: AnimationState, frame: number) => {
     if (state === 'idle') idleFrameRef.current = frame
-    if (deckOpenPendingRef.current && state === 'idle' && frame === 0) {
+    if (deckOpenPendingRef.current && state === 'idle' && isCalicoIdleRestFrame(frame)) {
       startDeckOpenAnimation()
     }
   }, [startDeckOpenAnimation])
@@ -535,7 +540,7 @@ export default function PetCanvas() {
     deckOpenPendingRef.current = true
     if (machine.getState() !== 'idle') {
       machine.forceState('idle')
-    } else if (idleFrameRef.current === 0) {
+    } else if (isCalicoIdleRestFrame(idleFrameRef.current)) {
       startDeckOpenAnimation()
     }
   }, [bubble.skin, deckClosing, deckOpen, deckOpening, finishOpenDeck, machine, startDeckOpenAnimation])
@@ -781,6 +786,7 @@ export default function PetCanvas() {
           skin={bubble.skin}
           size={128}
           onFrameChange={handlePetFrameChange}
+          settleIdleToRest={deckOpening}
         />
       </div>}
       {contextMenu && (

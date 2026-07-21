@@ -8,12 +8,25 @@ interface Props {
   skin?: SkinId
   size?: number
   onFrameChange?: (state: AnimationState, frame: number) => void
+  settleIdleToRest?: boolean
 }
 
-export default function PixelSprite({ state, skin = 'calico', size = 128, onFrameChange }: Props) {
+export default function PixelSprite({
+  state,
+  skin = 'calico',
+  size = 128,
+  onFrameChange,
+  settleIdleToRest = false,
+}: Props) {
   // If the skin has real PNG sprites, use them
   if (skin && skinHasPngSprites(skin)) {
-    return <PngSprite state={state} skin={skin} size={size} onFrameChange={onFrameChange} />
+    return <PngSprite
+      state={state}
+      skin={skin}
+      size={size}
+      onFrameChange={onFrameChange}
+      settleIdleToRest={settleIdleToRest}
+    />
   }
 
   // Fallback: SVG-rendered ASCII pixel sprites for skins without PNG assets yet

@@ -5,7 +5,10 @@ import {
   getPetAnimationStageSize,
   getPngSpriteDisplaySize,
 } from '../src/renderer/pet/sprite-layout.ts'
-import { resolveAnimationFrame } from '../src/renderer/pet/frame-animation.ts'
+import {
+  resolveAnimationFrame,
+  stepTowardNearestEndpoint,
+} from '../src/renderer/pet/frame-animation.ts'
 import { PET_ANIMATION_HEADROOM } from '../src/shared/pet-window-position.ts'
 
 const ROOT = new URL('../', import.meta.url)
@@ -91,7 +94,7 @@ test('deck opens only after the one-shot stretch animation', async () => {
   assert.match(canvas, /machine\.forceState\('idle'\)[\s\S]*?setDeckOpen\(false\)/)
 })
 
-test('deck stretch starts only when idle reaches its first frame', async () => {
+test('deck stretch settles the idle clip to its nearest rest endpoint', async () => {
   const [canvas, petSprite, pixelSprite, pngSprite] = await Promise.all([
     source('src/renderer/pet/PetCanvas.tsx'),
     source('src/renderer/pet/PetSprite.tsx'),
@@ -102,15 +105,31 @@ test('deck stretch starts only when idle reaches its first frame', async () => {
   const openEnd = canvas.indexOf('const closeDeck = useCallback', openStart)
   const openBlock = canvas.slice(openStart, openEnd)
 
-  assert.match(canvas, /deckOpenPendingRef\.current && state === 'idle' && frame === 0/)
+  assert.match(canvas, /const CALICO_IDLE_LAST_FRAME = 72/)
+  assert.match(canvas, /deckOpenPendingRef\.current && state === 'idle' && isCalicoIdleRestFrame\(frame\)/)
   assert.match(canvas, /onFrameChange=\{handlePetFrameChange\}/)
+  assert.match(canvas, /settleIdleToRest=\{deckOpening\}/)
   assert.match(canvas, /machine\.getState\(\) !== 'idle'[\s\S]*machine\.forceState\('idle'\)/)
   assert.match(openBlock, /deckOpenPendingRef\.current = true/)
-  assert.match(openBlock, /idleFrameRef\.current === 0[\s\S]*startDeckOpenAnimation\(\)/)
+  assert.match(openBlock, /isCalicoIdleRestFrame\(idleFrameRef\.current\)[\s\S]*startDeckOpenAnimation\(\)/)
   assert.doesNotMatch(openBlock, /machine\.forceState\('deck-open'\)/)
   assert.match(petSprite, /onFrameChange=\{onFrameChange\}/)
+  assert.match(petSprite, /settleIdleToRest=\{settleIdleToRest\}/)
   assert.match(pixelSprite, /onFrameChange=\{onFrameChange\}/)
+  assert.match(pixelSprite, /settleIdleToRest=\{settleIdleToRest\}/)
   assert.match(pngSprite, /onFrameChange\?\.\(urls\.resolved, frameIdx\)/)
+  assert.match(pngSprite, /settleIdleToRest && urls\.resolved === 'idle'/)
+  assert.match(pngSprite, /Math\.round\(intervalMs \/ 3\)/)
+  assert.match(pngSprite, /setClock\(\{ key: animationKey, tick: 0 \}\)[\s\S]*\}, \[animationKey\]\)/)
+})
+
+test('nearest-endpoint settling chooses the shorter direction for the 73-frame idle', () => {
+  assert.equal(stepTowardNearestEndpoint(0, 73), 0)
+  assert.equal(stepTowardNearestEndpoint(1, 73), 0)
+  assert.equal(stepTowardNearestEndpoint(36, 73), 35)
+  assert.equal(stepTowardNearestEndpoint(37, 73), 38)
+  assert.equal(stepTowardNearestEndpoint(71, 73), 72)
+  assert.equal(stepTowardNearestEndpoint(72, 73), 72)
 })
 
 test('one-shot deck animation holds its last frame instead of wrapping to idle', () => {
