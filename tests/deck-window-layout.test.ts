@@ -41,17 +41,17 @@ test('Deck render releases any late mouse capture from the replaced pet', async 
 test('floating Deck chooses the side with outward space and stays on screen', () => {
   assert.deepEqual(
     getFloatingDeckLayout({ x: 130, y: 140, width: 450, height: 650 }, workArea),
-    { edge: 'left', bounds: { x: 100, y: 140, width: 720, height: 650 } },
+    { edge: 'left', bounds: { x: 100, y: 24, width: 720, height: 900 } },
   )
   assert.deepEqual(
     getFloatingDeckLayout({ x: 1020, y: 140, width: 450, height: 650 }, workArea),
-    { edge: 'right', bounds: { x: 780, y: 140, width: 720, height: 650 } },
+    { edge: 'right', bounds: { x: 780, y: 24, width: 720, height: 900 } },
   )
 })
 
-test('floating Deck clamps vertically into its display work area', () => {
-  assert.equal(
-    getFloatingDeckLayout({ x: 500, y: 800, width: 450, height: 650 }, workArea).bounds.y,
-    274,
+test('floating Deck uses the full height of its display work area', () => {
+  assert.deepEqual(
+    getFloatingDeckLayout({ x: 500, y: 800, width: 450, height: 650 }, workArea).bounds,
+    { x: 365, y: 24, width: 720, height: 900 },
   )
 })
