@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
-import PetSprite, { getPngSpriteDisplaySize } from './PetSprite'
+import PetSprite from './PetSprite'
+import { getPetAnimationStageSize } from './sprite-layout'
 import SessionDeck from './SessionDeck'
 import InputPopup from './InputPopup'
 import ContextMenu from './ContextMenu'
@@ -20,12 +21,6 @@ interface DirPickState extends DirectoryPickResult { defaultTool: ToolId }
 
 const DECK_OPEN_TRANSITION_MS = 1080
 
-function waitForPaint(): Promise<void> {
-  return new Promise((resolve) => {
-    requestAnimationFrame(() => requestAnimationFrame(() => resolve()))
-  })
-}
-
 export default function PetCanvas() {
   const [animation, setAnimation] = useState<AnimationState>('idle')
   const [showInput, setShowInput] = useState(false)
@@ -37,7 +32,6 @@ export default function PetCanvas() {
   const [deckEdge, setDeckEdge] = useState<'left' | 'right'>('right')
   const [deckOpen, setDeckOpen] = useState(false)
   const [deckOpening, setDeckOpening] = useState(false)
-  const [deckHandoff, setDeckHandoff] = useState(false)
   const [deckClosing, setDeckClosing] = useState(false)
   const [groupPrompt, setGroupPrompt] = useState(false)
   const [driftPrompt, setDriftPrompt] = useState<{ sessionId: string; drift: import('../lib/ipc').SessionDrift; kind: 'attach' | 'restart' } | null>(null)
@@ -101,7 +95,6 @@ export default function PetCanvas() {
       deckCloseTimer.current = null
       machine.forceState('idle')
       setDeckOpening(false)
-      setDeckHandoff(false)
       setDeckClosing(false)
       setDeckOpen(false)
     }
@@ -457,12 +450,6 @@ export default function PetCanvas() {
   }, [anyPopup, deckOpen])
 
   const finishOpenDeck = useCallback(async () => {
-    // Unmount the cat and present a transparent frame before changing the
-    // native window bounds. Otherwise the still-mounted cat is bottom-aligned
-    // inside the new full-height window for one compositor frame and visibly
-    // teleports across the desktop.
-    setDeckHandoff(true)
-    await waitForPaint()
     try {
       const result = await window.api.invoke('pet:set-deck-open', true) as { edge?: string }
       setDeckEdge(result?.edge === 'left' ? 'left' : 'right')
@@ -473,7 +460,6 @@ export default function PetCanvas() {
       say('打开边栏失败了喵...')
     } finally {
       deckOpenTimer.current = null
-      setDeckHandoff(false)
       setDeckOpening(false)
     }
   }, [machine, say])
@@ -503,7 +489,7 @@ export default function PetCanvas() {
     }, 150)
   }, [deckClosing, deckOpen, machine])
 
-  const petDisplaySize = getPngSpriteDisplaySize(bubble.skin, animation, 128)
+  const petStageSize = getPetAnimationStageSize(bubble.skin, 128)
 
 
 
@@ -693,10 +679,11 @@ export default function PetCanvas() {
         onEditEnv={(id) => setEnvEditor(id)}
         onOpenSkills={(id) => window.api.invoke('popup-open', 'skills', id)}
       />}
-      {!deckOpen && !deckHandoff && <div
+      {!deckOpen && <div
         style={{
           position: 'relative', flexShrink: 0,
-          width: petDisplaySize.width, height: petDisplaySize.height,
+          width: petStageSize.width, height: petStageSize.height,
+          overflow: 'visible',
           pointerEvents: 'auto', cursor: deckOpening ? 'progress' : 'pointer',
           display: 'flex', alignItems: 'flex-end', justifyContent: 'center',
         }}

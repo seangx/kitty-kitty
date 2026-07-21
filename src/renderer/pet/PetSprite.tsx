@@ -1,6 +1,5 @@
 import type { AnimationState, SkinId } from '@shared/types/pet'
 import PixelSprite from './PixelSprite'
-export { getPngSpriteDisplaySize } from './PngSprite'
 
 interface Props {
   state: AnimationState
