@@ -1,4 +1,6 @@
 import { useEffect, useRef } from 'react'
+import type { RefObject } from 'react'
+import { isPointerOutsideSafeCorridor } from './auto-close-geometry'
 
 /**
  * Auto-close a popup/menu when the mouse moves away from it.
@@ -8,7 +10,8 @@ import { useEffect, useRef } from 'react'
 export function useAutoClose(
   open: boolean,
   onClose: () => void,
-  padding = 8 // extra pixels of tolerance around the element
+  padding = 8, // extra pixels of tolerance around the element
+  anchorRef?: RefObject<HTMLElement | null>,
 ) {
   const ref = useRef<HTMLDivElement>(null)
 
@@ -24,12 +27,9 @@ export function useAutoClose(
 
     const onMove = (e: PointerEvent) => {
       if (!active || !ref.current) return
-      const rect = ref.current.getBoundingClientRect()
-      const outside =
-        e.clientX < rect.left - padding ||
-        e.clientX > rect.right + padding ||
-        e.clientY < rect.top - padding ||
-        e.clientY > rect.bottom + padding
+      const rects = [ref.current.getBoundingClientRect()]
+      if (anchorRef?.current) rects.push(anchorRef.current.getBoundingClientRect())
+      const outside = isPointerOutsideSafeCorridor(e.clientX, e.clientY, rects, padding)
 
       if (outside) {
         onClose()
@@ -41,7 +41,7 @@ export function useAutoClose(
       clearTimeout(timer)
       document.removeEventListener('pointermove', onMove)
     }
-  }, [open, onClose, padding])
+  }, [anchorRef, open, onClose, padding])
 
   return ref
 }

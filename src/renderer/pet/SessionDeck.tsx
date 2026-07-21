@@ -117,6 +117,7 @@ export default function SessionDeck({
   const [rootBranchStyle, setRootBranchStyle] = useState<React.CSSProperties | null>(null)
   const [groupRestart, setGroupRestart] = useState<GroupRestartState | null>(null)
   const branchPortalRef = useRef<HTMLDivElement | null>(null)
+  const createButtonRef = useRef<HTMLButtonElement | null>(null)
 
   const collapseBranches = useCallback(() => {
     setOpenGroupIds([])
@@ -542,6 +543,7 @@ export default function SessionDeck({
             >◌<span>{hiddenSessions.length}</span></button>
           )}
           <button
+            ref={createButtonRef}
             className={`session-deck__add${createMenu ? ' is-selected' : ''}`}
             onClick={(event) => {
               event.stopPropagation()
@@ -564,7 +566,12 @@ export default function SessionDeck({
       <div ref={branchPortalRef} className="session-deck__branch-portal" />
 
       {createMenu && (
-        <DeckMenu x={createMenu.x} y={createMenu.y} onClose={() => setCreateMenu(null)}>
+        <DeckMenu
+          x={createMenu.x}
+          y={createMenu.y}
+          anchorRef={createButtonRef}
+          onClose={() => setCreateMenu(null)}
+        >
           <button onClick={() => {
             setCreateMenu(null)
             onCreateInDirectory()
@@ -768,13 +775,14 @@ function DeckNameDialog({ x, y, title, busy, error, onClose, onSubmit }: {
   )
 }
 
-function DeckMenu({ x, y, onClose, children }: {
+function DeckMenu({ x, y, anchorRef, onClose, children }: {
   x: number
   y: number
+  anchorRef?: React.RefObject<HTMLElement | null>
   onClose: () => void
   children: React.ReactNode
 }) {
-  const autoCloseRef = useAutoClose(true, onClose)
+  const autoCloseRef = useAutoClose(true, onClose, 8, anchorRef)
   const menuRef = useRef<HTMLDivElement | null>(null)
   const [position, setPosition] = useState({ left: x, top: y })
   const reposition = useCallback(() => {
