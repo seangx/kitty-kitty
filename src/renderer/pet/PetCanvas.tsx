@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { flushSync } from 'react-dom'
 import PetSprite from './PetSprite'
 import { getPetAnimationStageSize } from './sprite-layout'
 import SessionDeck from './SessionDeck'
@@ -33,6 +34,7 @@ export default function PetCanvas() {
   const [deckEdge, setDeckEdge] = useState<'left' | 'right'>('right')
   const [deckOpen, setDeckOpen] = useState(false)
   const [deckOpening, setDeckOpening] = useState(false)
+  const [deckHandoff, setDeckHandoff] = useState(false)
   const [deckClosing, setDeckClosing] = useState(false)
   const [groupPrompt, setGroupPrompt] = useState(false)
   const [driftPrompt, setDriftPrompt] = useState<{ sessionId: string; drift: import('../lib/ipc').SessionDrift; kind: 'attach' | 'restart' } | null>(null)
@@ -96,6 +98,7 @@ export default function PetCanvas() {
       deckCloseTimer.current = null
       machine.forceState('idle')
       setDeckOpening(false)
+      setDeckHandoff(false)
       setDeckClosing(false)
       setDeckOpen(false)
     }
@@ -469,6 +472,9 @@ export default function PetCanvas() {
   }, [anyPopup, deckOpen])
 
   const finishOpenDeck = useCallback(async () => {
+    // Remove the pet synchronously before the native window grows. Otherwise
+    // Electron can repaint one pet frame using the expanded window geometry.
+    flushSync(() => setDeckHandoff(true))
     try {
       const result = await window.api.invoke('pet:set-deck-open', true) as { edge?: string }
       setDeckEdge(result?.edge === 'left' ? 'left' : 'right')
@@ -480,6 +486,7 @@ export default function PetCanvas() {
     } finally {
       deckOpenTimer.current = null
       setDeckOpening(false)
+      setDeckHandoff(false)
     }
   }, [machine, say])
 
@@ -706,7 +713,7 @@ export default function PetCanvas() {
         onEditEnv={(id) => setEnvEditor(id)}
         onOpenSkills={(id) => window.api.invoke('popup-open', 'skills', id)}
       />}
-      {!deckOpen && <div
+      {!deckOpen && !deckHandoff && <div
         style={{
           position: 'relative', flexShrink: 0,
           width: petStageSize.width, height: petStageSize.height,

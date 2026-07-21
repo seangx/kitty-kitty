@@ -5,6 +5,7 @@ import {
   getPetAnimationStageSize,
   getPngSpriteDisplaySize,
 } from '../src/renderer/pet/sprite-layout.ts'
+import { resolveAnimationFrame } from '../src/renderer/pet/frame-animation.ts'
 import { PET_ANIMATION_HEADROOM } from '../src/shared/pet-window-position.ts'
 
 const ROOT = new URL('../', import.meta.url)
@@ -67,12 +68,23 @@ test('deck opens only after the one-shot stretch animation', async () => {
   assert.match(layout, /'calico\/idle': \{ width: 320, height: 256 \}/)
   assert.match(layout, /'calico\/deck-open': \{ width: 320, height: 512 \}/)
   assert.match(pngSprite, /'deck-open': 90/)
+  assert.match(pngSprite, /ONE_SHOT: Set<AnimationState> = new Set\(\['deck-open'\]\)/)
   assert.match(pngSprite, /clock\.key === animationKey \? clock\.tick : 0/)
   assert.match(fallback, /'deck-open': \{ frames:/)
   assert.match(canvas, /const DECK_OPEN_TRANSITION_MS = 1080/)
   assert.match(canvas, /machine\.forceState\('deck-open'\)/)
   assert.match(canvas, /setTimeout\(\(\) => void finishOpenDeck\(\), DECK_OPEN_TRANSITION_MS\)/)
+  assert.match(canvas, /flushSync\(\(\) => setDeckHandoff\(true\)\)/)
+  assert.match(canvas, /!deckOpen && !deckHandoff/)
   assert.match(canvas, /machine\.forceState\('idle'\)[\s\S]*?setDeckOpen\(false\)/)
+})
+
+test('one-shot deck animation holds its last frame instead of wrapping to idle', () => {
+  assert.equal(resolveAnimationFrame(0, 12, false, true), 0)
+  assert.equal(resolveAnimationFrame(11, 12, false, true), 11)
+  assert.equal(resolveAnimationFrame(12, 12, false, true), 11)
+  assert.equal(resolveAnimationFrame(99, 12, false, true), 11)
+  assert.equal(resolveAnimationFrame(12, 12), 0)
 })
 
 test('tall deck animation overflows upward from the idle-sized stage', async () => {
