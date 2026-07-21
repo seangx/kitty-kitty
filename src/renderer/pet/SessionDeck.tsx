@@ -30,6 +30,7 @@ interface Props {
   onKill: (id: string) => void
   onRename: (id: string, title: string) => Promise<void> | void
   onRestart: (id: string) => void
+  onForceRestart: (id: string) => void
   onClearConversation: (id: string) => void
   onEditEnv: (id: string) => void
   onOpenSkills: (sessionId: string) => void
@@ -102,6 +103,7 @@ export default function SessionDeck({
   onKill,
   onRename,
   onRestart,
+  onForceRestart,
   onClearConversation,
   onEditEnv,
   onOpenSkills,
@@ -659,6 +661,9 @@ export default function SessionDeck({
         <DeckMenu x={sessionMenu.x} y={sessionMenu.y} onClose={() => { setSessionMenu(null); setShowMoveMenu(false) }}>
           <button onClick={() => { attach(selectedSession); setSessionMenu(null) }}>打开会话</button>
           <button onClick={() => { onRestart(selectedSession.id); setSessionMenu(null) }}>重启</button>
+          {(selectedSession.tool === 'codex' || selectedSession.tool === 'opencode') && (
+            <button onClick={() => { onForceRestart(selectedSession.id); setSessionMenu(null) }}>强制重启 Runtime</button>
+          )}
           <button onClick={() => { onClearConversation(selectedSession.id); setSessionMenu(null) }}>清空对话</button>
           <button onClick={() => { onEditEnv(selectedSession.id); setSessionMenu(null) }}>环境与参数</button>
           <button onClick={() => { onOpenSkills(selectedSession.id); setSessionMenu(null) }}>技能 / MCP</button>
