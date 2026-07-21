@@ -576,7 +576,10 @@ export default function PetCanvas() {
           sessionId={envEditor}
           sessionTitle={sessions.find(s => s.id === envEditor)?.title || ''}
           onClose={() => setEnvEditor(null)}
-          onSaved={() => { machine.forceState('happy', 1500); say('会话设置已保存喵~') }}
+          onSaved={(skipped) => {
+            machine.forceState('happy', 1500)
+            say(skipped > 0 ? `已保存，忽略了 ${skipped} 行无效内容喵~` : '会话设置已保存喵~')
+          }}
         />
       </DraggablePopup>
     )}
@@ -699,7 +702,7 @@ export default function PetCanvas() {
 // ─── Env Editor ──────────────────
 
 function EnvEditor({ sessionId, sessionTitle, onClose, onSaved }: {
-  sessionId: string; sessionTitle: string; onClose: () => void; onSaved: () => void
+  sessionId: string; sessionTitle: string; onClose: () => void; onSaved: (skippedLines: number) => void
 }) {
   const [text, setText] = useState('')
   const [argsClaudeText, setArgsClaudeText] = useState('')
@@ -728,11 +731,12 @@ function EnvEditor({ sessionId, sessionTitle, onClose, onSaved }: {
     setSaving(true)
     try {
       const env: Record<string, string> = {}
+      let skipped = 0
       for (const line of text.split('\n')) {
         const trimmed = line.trim()
         if (!trimmed || trimmed.startsWith('#')) continue
         const eq = trimmed.indexOf('=')
-        if (eq < 1) continue
+        if (eq < 1) { skipped += 1; continue }
         const k = trimmed.slice(0, eq).trim()
         const v = trimmed.slice(eq + 1).trim()
         if (k) env[k] = v
@@ -741,7 +745,7 @@ function EnvEditor({ sessionId, sessionTitle, onClose, onSaved }: {
         window.api.invoke('session:set-env', sessionId, env),
         window.api.invoke('session:set-launch-args', sessionId, { claude: argsClaudeText.trim(), codex: argsCodexText.trim(), opencode: argsOpenCodeText.trim() }),
       ])
-      onSaved()
+      onSaved(skipped)
       onClose()
     } catch (e) {
       console.error('save session config failed:', e)

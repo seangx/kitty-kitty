@@ -2,6 +2,7 @@ import { useState, useEffect, useCallback, useRef } from 'react'
 import * as ipc from '../lib/ipc'
 import type { SkillCategory, GroupInfo, SearchResult, NativeSkill } from '@shared/types/skills'
 import type { McpServerInfo } from '@shared/types/mcps'
+import { T, btnClose, popover, popupHeader } from './ui-tokens'
 
 interface Props {
   sessionId: string
@@ -14,20 +15,34 @@ interface Toast {
   id: number
   text: string
   tone: 'info' | 'success' | 'error'
+  actionLabel?: string
+  action?: () => void
 }
 
-import { T, popover } from './ui-tokens'
-
-// Neutral palette mapped onto the legacy token names used below — the layout
-// and handlers are unchanged; only the color channels moved to ui-tokens.
-const C = {
-  variant: T.surface, container: T.well,
-  text: T.text, textDim: T.faint,
-  primary: '#8fe0d4', primaryDim: T.accent,
-  outline: T.border, green: T.success, red: T.danger,
+interface ConfirmState {
+  title: string
+  body: string
+  names?: string
+  confirmLabel: string
+  onConfirm: () => void
 }
 
 type Tab = 'skills' | 'mcps'
+
+// Neutral palette mapped onto semantic names (see ui-tokens.ts).
+const C = {
+  text: T.text,
+  textDim: T.faint,
+  accent: T.accent,
+  border: T.border,
+  well: T.well,
+  green: T.success,
+  red: T.danger,
+  info: T.info,
+  warning: T.warning,
+}
+
+const UNDO_MS = 5000
 
 export default function SkillsPanel({ sessionId, onClose, onSay, onDance }: Props) {
   const [tab, setTab] = useState<Tab>('skills')
@@ -39,7 +54,8 @@ export default function SkillsPanel({ sessionId, onClose, onSay, onDance }: Prop
   const [loading, setLoading] = useState(true)
   const [operating, setOperating] = useState<string | null>(null)
 
-  // Search state
+  // Search mode replaces the manage list instead of mixing into it
+  const [mode, setMode] = useState<'manage' | 'search'>('manage')
   const [searchQuery, setSearchQuery] = useState('')
   const [searchResults, setSearchResults] = useState<SearchResult[] | null>(null)
   const [searching, setSearching] = useState(false)
@@ -48,15 +64,21 @@ export default function SkillsPanel({ sessionId, onClose, onSay, onDance }: Prop
   // Collapsed groups
   const [collapsed, setCollapsed] = useState<Set<string>>(new Set())
 
-  // Inline toast so feedback reaches the user even when this panel is a detached window
+  // Selected skill → pinned detail card (registry info lazy-loaded)
+  const [selected, setSelected] = useState<string | null>(null)
+  const [selectedInfo, setSelectedInfo] = useState<SearchResult | null | 'loading' | 'missing'>(null)
+
+  // Inline toast with optional undo action (survives in detached popup window)
   const [toast, setToast] = useState<Toast | null>(null)
   const toastTimer = useRef<ReturnType<typeof setTimeout> | null>(null)
-  const notify = useCallback((text: string, tone: Toast['tone'] = 'info', duration = 3000) => {
+  const notify = useCallback((text: string, tone: Toast['tone'] = 'info', duration = 3000, action?: { label: string; run: () => void }) => {
     onSay(text, duration)
     if (toastTimer.current) clearTimeout(toastTimer.current)
-    setToast({ id: Date.now(), text, tone })
+    setToast({ id: Date.now(), text, tone, actionLabel: action?.label, action: action?.run })
     toastTimer.current = setTimeout(() => setToast(null), duration)
   }, [onSay])
+
+  const [confirm, setConfirm] = useState<ConfirmState | null>(null)
 
   const refresh = useCallback(async () => {
     setLoading(true)
@@ -73,27 +95,64 @@ export default function SkillsPanel({ sessionId, onClose, onSay, onDance }: Prop
 
   useEffect(() => { refresh() }, [refresh])
 
-  const toggleSkill = async (skillName: string) => {
+  // Lazy registry lookup for the selected skill's detail card
+  useEffect(() => {
+    if (!selected) { setSelectedInfo(null); return }
+    let cancelled = false
+    setSelectedInfo('loading')
+    ipc.searchSkills(selected)
+      .then(({ results }) => {
+        if (cancelled) return
+        const exact = results.find((r) => r.name === selected)
+        setSelectedInfo(exact ?? 'missing')
+      })
+      .catch(() => { if (!cancelled) setSelectedInfo('missing') })
+    return () => { cancelled = true }
+  }, [selected])
+
+  const deploySkill = useCallback(async (skillName: string) => {
     setOperating(skillName)
     onDance()
     try {
-      if (deployed.has(skillName)) {
-        const res = await ipc.removeSkill(sessionId, skillName)
-        notify(res?.success ? `${skillName} 已移除` : (res?.message || '移除失败'), res?.success ? 'success' : 'error')
+      const res = await ipc.addSkill(sessionId, skillName)
+      notify(res?.success ? `${skillName} 已部署` : (res?.message || '部署失败'), res?.success ? 'success' : 'error')
+      await refresh()
+    } catch (err: any) {
+      notify(err?.message || '操作失败', 'error')
+    }
+    setOperating(null)
+  }, [sessionId, onDance, notify, refresh])
+
+  const removeSkillWithUndo = useCallback(async (skillName: string) => {
+    setOperating(skillName)
+    onDance()
+    try {
+      const res = await ipc.removeSkill(sessionId, skillName)
+      if (res?.success) {
+        notify(`已移除「${skillName}」的部署`, 'success', UNDO_MS, {
+          label: '撤销',
+          run: () => { void deploySkill(skillName) },
+        })
       } else {
-        const res = await ipc.addSkill(sessionId, skillName)
-        notify(res?.success ? `${skillName} 已部署` : (res?.message || '部署失败'), res?.success ? 'success' : 'error')
+        notify(res?.message || '移除失败', 'error')
       }
       await refresh()
     } catch (err: any) {
       notify(err?.message || '操作失败', 'error')
     }
     setOperating(null)
-  }
+  }, [sessionId, onDance, notify, refresh, deploySkill])
+
+  const toggleSkill = useCallback((skillName: string) => {
+    if (operating === skillName) return
+    if (deployed.has(skillName)) void removeSkillWithUndo(skillName)
+    else void deploySkill(skillName)
+  }, [operating, deployed, removeSkillWithUndo, deploySkill])
 
   const handleSearch = async () => {
     const q = searchQuery.trim()
-    if (!q) { setSearchResults(null); return }
+    if (!q) return
+    setMode('search')
     setSearching(true)
     try {
       const { results } = await ipc.searchSkills(q)
@@ -102,6 +161,12 @@ export default function SkillsPanel({ sessionId, onClose, onSay, onDance }: Prop
       setSearchResults([])
     }
     setSearching(false)
+  }
+
+  const exitSearch = () => {
+    setMode('manage')
+    setSearchQuery('')
+    setSearchResults(null)
   }
 
   const handleInstall = async (name: string) => {
@@ -128,19 +193,14 @@ export default function SkillsPanel({ sessionId, onClose, onSay, onDance }: Prop
     })
   }
 
-  const toggleGroup = async (skills: string[]) => {
-    const allDeployed = skills.every((s) => deployed.has(s))
+  const deployAll = async (skills: string[]) => {
     setOperating('__group__')
     onDance()
     try {
       for (const skill of skills) {
-        if (allDeployed) {
-          await ipc.removeSkill(sessionId, skill)
-        } else if (!deployed.has(skill)) {
-          await ipc.addSkill(sessionId, skill)
-        }
+        if (!deployed.has(skill)) await ipc.addSkill(sessionId, skill)
       }
-      notify(allDeployed ? '已全部移除' : '已全部部署', 'success')
+      notify(`已部署全部 ${skills.length} 个技能`, 'success')
       await refresh()
     } catch (err: any) {
       notify(err?.message || '批量操作失败', 'error')
@@ -148,11 +208,46 @@ export default function SkillsPanel({ sessionId, onClose, onSay, onDance }: Prop
     setOperating(null)
   }
 
+  const removeAll = (label: string, skills: string[]) => {
+    setConfirm({
+      title: `移除「${label}」的全部部署？`,
+      body: `将从当前会话移除 ${skills.length} 个技能的部署。技能文件保留在本地仓库，可随时重新部署。`,
+      names: skills.join('、'),
+      confirmLabel: `移除 ${skills.length} 个`,
+      onConfirm: async () => {
+        setOperating('__group__')
+        onDance()
+        try {
+          for (const skill of skills) await ipc.removeSkill(sessionId, skill)
+          notify(`已移除 ${skills.length} 个部署`, 'success', UNDO_MS, {
+            label: '撤销',
+            run: () => { void deployAll(skills) },
+          })
+          await refresh()
+        } catch (err: any) {
+          notify(err?.message || '批量操作失败', 'error')
+        }
+        setOperating(null)
+      },
+    })
+  }
+
   // Collect all installed skill names for search result dedup
   const installedNames = new Set<string>()
   for (const cat of categories) {
     for (const s of cat.skills) installedNames.add(s)
   }
+  for (const g of groups) {
+    for (const s of g.skills) installedNames.add(s)
+  }
+
+  const sourcesOf = useCallback((name: string): string[] => {
+    const sources: string[] = []
+    for (const cat of categories) if (cat.skills.includes(name)) sources.push(cat.category)
+    for (const g of groups) if (g.skills.includes(name)) sources.push(`组合包 ${g.name}`)
+    for (const n of native) if (n.name === name) sources.push(`内置 ${n.source}`)
+    return sources
+  }, [categories, groups, native])
 
   // ─── MCP tab state ─────────────────────────────────
   const [mcpAvailable, setMcpAvailable] = useState(true)
@@ -163,6 +258,8 @@ export default function SkillsPanel({ sessionId, onClose, onSay, onDance }: Prop
   const [mcpInput, setMcpInput] = useState('')
   const [mcpManualOpen, setMcpManualOpen] = useState(false)
   const [mcpManualText, setMcpManualText] = useState('')
+  const [mcpManualError, setMcpManualError] = useState(false)
+  const [mcpExpanded, setMcpExpanded] = useState<string | null>(null)
 
   const refreshMcps = useCallback(async () => {
     setMcpLoading(true)
@@ -177,24 +274,56 @@ export default function SkillsPanel({ sessionId, onClose, onSay, onDance }: Prop
 
   useEffect(() => { if (tab === 'mcps') refreshMcps() }, [tab, refreshMcps])
 
-  const toggleMcp = async (name: string) => {
+  const addMcp = useCallback(async (name: string) => {
     setMcpOperating(name)
     onDance()
     try {
-      const res = mcpDeployed.has(name)
-        ? await ipc.removeMcp(sessionId, name)
-        : await ipc.addMcp(sessionId, name)
-      notify(res?.message || (res?.success ? '完成' : '失败'), res?.success ? 'success' : 'error')
+      const res = await ipc.addMcp(sessionId, name)
+      notify(res?.message || (res?.success ? '已添加' : '添加失败'), res?.success ? 'success' : 'error')
       await refreshMcps()
     } catch (err: any) {
       notify(err?.message || '操作失败', 'error')
     }
     setMcpOperating(null)
+  }, [sessionId, onDance, notify, refreshMcps])
+
+  const removeMcpWithUndo = useCallback(async (name: string) => {
+    setMcpOperating(name)
+    onDance()
+    try {
+      const res = await ipc.removeMcp(sessionId, name)
+      if (res?.success) {
+        notify(`已移除「${name}」`, 'success', UNDO_MS, {
+          label: '撤销',
+          run: () => { void addMcp(name) },
+        })
+      } else {
+        notify(res?.message || '移除失败', 'error')
+      }
+      await refreshMcps()
+    } catch (err: any) {
+      notify(err?.message || '操作失败', 'error')
+    }
+    setMcpOperating(null)
+  }, [sessionId, onDance, notify, refreshMcps, addMcp])
+
+  const toggleMcp = (name: string) => {
+    if (mcpOperating) return
+    if (mcpDeployed.has(name)) void removeMcpWithUndo(name)
+    else void addMcp(name)
   }
 
   const submitMcpManual = async () => {
     const txt = mcpManualText.trim()
     if (!txt) return
+    try {
+      const parsed = JSON.parse(txt)
+      if (typeof parsed !== 'object' || parsed === null || Array.isArray(parsed)) throw new Error('not an object')
+    } catch {
+      setMcpManualError(true)
+      return
+    }
+    setMcpManualError(false)
     setMcpOperating('__manual__')
     onDance()
     try {
@@ -214,31 +343,158 @@ export default function SkillsPanel({ sessionId, onClose, onSay, onDance }: Prop
   const addMcpFromInput = async () => {
     const src = mcpInput.trim()
     if (!src) return
-    setMcpOperating(src)
-    onDance()
     notify(`安装 ${src} 中…`, 'info', 15000)
-    try {
-      const res = await ipc.addMcp(sessionId, src)
-      notify(res?.message || (res?.success ? '已添加' : '添加失败'), res?.success ? 'success' : 'error', 5000)
-      if (res?.success) {
-        setMcpInput('')
-        await refreshMcps()
-      }
-    } catch (err: any) {
-      notify(err?.message || '添加失败', 'error')
-    }
-    setMcpOperating(null)
+    await addMcp(src)
+    setMcpInput('')
   }
+
+  const mcpCentralInfo = useCallback((name: string) => mcpCentral.find((s) => s.name === name), [mcpCentral])
+
+  // ─── shared renderers ─────────────────────────────
+  const renderSwitch = (on: boolean, disabled: boolean, onToggle: () => void, title: string) => (
+    <div
+      onClick={(e) => { e.stopPropagation(); if (!disabled) onToggle() }}
+      title={title}
+      style={{
+        position: 'relative', width: 30, height: 17, flexShrink: 0,
+        borderRadius: 999, border: `1px solid ${on ? C.accent : `${C.border}3d`}`,
+        background: on ? C.accent : 'rgba(255,255,255,0.07)',
+        cursor: disabled ? 'wait' : 'pointer',
+        opacity: disabled ? 0.5 : 1,
+        transition: 'background 0.15s, border-color 0.15s',
+      }}
+    >
+      <div style={{
+        position: 'absolute', top: 1.5, left: on ? 14 : 2,
+        width: 12, height: 12, borderRadius: '50%',
+        background: on ? '#0c1214' : '#c9cede',
+        transition: 'left 0.15s, background 0.15s',
+      }} />
+    </div>
+  )
+
+  const renderSkillRow = (skill: string) => {
+    const on = deployed.has(skill)
+    return (
+      <div
+        key={skill}
+        onClick={() => setSelected(selected === skill ? null : skill)}
+        style={{
+          display: 'flex', alignItems: 'center', gap: 8,
+          padding: '5px 10px', borderRadius: 6, fontSize: 14,
+          cursor: 'pointer',
+          border: `1px solid ${selected === skill ? `${C.accent}44` : 'transparent'}`,
+          background: selected === skill ? `${C.accent}14` : 'none',
+          opacity: on ? 1 : 0.5,
+          color: on ? C.text : C.textDim,
+        }}
+      >
+        <span style={{ flex: 1, minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{skill}</span>
+        {renderSwitch(on, operating === skill, () => toggleSkill(skill), on ? '点击移除部署' : '点击部署')}
+      </div>
+    )
+  }
+
+  const renderDetailCard = () => {
+    if (!selected || mode !== 'manage') return null
+    const on = deployed.has(selected)
+    const sources = sourcesOf(selected)
+    return (
+      <div style={{
+        margin: '0 0 10px', padding: '10px 12px', borderRadius: 10,
+        border: `1px solid ${C.border}1c`, background: `${C.well}aa`,
+      }}>
+        <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 6 }}>
+          <span style={{ fontSize: 14, fontWeight: 600, flex: 1, minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{selected}</span>
+          <span style={{ fontSize: 11, color: on ? C.green : C.textDim }}>{on ? '已部署' : '未部署'}</span>
+          <button onClick={() => setSelected(null)} style={{ background: 'none', border: 'none', color: C.textDim, cursor: 'pointer', fontSize: 13 }}>✕</button>
+        </div>
+        {selectedInfo === 'loading' && <div style={{ fontSize: 12, color: C.textDim }}>查询 registry…</div>}
+        {selectedInfo === 'missing' && <div style={{ fontSize: 12, color: C.textDim }}>本地仓库技能（registry 中未找到同名条目）</div>}
+        {selectedInfo && selectedInfo !== 'loading' && selectedInfo !== 'missing' && (
+          <>
+            <div style={{ fontSize: 12, color: C.text, marginBottom: 4 }}>
+              v{selectedInfo.version}
+            </div>
+            <div style={{ fontSize: 12, color: C.textDim, lineHeight: 1.6 }}>{selectedInfo.description}</div>
+          </>
+        )}
+        {sources.length > 0 && (
+          <div style={{ fontSize: 11, color: C.textDim, marginTop: 6 }}>
+            归属：{sources.join(' · ')}
+          </div>
+        )}
+        <div style={{ display: 'flex', gap: 8, marginTop: 10 }}>
+          <button
+            onClick={() => toggleSkill(selected)}
+            disabled={operating === selected}
+            style={{
+              padding: '4px 14px', borderRadius: 7,
+              border: `1px solid ${on ? `${C.red}55` : `${C.accent}55`}`,
+              background: on ? `${C.red}1c` : `${C.accent}1c`,
+              color: on ? C.red : C.accent,
+              fontSize: 12, cursor: 'pointer', fontFamily: 'inherit',
+              opacity: operating === selected ? 0.5 : 1,
+            }}
+          >{on ? '移除部署' : '部署到当前会话'}</button>
+        </div>
+      </div>
+    )
+  }
+
+  const renderCatBlock = (title: string, skills: string[], kind: 'cat' | 'group') => {
+    const key = `${kind}:${title}`
+    const allDeployed = skills.length > 0 && skills.every((s) => deployed.has(s))
+    const noneDeployed = skills.every((s) => !deployed.has(s))
+    const isCollapsed = collapsed.has(key)
+    return (
+      <div key={key} style={{ marginBottom: 6 }}>
+        <div style={{ display: 'flex', alignItems: 'center', gap: 6, padding: '4px 0' }}>
+          <div
+            onClick={() => toggleCollapse(key)}
+            style={{ fontSize: 14, color: kind === 'group' ? C.warning : C.accent, cursor: 'pointer', userSelect: 'none', flex: 1 }}
+          >
+            {isCollapsed ? '▸' : '▾'} {title} <span style={{ color: C.textDim }}>{kind === 'group' ? `(组合包 · ${skills.length})` : `(${skills.length})`}</span>
+          </div>
+          {skills.length > 1 && (
+            <button
+              onClick={(e) => { e.stopPropagation(); allDeployed ? removeAll(title, skills) : void deployAll(skills) }}
+              disabled={operating === '__group__'}
+              style={{
+                padding: '2px 8px', borderRadius: 6, border: `1px solid ${C.border}2e`,
+                background: allDeployed ? `${C.red}1c` : `${C.green}1c`,
+                color: allDeployed ? C.red : C.green,
+                fontSize: 11, cursor: 'pointer', fontFamily: 'inherit', flexShrink: 0,
+                opacity: operating === '__group__' ? 0.5 : 1,
+              }}
+            >{operating === '__group__' ? '...' : allDeployed ? '全部移除' : noneDeployed ? '全部部署' : '补全部署'}</button>
+          )}
+        </div>
+        {!isCollapsed && skills.map((skill) => renderSkillRow(skill))}
+      </div>
+    )
+  }
+
+  const deployedSorted = [...deployed].sort()
 
   return (
     <div style={{
       ...popover({ alpha: 'f5', radius: 16 }), padding: 18, overflow: 'hidden',
-      display: 'flex', flexDirection: 'column',
+      display: 'flex', flexDirection: 'column', position: 'relative',
     }}>
       {/* Header */}
-      <div data-drag-handle style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 10, cursor: 'grab', flexShrink: 0 }}>
+      <div data-drag-handle style={{ ...popupHeader(), marginBottom: 10, flexShrink: 0 }}>
         <span style={{ fontSize: 18, fontWeight: 600 }}>📦 {tab === 'skills' ? '技能管理' : 'MCP 管理'}</span>
-        <button onClick={onClose} style={{ background: 'none', border: 'none', color: C.textDim, cursor: 'pointer', fontSize: 20 }}>✕</button>
+        <button onClick={onClose} style={{ ...btnClose(), fontSize: 20 }}>✕</button>
+      </div>
+
+      {/* Scope banner */}
+      <div style={{
+        marginBottom: 10, padding: '6px 10px', borderRadius: 8, flexShrink: 0,
+        fontSize: 11, color: C.textDim,
+        background: `${C.accent}12`, border: `1px solid ${C.accent}30`,
+      }}>
+        部署/移除仅作用于<b style={{ color: C.accent }}>当前会话</b>的运行环境
       </div>
 
       {/* Tabs */}
@@ -249,30 +505,42 @@ export default function SkillsPanel({ sessionId, onClose, onSay, onDance }: Prop
             onClick={() => setTab(t)}
             style={{
               flex: 1, padding: '6px 10px', borderRadius: 8,
-              border: `1px solid ${tab === t ? C.primaryDim : C.outline}66`,
-              background: tab === t ? `${C.primaryDim}33` : 'transparent',
-              color: tab === t ? C.primary : C.textDim,
+              border: `1px solid ${tab === t ? `${C.accent}66` : `${C.border}1c`}`,
+              background: tab === t ? `${C.accent}1c` : 'transparent',
+              color: tab === t ? C.accent : C.textDim,
               fontSize: 13, cursor: 'pointer', fontFamily: 'inherit',
             }}
           >{t === 'skills' ? '技能 (skillsmgr)' : 'MCP (mcpsmgr)'}</button>
         ))}
       </div>
 
-      {/* Inline toast (survives in popup window where cat bubble isn't reachable) */}
+      {/* Inline toast (with optional undo action) */}
       {toast && (
         <div
           key={toast.id}
           onClick={() => setToast(null)}
           style={{
             marginBottom: 10, padding: '8px 12px', borderRadius: 8,
-            fontSize: 13, lineHeight: 1.4, cursor: 'pointer',
-            background: toast.tone === 'success' ? `${C.green}22` : toast.tone === 'error' ? `${C.red}22` : `${C.primaryDim}22`,
-            border: `1px solid ${toast.tone === 'success' ? C.green : toast.tone === 'error' ? C.red : C.primaryDim}66`,
-            color: toast.tone === 'success' ? C.green : toast.tone === 'error' ? C.red : C.primary,
+            fontSize: 13, lineHeight: 1.4, cursor: 'pointer', flexShrink: 0,
+            display: 'flex', alignItems: 'center', gap: 8,
+            background: toast.tone === 'success' ? `${C.green}22` : toast.tone === 'error' ? `${C.red}22` : `${C.accent}1c`,
+            border: `1px solid ${toast.tone === 'success' ? C.green : toast.tone === 'error' ? C.red : C.accent}66`,
+            color: toast.tone === 'success' ? C.green : toast.tone === 'error' ? C.red : C.accent,
             wordBreak: 'break-word',
           }}
           title="点击关闭"
-        >{toast.text}</div>
+        >
+          <span style={{ flex: 1 }}>{toast.text}</span>
+          {toast.action && (
+            <button
+              onClick={(e) => { e.stopPropagation(); toast.action?.(); setToast(null) }}
+              style={{
+                background: 'none', border: 'none', color: C.accent,
+                fontSize: 13, fontWeight: 600, cursor: 'pointer', fontFamily: 'inherit', flexShrink: 0,
+              }}
+            >{toast.actionLabel}</button>
+          )}
+        </div>
       )}
 
       {tab === 'skills' && <>
@@ -281,18 +549,18 @@ export default function SkillsPanel({ sessionId, onClose, onSay, onDance }: Prop
         <input
           value={searchQuery}
           onChange={(e) => setSearchQuery(e.target.value)}
-          onKeyDown={(e) => { if (e.key === 'Enter') handleSearch() }}
-          placeholder="搜索 registry..."
+          onKeyDown={(e) => { if (e.key === 'Enter') void handleSearch() }}
+          placeholder="搜索 registry，回车进入搜索…"
           style={{
             flex: 1, padding: '5px 10px', borderRadius: 8,
-            border: `1px solid ${C.outline}33`, background: `${C.container}cc`,
+            border: `1px solid ${C.border}1c`, background: `${C.well}cc`,
             color: C.text, fontSize: 14, outline: 'none', fontFamily: 'inherit',
           }}
         />
-        <button onClick={handleSearch} disabled={searching}
+        <button onClick={() => void handleSearch()} disabled={searching}
           style={{
             padding: '5px 10px', borderRadius: 8, border: 'none',
-            background: `${C.primaryDim}`, color: T.accentText, fontSize: 14,
+            background: C.accent, color: '#0c1214', fontSize: 14,
             cursor: 'pointer', fontFamily: 'inherit', opacity: searching ? 0.5 : 1,
           }}
         >{searching ? '...' : '🔍'}</button>
@@ -308,27 +576,37 @@ export default function SkillsPanel({ sessionId, onClose, onSay, onDance }: Prop
           </div>
         )}
 
-        {loading && available && (
-          <div style={{ fontSize: 14, color: C.textDim, textAlign: 'center', padding: 20 }}>加载中...</div>
-        )}
-
-        {/* Search results */}
-        {searchResults && searchResults.length > 0 && (
-          <div style={{ marginBottom: 10 }}>
-            <div style={{ fontSize: 13, color: C.textDim, marginBottom: 6 }}>── 搜索结果 ──</div>
-            {searchResults.map((r) => (
+        {mode === 'search' && (
+          <>
+            <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 8 }}>
+              <button
+                onClick={exitSearch}
+                style={{
+                  padding: '3px 10px', borderRadius: 7, fontSize: 11,
+                  border: `1px solid ${C.border}1c`, background: 'none', color: C.text,
+                  cursor: 'pointer', fontFamily: 'inherit',
+                }}
+              >← 返回已安装</button>
+              <span style={{ fontSize: 12, color: C.textDim }}>
+                {searching ? '搜索中…' : `“${searchQuery}” · ${searchResults?.length ?? 0} 个结果`}
+              </span>
+            </div>
+            {!searching && searchResults && searchResults.length === 0 && (
+              <div style={{ fontSize: 14, color: C.textDim, marginBottom: 10 }}>没有匹配的 registry 条目</div>
+            )}
+            {!searching && searchResults?.map((r) => (
               <div key={r.name} style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '5px 0' }}>
                 <div style={{ flex: 1, minWidth: 0 }}>
                   <div style={{ fontSize: 14, color: C.text, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{r.name} <span style={{ color: C.textDim, fontSize: 12 }}>v{r.version}</span></div>
                   <div style={{ fontSize: 12, color: C.textDim, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{r.description}</div>
                 </div>
                 {installedNames.has(r.name) ? (
-                  <span style={{ fontSize: 12, color: C.green, flexShrink: 0 }}>已安装</span>
+                  <span style={{ fontSize: 12, color: C.green, flexShrink: 0 }}>✓ 已安装</span>
                 ) : (
-                   <button onClick={() => handleInstall(r.name)} disabled={installing === r.name}
+                  <button onClick={() => handleInstall(r.name)} disabled={installing === r.name}
                     style={{
                       padding: '4px 12px', borderRadius: 6, border: 'none',
-                      background: C.green, color: T.accentText, fontSize: 13,
+                      background: C.green, color: '#0c1214', fontSize: 13, fontWeight: 600,
                       cursor: 'pointer', fontFamily: 'inherit', flexShrink: 0,
                       opacity: installing === r.name ? 0.5 : 1,
                     }}
@@ -336,160 +614,112 @@ export default function SkillsPanel({ sessionId, onClose, onSay, onDance }: Prop
                 )}
               </div>
             ))}
-          </div>
-        )}
-        {searchResults && searchResults.length === 0 && (
-          <div style={{ fontSize: 14, color: C.textDim, marginBottom: 10 }}>无搜索结果</div>
+          </>
         )}
 
-        {/* Skill categories */}
-        {!loading && categories.map((cat) => {
-          const isCollapsed = collapsed.has(cat.category)
-          const allDeployed = cat.skills.length > 0 && cat.skills.every((s) => deployed.has(s))
-          const noneDeployed = cat.skills.every((s) => !deployed.has(s))
-          return (
-            <div key={cat.category} style={{ marginBottom: 6 }}>
-              <div style={{ display: 'flex', alignItems: 'center', gap: 6, padding: '4px 0' }}>
-                <div
-                  onClick={() => toggleCollapse(cat.category)}
-                  style={{ fontSize: 14, color: C.primaryDim, cursor: 'pointer', userSelect: 'none', flex: 1 }}
-                >
-                  {isCollapsed ? '▸' : '▾'} {cat.category} <span style={{ color: C.textDim }}>({cat.skills.length})</span>
-                </div>
-                {cat.skills.length > 1 && (
-                  <button
-                    onClick={(e) => { e.stopPropagation(); toggleGroup(cat.skills) }}
-                    disabled={operating === '__group__'}
-                    style={{
-                      padding: '2px 8px', borderRadius: 6, border: `1px solid ${C.outline}44`,
-                      background: allDeployed ? `${C.red}22` : `${C.green}22`,
-                      color: allDeployed ? C.red : C.green,
-                      fontSize: 11, cursor: 'pointer', fontFamily: 'inherit', flexShrink: 0,
-                      opacity: operating === '__group__' ? 0.5 : 1,
-                    }}
-                  >{operating === '__group__' ? '...' : allDeployed ? '全部移除' : noneDeployed ? '全部部署' : '补全部署'}</button>
-                )}
-              </div>
-              {!isCollapsed && cat.skills.map((skill) => (
-                <SkillRow
-                  key={skill}
-                  name={skill}
-                  deployed={deployed.has(skill)}
-                  operating={operating === skill}
-                  onClick={() => toggleSkill(skill)}
-                />
-              ))}
-            </div>
-          )
-        })}
+        {mode === 'manage' && <>
+          {loading && available && (
+            <div style={{ fontSize: 14, color: C.textDim, textAlign: 'center', padding: 20 }}>加载中...</div>
+          )}
 
-        {/* Groups */}
-        {!loading && groups.map((g) => {
-          const key = `group:${g.name}`
-          const isCollapsed = collapsed.has(key)
-          const allDeployed = g.skills.length > 0 && g.skills.every((s) => deployed.has(s))
-          const noneDeployed = g.skills.every((s) => !deployed.has(s))
-          return (
-            <div key={key} style={{ marginBottom: 6 }}>
-              <div style={{ display: 'flex', alignItems: 'center', gap: 6, padding: '4px 0' }}>
-                <div
-                  onClick={() => toggleCollapse(key)}
-                  style={{ fontSize: 14, color: T.warning, cursor: 'pointer', userSelect: 'none', flex: 1 }}
-                >
-                  {isCollapsed ? '▸' : '▾'} {g.name} <span style={{ color: C.textDim }}>(group · {g.skills.length})</span>
-                </div>
-                <button
-                  onClick={(e) => { e.stopPropagation(); toggleGroup(g.skills) }}
-                  disabled={operating === '__group__'}
-                  style={{
-                    padding: '2px 8px', borderRadius: 6, border: `1px solid ${C.outline}44`,
-                    background: allDeployed ? `${C.red}22` : `${C.green}22`,
-                    color: allDeployed ? C.red : C.green,
-                    fontSize: 11, cursor: 'pointer', fontFamily: 'inherit', flexShrink: 0,
-                    opacity: operating === '__group__' ? 0.5 : 1,
-                  }}
-                >{operating === '__group__' ? '...' : allDeployed ? '全部移除' : noneDeployed ? '全部部署' : '补全部署'}</button>
+          {/* Deployed zone — at-a-glance answer to "这个会话激活了哪些技能" */}
+          {!loading && available && (
+            <div style={{
+              border: `1px solid ${C.accent}3d`, background: `${C.accent}0a`,
+              borderRadius: 12, padding: '6px 6px 4px', marginBottom: 10,
+            }}>
+              <div style={{ display: 'flex', alignItems: 'center', gap: 6, padding: '3px 4px 7px' }}>
+                <span style={{ fontSize: 12, fontWeight: 600, color: C.accent }}>● 已部署到当前会话</span>
+                <span style={{
+                  fontSize: 10.5, color: C.textDim,
+                  background: `${C.accent}1c`, borderRadius: 999, padding: '1px 8px',
+                }}>{deployedSorted.length}</span>
               </div>
-              {!isCollapsed && g.skills.map((skill) => (
-                <SkillRow
-                  key={skill}
-                  name={skill}
-                  deployed={deployed.has(skill)}
-                  operating={operating === skill}
-                  onClick={() => toggleSkill(skill)}
-                />
-              ))}
-            </div>
-          )
-        })}
-
-        {/* Native skills (read-only) */}
-        {!loading && native.length > 0 && (() => {
-          const bySource: Record<string, NativeSkill[]> = {}
-          for (const s of native) {
-            const key =
-              s.source === 'plugin' ? 'plugins'
-              : s.source === 'skill' ? 'skills'
-              : s.source === 'project-skill' ? 'project skills'
-              : s.source === 'project-command' ? 'project commands'
-              : 'commands'
-            ;(bySource[key] ||= []).push(s)
-          }
-          return Object.entries(bySource).map(([source, items]) => {
-            const key = `native:${source}`
-            const isCollapsed = collapsed.has(key)
-            return (
-              <div key={key} style={{ marginBottom: 6 }}>
-                <div
-                  onClick={() => toggleCollapse(key)}
-                  style={{ fontSize: 14, color: T.info, cursor: 'pointer', padding: '4px 0', userSelect: 'none' }}
-                >
-                  {isCollapsed ? '▸' : '▾'} {source} <span style={{ color: C.textDim }}>({items.length})</span>
+              {deployedSorted.length === 0 && (
+                <div style={{ fontSize: 11.5, color: C.textDim, padding: '2px 4px 6px' }}>
+                  还没有部署任何技能 — 从下面分类里打开开关即可
                 </div>
-                {!isCollapsed && items.map((s) => {
-                  const pluginKey = `native:plugin:${s.name}`
-                  const pluginCollapsed = collapsed.has(pluginKey)
-                  const displayName = s.name.replace(/@.*$/, '')
-                  return (
-                    <div key={s.name}>
-                      <div
-                        onClick={s.children?.length ? () => toggleCollapse(pluginKey) : undefined}
-                        style={{
-                          display: 'flex', alignItems: 'center', gap: 6,
-                          padding: '5px 10px', fontSize: 14, color: C.text, borderRadius: 6,
-                          cursor: s.children?.length ? 'pointer' : 'default',
-                        }}
-                      >
-                        <span style={{ color: s.enabled !== false ? T.info : C.textDim, fontSize: 14 }}>
-                          {s.enabled !== false ? '◆' : '◇'}
-                        </span>
-                        {s.children?.length
-                          ? <span>{pluginCollapsed ? '▸' : '▾'} {displayName} <span style={{ fontSize: 12, color: C.textDim }}>({s.children.length})</span></span>
-                          : <span>{displayName}</span>
-                        }
-                      </div>
-                      {s.children && !pluginCollapsed && s.children.map((child) => (
-                        <div key={child} style={{
-                          padding: '3px 10px 3px 34px', fontSize: 13, color: C.textDim,
-                          overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap',
-                        }}>
-                          {child}
+              )}
+              {deployedSorted.map((skill) => renderSkillRow(skill))}
+            </div>
+          )}
+
+          {renderDetailCard()}
+
+          {/* Skill categories */}
+          {!loading && categories.map((cat) => renderCatBlock(cat.category, cat.skills, 'cat'))}
+
+          {/* Groups */}
+          {!loading && groups.map((g) => renderCatBlock(g.name, g.skills, 'group'))}
+
+          {/* Native skills (read-only) */}
+          {!loading && native.length > 0 && (() => {
+            const bySource: Record<string, NativeSkill[]> = {}
+            for (const s of native) {
+              const key =
+                s.source === 'plugin' ? 'plugins'
+                : s.source === 'skill' ? 'skills'
+                : s.source === 'project-skill' ? 'project skills'
+                : s.source === 'project-command' ? 'project commands'
+                : 'commands'
+              ;(bySource[key] ||= []).push(s)
+            }
+            return Object.entries(bySource).map(([source, items]) => {
+              const key = `native:${source}`
+              const isCollapsed = collapsed.has(key)
+              return (
+                <div key={key} style={{ marginBottom: 6 }}>
+                  <div
+                    onClick={() => toggleCollapse(key)}
+                    style={{ fontSize: 14, color: C.info, cursor: 'pointer', padding: '4px 0', userSelect: 'none' }}
+                  >
+                    {isCollapsed ? '▸' : '▾'} {source} <span style={{ color: C.textDim }}>({items.length})</span>
+                  </div>
+                  {!isCollapsed && items.map((s) => {
+                    const pluginKey = `native:plugin:${s.name}`
+                    const pluginCollapsed = collapsed.has(pluginKey)
+                    const displayName = s.name.replace(/@.*$/, '')
+                    return (
+                      <div key={s.name}>
+                        <div
+                          onClick={s.children?.length ? () => toggleCollapse(pluginKey) : undefined}
+                          style={{
+                            display: 'flex', alignItems: 'center', gap: 6,
+                            padding: '5px 10px', fontSize: 14, color: C.text, borderRadius: 6,
+                            cursor: s.children?.length ? 'pointer' : 'default',
+                          }}
+                        >
+                          <span style={{ color: s.enabled !== false ? C.info : C.textDim, fontSize: 14 }}>
+                            {s.enabled !== false ? '◆' : '◇'}
+                          </span>
+                          {s.children?.length
+                            ? <span>{pluginCollapsed ? '▸' : '▾'} {displayName} <span style={{ fontSize: 12, color: C.textDim }}>({s.children.length})</span></span>
+                            : <span>{displayName}</span>
+                          }
                         </div>
-                      ))}
-                    </div>
-                  )
-                })}
-              </div>
-            )
-          })
-        })()}
+                        {s.children && !pluginCollapsed && s.children.map((child) => (
+                          <div key={child} style={{
+                            padding: '3px 10px 3px 34px', fontSize: 13, color: C.textDim,
+                            overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap',
+                          }}>
+                            {child}
+                          </div>
+                        ))}
+                      </div>
+                    )
+                  })}
+                </div>
+              )
+            })
+          })()}
 
-        {!loading && available && categories.length === 0 && groups.length === 0 && native.length === 0 && (
-          <div style={{ fontSize: 14, color: C.textDim, textAlign: 'center', padding: 20 }}>
-            没有已安装的技能<br />
-            <span style={{ fontSize: 13 }}>试试搜索 registry 安装</span>
-          </div>
-        )}
+          {!loading && available && categories.length === 0 && groups.length === 0 && native.length === 0 && (
+            <div style={{ fontSize: 14, color: C.textDim, textAlign: 'center', padding: 20 }}>
+              没有已安装的技能<br />
+              <span style={{ fontSize: 13 }}>试试搜索 registry 安装</span>
+            </div>
+          )}
+        </>}
       </div>
       </>}
 
@@ -499,59 +729,62 @@ export default function SkillsPanel({ sessionId, onClose, onSay, onDance }: Prop
           <input
             value={mcpInput}
             onChange={(e) => setMcpInput(e.target.value)}
-            onKeyDown={(e) => { if (e.key === 'Enter') addMcpFromInput() }}
+            onKeyDown={(e) => { if (e.key === 'Enter') void addMcpFromInput() }}
             placeholder="central 名 / owner/repo / GitHub URL"
             style={{
               flex: 1, padding: '5px 10px', borderRadius: 8,
-              border: `1px solid ${C.outline}33`, background: `${C.container}cc`,
+              border: `1px solid ${C.border}1c`, background: `${C.well}cc`,
               color: C.text, fontSize: 14, outline: 'none', fontFamily: 'inherit',
             }}
           />
           <button
-            onClick={addMcpFromInput}
+            onClick={() => void addMcpFromInput()}
             disabled={!!mcpOperating || !mcpInput.trim()}
             style={{
               padding: '5px 12px', borderRadius: 8, border: 'none',
-              background: C.green, color: T.accentText, fontSize: 14,
+              background: C.green, color: '#0c1214', fontSize: 14,
               cursor: 'pointer', fontFamily: 'inherit',
               opacity: !!mcpOperating || !mcpInput.trim() ? 0.5 : 1,
             }}
           >添加</button>
         </div>
 
-        {/* Manual paste JSON */}
+        {/* Manual paste JSON (validated before submit) */}
         <div style={{ marginBottom: 10, flexShrink: 0 }}>
           <div
             onClick={() => setMcpManualOpen((v) => !v)}
             style={{ fontSize: 12, color: C.textDim, cursor: 'pointer', userSelect: 'none', padding: '2px 0' }}
           >
-            {mcpManualOpen ? '▾' : '▸'} ✏️ 手动粘贴 JSON 写入项目配置
+            {mcpManualOpen ? '▾' : '▸'} ✏️ 高级：手动粘贴 JSON 写入项目配置
           </div>
           {mcpManualOpen && (
             <div style={{ marginTop: 6 }}>
               <textarea
                 value={mcpManualText}
-                onChange={(e) => setMcpManualText(e.target.value)}
+                onChange={(e) => { setMcpManualText(e.target.value); setMcpManualError(false) }}
                 placeholder={'粘贴一段 mcpServers JSON，例如:\n{\n  "my-server": {\n    "command": "npx",\n    "args": ["-y", "..."]\n  }\n}\n\n也接受外层包 "mcpServers": { ... }'}
                 spellCheck={false}
                 style={{
                   width: '100%', minHeight: 140, padding: 8, borderRadius: 6,
-                  border: `1px solid ${C.outline}55`, background: `${C.container}cc`,
+                  border: `1px solid ${mcpManualError ? C.red : `${C.border}2e`}`, background: `${C.well}cc`,
                   color: C.text, fontSize: 12, fontFamily: 'ui-monospace, Menlo, monospace',
                   outline: 'none', resize: 'vertical', boxSizing: 'border-box',
                 }}
               />
+              {mcpManualError && (
+                <div style={{ fontSize: 11, color: C.red, marginTop: 4 }}>JSON 格式错误，未写入</div>
+              )}
               <div style={{ display: 'flex', gap: 6, marginTop: 6, alignItems: 'center' }}>
                 <button
-                  onClick={submitMcpManual}
+                  onClick={() => void submitMcpManual()}
                   disabled={!!mcpOperating || !mcpManualText.trim()}
                   style={{
                     padding: '4px 12px', borderRadius: 6, border: 'none',
-                    background: C.primaryDim, color: T.accentText, fontSize: 13,
+                    background: C.accent, color: '#0c1214', fontSize: 13,
                     cursor: 'pointer', fontFamily: 'inherit',
                     opacity: !!mcpOperating || !mcpManualText.trim() ? 0.5 : 1,
                   }}
-                >{mcpOperating === '__manual__' ? '写入中…' : '写入'}</button>
+                >{mcpOperating === '__manual__' ? '写入中…' : '校验并写入'}</button>
                 <span style={{ fontSize: 11, color: C.textDim }}>
                   目标:
                   同步写入 .mcp.json、.codex/config.toml 与 opencode.json
@@ -575,16 +808,34 @@ export default function SkillsPanel({ sessionId, onClose, onSay, onDance }: Prop
 
           {!mcpLoading && mcpDeployed.size > 0 && (
             <div style={{ marginBottom: 10 }}>
-              <div style={{ fontSize: 13, color: C.textDim, marginBottom: 6 }}>── 当前项目已部署 ──</div>
-              {[...mcpDeployed].map((name) => (
-                <McpRow
-                  key={`d:${name}`}
-                  name={name}
-                  deployed
-                  operating={mcpOperating === name}
-                  onClick={() => toggleMcp(name)}
-                />
-              ))}
+              <div style={{ fontSize: 13, color: C.textDim, marginBottom: 6 }}>── 当前项目已部署 ({mcpDeployed.size}) ──</div>
+              {[...mcpDeployed].map((name) => {
+                const info = mcpCentralInfo(name)
+                const expanded = mcpExpanded === name
+                return (
+                  <div key={`d:${name}`} style={{ border: `1px solid ${C.border}1c`, borderRadius: 8, marginBottom: 6, overflow: 'hidden' }}>
+                    <div
+                      onClick={() => setMcpExpanded(expanded ? null : name)}
+                      style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '6px 10px', cursor: 'pointer' }}
+                    >
+                      <span style={{ color: C.green, fontSize: 14, flexShrink: 0 }}>●</span>
+                      <div style={{ flex: 1, minWidth: 0 }}>
+                        <div style={{ fontSize: 14, color: C.text, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{name}</div>
+                        {info?.description && (
+                          <div style={{ fontSize: 12, color: C.textDim, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{info.description}</div>
+                        )}
+                      </div>
+                      {renderSwitch(true, mcpOperating === name, () => toggleMcp(name), '点击移除')}
+                      <span style={{ fontSize: 9, color: C.textDim }}>{expanded ? '▾' : '▸'}</span>
+                    </div>
+                    {expanded && (
+                      <div style={{ borderTop: `1px solid ${C.border}14`, padding: '8px 10px', background: `${C.well}66`, fontSize: 12, color: C.textDim, lineHeight: 1.7 }}>
+                        {info?.description ?? 'central 未收录（手动添加的 server）'}
+                      </div>
+                    )}
+                  </div>
+                )
+              })}
             </div>
           )}
 
@@ -592,14 +843,19 @@ export default function SkillsPanel({ sessionId, onClose, onSay, onDance }: Prop
             <div>
               <div style={{ fontSize: 13, color: C.textDim, marginBottom: 6 }}>── 中央仓库 ({mcpCentral.length}) ──</div>
               {mcpCentral.map((s) => (
-                <McpRow
+                <div
                   key={`c:${s.name}`}
-                  name={s.name}
-                  description={s.description}
-                  deployed={mcpDeployed.has(s.name)}
-                  operating={mcpOperating === s.name}
-                  onClick={() => toggleMcp(s.name)}
-                />
+                  style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '6px 10px' }}
+                >
+                  <span style={{ color: mcpDeployed.has(s.name) ? C.green : C.textDim, fontSize: 14, flexShrink: 0 }}>{mcpDeployed.has(s.name) ? '●' : '○'}</span>
+                  <div style={{ flex: 1, minWidth: 0 }}>
+                    <div style={{ fontSize: 14, color: C.text, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{s.name}</div>
+                    {s.description && (
+                      <div style={{ fontSize: 12, color: C.textDim, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{s.description}</div>
+                    )}
+                  </div>
+                  {renderSwitch(mcpDeployed.has(s.name), mcpOperating === s.name, () => toggleMcp(s.name), mcpDeployed.has(s.name) ? '点击移除' : '点击部署')}
+                </div>
               ))}
             </div>
           )}
@@ -612,53 +868,47 @@ export default function SkillsPanel({ sessionId, onClose, onSay, onDance }: Prop
           )}
         </div>
       </>}
-    </div>
-  )
-}
 
-function McpRow({ name, description, deployed, operating, onClick }: {
-  name: string; description?: string; deployed: boolean; operating: boolean; onClick: () => void
-}) {
-  return (
-    <div
-      onClick={(e) => { e.stopPropagation(); if (!operating) onClick() }}
-      style={{
-        display: 'flex', alignItems: 'center', gap: 8,
-        padding: '6px 10px', cursor: operating ? 'wait' : 'pointer',
-        borderRadius: 6, fontSize: 14, color: C.text,
-        opacity: operating ? 0.5 : 1,
-      }}
-      onMouseEnter={(e) => { (e.currentTarget as HTMLElement).style.background = `${C.primaryDim}22` }}
-      onMouseLeave={(e) => { (e.currentTarget as HTMLElement).style.background = 'none' }}
-    >
-      <span style={{ color: deployed ? C.green : C.textDim, fontSize: 14, flexShrink: 0 }}>{deployed ? '●' : '○'}</span>
-      <div style={{ flex: 1, minWidth: 0 }}>
-        <div style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{name}</div>
-        {description && (
-          <div style={{ fontSize: 12, color: C.textDim, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{description}</div>
-        )}
-      </div>
-    </div>
-  )
-}
-
-function SkillRow({ name, deployed, operating, onClick }: {
-  name: string; deployed: boolean; operating: boolean; onClick: () => void
-}) {
-  return (
-    <div
-      onClick={(e) => { e.stopPropagation(); if (!operating) onClick() }}
-      style={{
-        display: 'flex', alignItems: 'center', gap: 8,
-        padding: '5px 10px', cursor: operating ? 'wait' : 'pointer',
-        borderRadius: 6, fontSize: 14, color: C.text,
-        opacity: operating ? 0.5 : 1,
-      }}
-      onMouseEnter={(e) => { (e.currentTarget as HTMLElement).style.background = `${C.primaryDim}22` }}
-      onMouseLeave={(e) => { (e.currentTarget as HTMLElement).style.background = 'none' }}
-    >
-      <span style={{ color: deployed ? C.green : C.textDim, fontSize: 14 }}>{deployed ? '●' : '○'}</span>
-      <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{name}</span>
+      {/* Confirm modal for destructive batch actions */}
+      {confirm && (
+        <div
+          onClick={() => setConfirm(null)}
+          style={{
+            position: 'absolute', inset: 0, zIndex: 80,
+            background: 'rgba(6,8,14,0.55)', backdropFilter: 'blur(3px)',
+            display: 'flex', alignItems: 'center', justifyContent: 'center',
+          }}
+        >
+          <div
+            onClick={(e) => e.stopPropagation()}
+            style={{
+              width: 340, padding: 16, borderRadius: 14,
+              background: '#1e2230', border: `1px solid ${C.border}3d`,
+              boxShadow: '0 24px 64px rgba(0,0,0,0.6)',
+            }}
+          >
+            <div style={{ fontSize: 13.5, fontWeight: 600, marginBottom: 8 }}>{confirm.title}</div>
+            <div style={{ fontSize: 12, color: C.textDim, lineHeight: 1.6, marginBottom: 6 }}>{confirm.body}</div>
+            {confirm.names && <div style={{ fontSize: 11, color: C.textDim, marginBottom: 12, lineHeight: 1.6, opacity: 0.8 }}>{confirm.names}</div>}
+            <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 8 }}>
+              <button
+                onClick={() => setConfirm(null)}
+                style={{
+                  padding: '6px 16px', borderRadius: 9, fontSize: 12, cursor: 'pointer', fontFamily: 'inherit',
+                  border: `1px solid ${C.border}1c`, background: 'rgba(255,255,255,0.04)', color: C.textDim,
+                }}
+              >取消</button>
+              <button
+                onClick={() => { const run = confirm.onConfirm; setConfirm(null); void run() }}
+                style={{
+                  padding: '6px 16px', borderRadius: 9, fontSize: 12, fontWeight: 600, cursor: 'pointer', fontFamily: 'inherit',
+                  border: 'none', background: C.red, color: '#fff',
+                }}
+              >{confirm.confirmLabel}</button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   )
 }
