@@ -56,7 +56,7 @@ export default function PopupRouter({ type, params }: Props) {
       {type === 'skills' && (
         <div style={{ width: '100%', height: '100%' }} className="popup-skills-override">
           <SkillsPanel
-            sessionId={params}
+            sessionId={params === 'global' ? undefined : params}
             onClose={onClose}
             onSay={noop}
             onDance={noop}

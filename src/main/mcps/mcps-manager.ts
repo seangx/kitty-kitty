@@ -8,7 +8,7 @@
 
 import { execFile } from 'child_process'
 import { promisify } from 'util'
-import { readdirSync, statSync, existsSync, readFileSync, writeFileSync, mkdirSync } from 'fs'
+import { existsSync, readFileSync, writeFileSync, mkdirSync } from 'fs'
 import { join, dirname } from 'path'
 import { homedir } from 'os'
 import { log } from '../logger'
@@ -23,6 +23,7 @@ import {
   type CliResult,
 } from './cli-runner'
 import { listDeployed, listDeployedForTool, readConfiguredServers } from './deployment-scanner'
+import { listCentralFromFs as scanCentralFromFs, missingCentralDefinitionPath as findMissingCentralDefinitionPath } from './central-repository'
 
 export { parseCodexMcpToml, parseJsonc, toClaudeMcp, toCodexMcp, toOpenCodeMcp } from './config-converters'
 
@@ -81,42 +82,29 @@ async function runMcpsMgr(args: string[], cwd?: string, input?: string): Promise
 const CENTRAL_DIR = join(homedir(), '.mcps-manager', 'servers')
 
 /**
+ * mcpsmgr <= 0.3 can infer scoped names (for example @upstash/context7) but
+ * writes them as nested paths without creating the scope directory first.
+ * Accept only a missing JSON path inside the central repository; never create
+ * an arbitrary path copied from CLI output.
+ */
+async function runMcpsMgrWithScopedRetry(args: string[], cwd?: string, input?: string): Promise<CliResult> {
+  let result = await runMcpsMgr(args, cwd, input)
+  if (result.success) return result
+  const missingPath = findMissingCentralDefinitionPath(result, CENTRAL_DIR)
+  if (!missingPath) return result
+  mkdirSync(dirname(missingPath), { recursive: true })
+  log('mcps', `retry after creating scoped central directory: ${dirname(missingPath)}`)
+  result = await runMcpsMgr(args, cwd, input)
+  return result
+}
+
+/**
  * mcpsmgr 0.4 stores one JSON definition per server; older releases used one
  * directory per server. Support both layouts because the CLI's text output is
  * version-sensitive and harder to parse robustly.
  */
 function listCentralFromFs(): McpServerInfo[] {
-  if (!existsSync(CENTRAL_DIR)) return []
-  let entries: string[] = []
-  try { entries = readdirSync(CENTRAL_DIR) } catch { return [] }
-  const out: McpServerInfo[] = []
-  for (const name of entries) {
-    if (name.startsWith('.')) continue
-    const p = join(CENTRAL_DIR, name)
-    let infoName = name
-    let description: string | undefined
-    try {
-      const stat = statSync(p)
-      if (stat.isFile() && name.endsWith('.json')) {
-        const json = JSON.parse(readFileSync(p, 'utf-8'))
-        infoName = typeof json?.name === 'string' ? json.name : name.slice(0, -5)
-        if (typeof json?.description === 'string') description = json.description.slice(0, 160)
-      } else if (stat.isDirectory()) {
-        // Legacy mcpsmgr layout (<0.4): one directory per server.
-        const manifestPath = join(p, 'mcpsmgr.json')
-        if (existsSync(manifestPath)) {
-          const json = JSON.parse(readFileSync(manifestPath, 'utf-8'))
-          if (typeof json?.description === 'string') description = json.description.slice(0, 160)
-        }
-      } else continue
-    } catch { continue }
-    if (infoName) {
-      try {
-        out.push({ name: infoName, description, source: 'central' })
-      } catch { /* ignore */ }
-    }
-  }
-  return out.sort((a, b) => a.name.localeCompare(b.name))
+  return scanCentralFromFs(CENTRAL_DIR)
 }
 
 // ─── Deployed scanner (per-project) ─────────────────────
@@ -180,7 +168,7 @@ export async function addMcp(cwd: string, source: string, tool: string): Promise
   // confirmation through stdin. Any further prompt is left unanswered and the
   // postcondition check below prevents a prompt-only exit from becoming a
   // false success.
-  const result = await runMcpsMgr(['add', safe, '-a', agent, '-y'], cwd, 'y\n')
+  const result = await runMcpsMgrWithScopedRetry(['add', safe, '-a', agent, '-y'], cwd, 'y\n')
   const after = listDeployedForTool(cwd, tool)
   const reported = new Set(findReportedDeployments(`${result.stdout}\n${result.stderr}`))
   const deployedName = after.find((name) => !before.has(name))
@@ -221,7 +209,7 @@ export async function installMcp(source: string): Promise<{ success: boolean; me
   const before = new Set(listCentralFromFs().map((server) => server.name))
   // `install` has no -y flag in mcpsmgr 0.4.10, but uses the same README trust
   // prompt as `add`. Feed the explicit UI authorization through stdin.
-  const result = await runMcpsMgr(['install', safe], undefined, 'y\n')
+  const result = await runMcpsMgrWithScopedRetry(['install', safe], undefined, 'y\n')
   const after = listCentralFromFs().map((server) => server.name)
   const reported = new Set(findSavedServers(`${result.stdout}\n${result.stderr}`))
   const installedName = after.find((name) => !before.has(name))

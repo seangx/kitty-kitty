@@ -203,6 +203,14 @@ export async function installSkill(name: string): Promise<{ success: boolean; me
   return { success: false, message: errData?.error || result.stderr.trim() || '安装失败' }
 }
 
+export async function uninstallSkill(name: string): Promise<{ success: boolean; message: string }> {
+  const safeName = validateName(name)
+  const result = await runSkillsMgr(['uninstall', safeName, '-y'])
+  if (result.success) return { success: true, message: `${safeName} 已从全局仓库卸载` }
+  const errData = parseJson<any>(result.stdout || result.stderr, null)
+  return { success: false, message: errData?.error || result.stderr.trim() || '卸载失败' }
+}
+
 // ─── Native Skills Scanner ────────────────────────────
 
 function scanDir(dir: string, ext: string): string[] {

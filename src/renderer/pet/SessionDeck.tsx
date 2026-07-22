@@ -17,6 +17,7 @@ import {
 } from './deck-tree'
 import { clampMenuPosition } from './menu-position'
 import { useAutoClose } from './useAutoClose'
+import { ACCENT_PRESETS } from './ui-tokens'
 import './SessionDeck.css'
 
 interface Props {
@@ -24,7 +25,7 @@ interface Props {
   edge: DeckEdge
   closing?: boolean
   onClose: () => void
-  onCreateDirect: () => void
+  onCreateDirect: (groupId?: string) => void
   onCreateInDirectory: () => void
   onAttach: (id: string) => void
   onKill: (id: string) => void
@@ -79,17 +80,45 @@ function childItems(node: DeckGroupNode): DeckItem[] {
   return [...sessions, ...groups]
 }
 
-function ToolIcon({ tool }: { tool: string }) {
+function ToolIcon({ tool, color }: { tool: string; color?: string }) {
   const glyph = tool === 'codex' ? '</>' : tool === 'opencode' ? '⌘' : '✦'
-  return <span className="session-deck__tool-icon" aria-hidden="true">{glyph}</span>
+  return <span className="session-deck__tool-icon" style={color ? { color } : undefined} aria-hidden="true">{glyph}</span>
 }
 
-function GroupIcon() {
+function GroupIcon({ color }: { color?: string } = {}) {
   return (
-    <svg className="session-deck__group-icon" viewBox="0 0 28 24" aria-hidden="true">
+    <svg className="session-deck__group-icon" style={color ? { color } : undefined} viewBox="0 0 28 24" aria-hidden="true">
       <path d="M2.5 6.5h8l2.6 3h12.4v11H2.5z" />
       <path d="M5 3.5h8l2.4 3H23v3" opacity=".55" />
     </svg>
+  )
+}
+
+function IconColorPicker({ value, onSelect }: {
+  value?: string
+  onSelect: (color: string | null) => void
+}) {
+  return (
+    <div className="session-deck__color-picker" aria-label="图标颜色">
+      <span>图标颜色</span>
+      <div>
+        {ACCENT_PRESETS.map((color) => (
+          <button
+            key={color}
+            className={`session-deck__color-swatch${value === color ? ' is-selected' : ''}`}
+            style={{ background: color }}
+            onClick={() => onSelect(color)}
+            aria-label={`选择颜色 ${color}`}
+          />
+        ))}
+        <button
+          className={`session-deck__color-swatch is-default${!value ? ' is-selected' : ''}`}
+          onClick={() => onSelect(null)}
+          aria-label="恢复默认颜色"
+          title="恢复默认"
+        >×</button>
+      </div>
+    </div>
   )
 }
 
@@ -432,7 +461,7 @@ export default function SessionDeck({
         title={`${session.tool}: ${session.title}\n${session.cwd || '未设置目录'}`}
       >
         {needsInput.has(session.id) && <span className="session-deck__attention">1</span>}
-        <ToolIcon tool={session.tool} />
+        <ToolIcon tool={session.tool} color={session.color} />
         <span className="session-deck__label">{session.title}</span>
       </div>
     )
@@ -487,7 +516,7 @@ export default function SessionDeck({
           }}
           title={`${node.group.name} · ${countDeckDescendants(node)} 项\n点击展开 · 拖动可嵌套`}
         >
-          <GroupIcon />
+          <GroupIcon color={node.group.color} />
           <span className="session-deck__label">{node.group.name}</span>
           <button
             className="session-deck__group-add"
@@ -690,6 +719,16 @@ export default function SessionDeck({
             })
             setSessionMenu(null)
           }}>重命名</button>
+          <IconColorPicker
+            value={selectedSession.color}
+            onSelect={(color) => {
+              void (async () => {
+                await window.api.invoke('session:set-color', selectedSession.id, color)
+                setSessionMenu(null)
+                await refresh()
+              })()
+            }}
+          />
           <button onClick={() => setShowMoveMenu((value) => !value)}>移动到分组…</button>
           {showMoveMenu && (
             <div className="session-deck__menu-sublist">
@@ -708,7 +747,10 @@ export default function SessionDeck({
 
       {groupMenu && selectedGroup && (
         <DeckMenu x={groupMenu.x} y={groupMenu.y} onClose={() => setGroupMenu(null)}>
-          <button onClick={async () => { await window.api.invoke('session:create-in-group', selectedGroup.id); setGroupMenu(null); await refresh() }}>在此组创建会话</button>
+          <button onClick={() => {
+            setGroupMenu(null)
+            onCreateDirect(selectedGroup.id)
+          }}>在此组创建会话</button>
           <button onClick={async () => {
             setGroupMenu(null)
             openChildGroupDialog(selectedGroup.id, undefined, groupMenu.x, groupMenu.y)
@@ -724,6 +766,16 @@ export default function SessionDeck({
             })
             setGroupMenu(null)
           }}>重命名</button>
+          <IconColorPicker
+            value={selectedGroup.color}
+            onSelect={(color) => {
+              void (async () => {
+                await window.api.invoke('group:set-color', selectedGroup.id, color)
+                setGroupMenu(null)
+                await refresh()
+              })()
+            }}
+          />
           {selectedGroup.parentGroupId && (
             <button onClick={async () => { await window.api.invoke('group:set-parent', selectedGroup.id, null); setGroupMenu(null); await refresh() }}>移到根层级</button>
           )}

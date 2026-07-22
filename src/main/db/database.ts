@@ -152,6 +152,13 @@ function runMigrations(database: Database.Database): void {
       }
     }
   }
+
+  // Per-session Deck icon color. Keep this after the file migrations so a
+  // brand-new database (currentVersion === 0) receives the column on its first
+  // launch as well as upgraded databases.
+  try {
+    database.exec("ALTER TABLE sessions ADD COLUMN color TEXT")
+  } catch { /* column already exists */ }
 }
 
 function getSchemaVersion(database: Database.Database): number {

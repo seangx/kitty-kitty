@@ -13,6 +13,7 @@ export const IPC = {
   SKILLS_REMOVE: 'skills:remove',
   SKILLS_SEARCH: 'skills:search',
   SKILLS_INSTALL: 'skills:install',
+  SKILLS_UNINSTALL: 'skills:uninstall',
 
   // MCPs (mcpsmgr integration)
   MCPS_LIST: 'mcps:list',

@@ -99,6 +99,21 @@ export default function SettingsPanel({ onClose }: Props) {
         </div>
       </div>
 
+      <div style={divider()} />
+      <div style={{ marginBottom: 14 }}>
+        <div style={{ fontSize: 11, color: T.faint, marginBottom: 7, fontWeight: 500 }}>全局工具库</div>
+        <button
+          onClick={() => {
+            onClose()
+            void window.api.invoke('popup-open', 'skills', 'global')
+          }}
+          style={{ ...btnGhost({ radius: 10 }), width: '100%', padding: '8px 10px', color: T.text, textAlign: 'left' }}
+        >
+          <span style={{ display: 'block', fontSize: 12, fontWeight: 600 }}>📦 Skills / MCP 管理</span>
+          <span style={{ display: 'block', marginTop: 2, color: T.faint, fontSize: 10 }}>管理 skillsmgr 与 mcpsmgr 的全局仓库</span>
+        </button>
+      </div>
+
       {/* Archived groups */}
       {archivedGroups.length > 0 && (
         <>

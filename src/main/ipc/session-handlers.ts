@@ -60,6 +60,7 @@ async function tryPrepareCodexRemoteScript(args: {
   kittyId: string
   title: string
   projectDir?: string
+  initialPrompt?: string
 }): Promise<{ script: string; hiveAgentId: string; threadId?: string } | null> {
   if (!getCodexHiveBridge()) return null
   try {
@@ -77,7 +78,11 @@ async function tryPrepareCodexRemoteScript(args: {
       log('codex-bridge', `ws not ready (status=${ws.status}): ${ws.error || ''}`)
       return null
     }
-    return { script: generateCodexRemoteScript(ws.ws_url, ws.thread_id, args.projectDir), hiveAgentId: reg.agentId, threadId: ws.thread_id }
+    return {
+      script: generateCodexRemoteScript(ws.ws_url, ws.thread_id, args.projectDir, undefined, args.initialPrompt),
+      hiveAgentId: reg.agentId,
+      threadId: ws.thread_id,
+    }
   } catch (err) {
     log('codex-bridge', 'unexpected:', err)
     return null
@@ -1146,6 +1151,10 @@ export function registerSessionHandlers(): void {
     sessionRepo.updateGroupColor(groupId, color)
   })
 
+  ipcMain.handle('session:set-color', (_event, sessionId: string, color: string | null) => {
+    sessionRepo.updateSessionColor(sessionId, color)
+  })
+
   ipcMain.handle('group:set-parent', (_event, groupId: string, parentGroupId: string | null) => {
     sessionRepo.updateGroupParent(groupId, parentGroupId)
     return { success: true }
@@ -1405,8 +1414,10 @@ export function registerSessionHandlers(): void {
     return { success: true }
   })
 
-  ipcMain.handle(IPC.SESSION_CREATE_IN_GROUP, (_event, groupId: string) => {
-    ensureReady('claude')
+  ipcMain.handle(IPC.SESSION_CREATE_IN_GROUP, async (_event, groupId: string, tool: string, firstMessage?: string) => {
+    const t = tool || 'claude'
+    if (!['claude', 'codex', 'opencode'].includes(t)) throw new Error(`Unsupported tool: ${t}`)
+    ensureReady(t)
 
     const group = sessionRepo.getGroupById(groupId)
     if (!group) throw new Error('Group not found')
@@ -1417,18 +1428,57 @@ export function registerSessionHandlers(): void {
     const aliveGroupSessions = allGroupSessions.filter(s => !s.hidden && tmux.isSessionAlive(s.tmuxName))
     const hostSession = aliveGroupSessions.find(s => s.id === group.mainSessionId) || aliveGroupSessions[0]
 
-    // Use a fresh session dir so claude starts a new conversation
+    // Use a fresh session dir so the selected tool starts a new conversation.
     const freshId = uuid().slice(0, 8)
     const freshCwd = join(homedir(), '.kitty-kitty', 'sessions', freshId)
     mkdirSync(freshCwd, { recursive: true })
+    const cleanMessage = firstMessage?.trim() || undefined
+    const title = cleanMessage?.slice(0, 40) || `${group.name} agent`
 
-    const script = generateLaunchScript('claude', 'new')
+    await syncManagedMcpsToTool(freshCwd, t)
+    let script: string
+    let hiveAgentId = ''
+    let externalSessionId = ''
+    let claudeSid: string | undefined
+    if (t === 'codex') {
+      const bridged = await tryPrepareCodexRemoteScript({
+        kittyId: freshId,
+        title,
+        projectDir: freshCwd,
+        initialPrompt: cleanMessage,
+      })
+      if (bridged) {
+        script = bridged.script
+        hiveAgentId = bridged.hiveAgentId
+        externalSessionId = bridged.threadId || ''
+      } else {
+        script = generateLaunchScript(t, 'new', undefined, undefined, undefined, undefined, cleanMessage)
+      }
+    } else if (t === 'opencode') {
+      const bridged = await tryPrepareOpenCodeAttachScript({
+        kittyId: freshId,
+        title,
+        projectDir: freshCwd,
+        initialPrompt: cleanMessage,
+      })
+      if (bridged) {
+        script = bridged.script
+        hiveAgentId = bridged.hiveAgentId
+        externalSessionId = bridged.sessionId
+      } else {
+        script = generateLaunchScript(t, 'new', undefined, undefined, undefined, undefined, cleanMessage)
+      }
+    } else {
+      claudeSid = uuid()
+      externalSessionId = claudeSid
+      script = generateLaunchScript(t, 'new', undefined, undefined, claudeSid, undefined, cleanMessage)
+    }
+    prepareProjectForTool(freshCwd, t, script)
 
     if (hostSession) {
       // Split into the group's tmux session
       const hostTmuxName = hostSession.tmuxName
       const isFirstSplit = tmux.getPaneCount(hostTmuxName) === 1
-      const title = `${group.name} agent`
       const paneId = tmux.createPaneInSession(
         hostTmuxName,
         script,
@@ -1441,7 +1491,7 @@ export function registerSessionHandlers(): void {
         id: freshId,
         tmuxName: hostTmuxName,
         title,
-        tool: 'claude',
+        tool: t,
         cwd: freshCwd,
         status: 'running',
         createdAt: new Date().toISOString(),
@@ -1449,19 +1499,22 @@ export function registerSessionHandlers(): void {
       sessionRepo.saveSession(session)
       sessionRepo.updateSessionPaneId(freshId, paneId)
       sessionRepo.updateSessionGroup(freshId, groupId)
+      if (hiveAgentId) sessionRepo.updateSessionHiveAgentId(freshId, hiveAgentId)
+      if (externalSessionId) sessionRepo.updateSessionExternalId(freshId, externalSessionId)
 
       if (!group.mainSessionId) {
         sessionRepo.setGroupMainSession(groupId, hostSession.id)
       }
 
       try { tmux.applyMainVerticalLayout(hostTmuxName) } catch { /* ignore */ }
+      if (needsDevChannelAutoAccept(t)) pollAndAcceptDevChannelPrompt(paneId)
       tmux.focusSession(hostTmuxName)
       tmux.refreshAllStatusBars()
       return toSessionInfo(session)
     }
 
     // No alive host in the group: create a standalone tmux session and attach it to the group
-    const session = tmux.createTmuxSession('claude', undefined, freshCwd, script)
+    const session = tmux.createTmuxSession(t, undefined, freshCwd, script, freshId, title)
     sessionRepo.saveSession(session)
     try {
       const newPaneId = execSync(
@@ -1471,12 +1524,15 @@ export function registerSessionHandlers(): void {
       if (newPaneId) sessionRepo.updateSessionPaneId(session.id, newPaneId)
     } catch { /* ignore */ }
     sessionRepo.updateSessionGroup(session.id, groupId)
+    if (hiveAgentId) sessionRepo.updateSessionHiveAgentId(session.id, hiveAgentId)
+    if (externalSessionId) sessionRepo.updateSessionExternalId(session.id, externalSessionId)
 
     if (!group.mainSessionId) {
       sessionRepo.setGroupMainSession(groupId, session.id)
     }
 
     tmux.applyKittyStatusBar(session.tmuxName)
+    if (needsDevChannelAutoAccept(t)) pollAndAcceptDevChannelPrompt(session.tmuxName)
     tmux.attachSession(session.tmuxName)
     tmux.refreshAllStatusBars()
     return toSessionInfo(session)
@@ -1766,6 +1822,7 @@ function syncAndList(): SessionInfo[] {
     tmuxName: row.tmuxName,
     title: row.title,
     tool: row.tool,
+    color: row.color || undefined,
     cwd: row.cwd,
     paneId: row.paneId || '',
     status: row.status as SessionInfo['status'],

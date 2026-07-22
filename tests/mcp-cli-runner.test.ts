@@ -1,4 +1,7 @@
 import assert from 'node:assert/strict'
+import { mkdtempSync, mkdirSync, rmSync, writeFileSync } from 'node:fs'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
 import test from 'node:test'
 import {
   cliFailureMessage,
@@ -7,6 +10,7 @@ import {
   findSavedServers,
   runCli,
 } from '../src/main/mcps/cli-runner.ts'
+import { listCentralFromFs, missingCentralDefinitionPath } from '../src/main/mcps/central-repository.ts'
 
 test('supplies an authorized answer to a headless CLI prompt through stdin', async () => {
   const script = `
@@ -58,4 +62,34 @@ test('extracts follow-up env prompts and actual agent deployments', () => {
   assert.deepEqual(findRequiredEnvPrompts(output), ['API_KEY'])
   assert.deepEqual(findReportedDeployments(output), ['chrome-devtools'])
   assert.deepEqual(findSavedServers(output), ['chrome-devtools'])
+})
+
+test('repairs and scans scoped MCP central definitions safely', () => {
+  const central = mkdtempSync(join(tmpdir(), 'kitty-mcps-central-'))
+  try {
+    const nested = join(central, '@upstash', 'context7.json')
+    const result = {
+      success: false,
+      stdout: '',
+      stderr: `Error: ENOENT: no such file or directory, open '${nested}'`,
+    }
+    assert.equal(missingCentralDefinitionPath(result, central), nested)
+    assert.equal(missingCentralDefinitionPath({
+      ...result,
+      stderr: "Error: ENOENT: no such file or directory, open '/tmp/outside.json'",
+    }, central), null)
+
+    mkdirSync(join(central, '@upstash'), { recursive: true })
+    writeFileSync(nested, JSON.stringify({
+      name: '@upstash/context7',
+      description: 'Context7 MCP',
+    }))
+    assert.deepEqual(listCentralFromFs(central), [{
+      name: '@upstash/context7',
+      description: 'Context7 MCP',
+      source: 'central',
+    }])
+  } finally {
+    rmSync(central, { recursive: true, force: true })
+  }
 })

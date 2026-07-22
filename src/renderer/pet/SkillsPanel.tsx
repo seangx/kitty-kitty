@@ -5,7 +5,7 @@ import type { McpServerInfo } from '@shared/types/mcps'
 import { T, btnClose, popover, popupHeader } from './ui-tokens'
 
 interface Props {
-  sessionId: string
+  sessionId?: string
   onClose: () => void
   onSay: (text: string, duration?: number) => void
   onDance: () => void
@@ -45,6 +45,8 @@ const C = {
 const UNDO_MS = 5000
 
 export default function SkillsPanel({ sessionId, onClose, onSay, onDance }: Props) {
+  const isGlobal = !sessionId
+  const scopeSessionId = sessionId || ''
   const [tab, setTab] = useState<Tab>('skills')
   const [categories, setCategories] = useState<SkillCategory[]>([])
   const [groups, setGroups] = useState<GroupInfo[]>([])
@@ -83,7 +85,7 @@ export default function SkillsPanel({ sessionId, onClose, onSay, onDance }: Prop
   const refresh = useCallback(async () => {
     setLoading(true)
     try {
-      const data = await ipc.listSkills(sessionId)
+      const data = await ipc.listSkills(scopeSessionId)
       setAvailable(data.available)
       setCategories(data.categories)
       setGroups(data.groups)
@@ -91,7 +93,7 @@ export default function SkillsPanel({ sessionId, onClose, onSay, onDance }: Prop
       setNative(data.native || [])
     } catch { /* ignore */ }
     setLoading(false)
-  }, [sessionId])
+  }, [scopeSessionId])
 
   useEffect(() => { refresh() }, [refresh])
 
@@ -114,20 +116,20 @@ export default function SkillsPanel({ sessionId, onClose, onSay, onDance }: Prop
     setOperating(skillName)
     onDance()
     try {
-      const res = await ipc.addSkill(sessionId, skillName)
+      const res = await ipc.addSkill(scopeSessionId, skillName)
       notify(res?.success ? `${skillName} 已部署` : (res?.message || '部署失败'), res?.success ? 'success' : 'error')
       await refresh()
     } catch (err: any) {
       notify(err?.message || '操作失败', 'error')
     }
     setOperating(null)
-  }, [sessionId, onDance, notify, refresh])
+  }, [scopeSessionId, onDance, notify, refresh])
 
   const removeSkillWithUndo = useCallback(async (skillName: string) => {
     setOperating(skillName)
     onDance()
     try {
-      const res = await ipc.removeSkill(sessionId, skillName)
+      const res = await ipc.removeSkill(scopeSessionId, skillName)
       if (res?.success) {
         notify(`已移除「${skillName}」的部署`, 'success', UNDO_MS, {
           label: '撤销',
@@ -141,7 +143,7 @@ export default function SkillsPanel({ sessionId, onClose, onSay, onDance }: Prop
       notify(err?.message || '操作失败', 'error')
     }
     setOperating(null)
-  }, [sessionId, onDance, notify, refresh, deploySkill])
+  }, [scopeSessionId, onDance, notify, refresh, deploySkill])
 
   const toggleSkill = useCallback((skillName: string) => {
     if (operating === skillName) return
@@ -174,16 +176,46 @@ export default function SkillsPanel({ sessionId, onClose, onSay, onDance }: Prop
     onDance()
     notify(`安装 ${name} 中…`, 'info', 15000)
     try {
-      // `add` = 从 registry 拉取 + 部署到当前会话（install 只下载到仓库不部署）。
-      const res = await ipc.addSkill(sessionId, name)
+      const res = isGlobal
+        ? await ipc.installSkill(name)
+        : await ipc.addSkill(scopeSessionId, name)
       if (!res) { notify('安装失败', 'error'); return }
-      notify(res.success ? `${name} 已安装并部署` : (res.message || '安装失败'), res.success ? 'success' : 'error', 5000)
+      notify(
+        res.success ? (isGlobal ? `${name} 已安装到全局仓库` : `${name} 已安装并部署`) : (res.message || '安装失败'),
+        res.success ? 'success' : 'error',
+        5000,
+      )
       if (res.success) await refresh()
     } catch (err: any) {
       notify(err?.message || '安装失败', 'error')
     }
     setInstalling(null)
   }
+
+  const uninstallGlobalSkill = useCallback(async (name: string) => {
+    setOperating(name)
+    onDance()
+    try {
+      const res = await ipc.uninstallSkill(name)
+      notify(res?.message || (res?.success ? '已卸载' : '卸载失败'), res?.success ? 'success' : 'error')
+      if (res?.success) {
+        setSelected((current) => current === name ? null : current)
+        await refresh()
+      }
+    } catch (err: any) {
+      notify(err?.message || '卸载失败', 'error')
+    }
+    setOperating(null)
+  }, [notify, onDance, refresh])
+
+  const confirmUninstallGlobalSkill = useCallback((name: string) => {
+    setConfirm({
+      title: `卸载「${name}」？`,
+      body: '将从 skillsmgr 全局仓库卸载该技能，并清理它登记的全局部署。',
+      confirmLabel: '卸载',
+      onConfirm: () => { void uninstallGlobalSkill(name) },
+    })
+  }, [uninstallGlobalSkill])
 
   const toggleCollapse = (key: string) => {
     setCollapsed((prev) => {
@@ -198,7 +230,7 @@ export default function SkillsPanel({ sessionId, onClose, onSay, onDance }: Prop
     onDance()
     try {
       for (const skill of skills) {
-        if (!deployed.has(skill)) await ipc.addSkill(sessionId, skill)
+        if (!deployed.has(skill)) await ipc.addSkill(scopeSessionId, skill)
       }
       notify(`已部署全部 ${skills.length} 个技能`, 'success')
       await refresh()
@@ -218,7 +250,7 @@ export default function SkillsPanel({ sessionId, onClose, onSay, onDance }: Prop
         setOperating('__group__')
         onDance()
         try {
-          for (const skill of skills) await ipc.removeSkill(sessionId, skill)
+          for (const skill of skills) await ipc.removeSkill(scopeSessionId, skill)
           notify(`已移除 ${skills.length} 个部署`, 'success', UNDO_MS, {
             label: '撤销',
             run: () => { void deployAll(skills) },
@@ -264,13 +296,13 @@ export default function SkillsPanel({ sessionId, onClose, onSay, onDance }: Prop
   const refreshMcps = useCallback(async () => {
     setMcpLoading(true)
     try {
-      const data = await ipc.listMcps(sessionId)
+      const data = await ipc.listMcps(scopeSessionId)
       setMcpAvailable(data.available)
       setMcpCentral(data.central || [])
       setMcpDeployed(new Set(data.deployed || []))
     } catch { /* ignore */ }
     setMcpLoading(false)
-  }, [sessionId])
+  }, [scopeSessionId])
 
   useEffect(() => { if (tab === 'mcps') refreshMcps() }, [tab, refreshMcps])
 
@@ -278,25 +310,30 @@ export default function SkillsPanel({ sessionId, onClose, onSay, onDance }: Prop
     setMcpOperating(name)
     onDance()
     try {
-      const res = await ipc.addMcp(sessionId, name)
+      const res = isGlobal
+        ? await ipc.installMcp(name)
+        : await ipc.addMcp(scopeSessionId, name)
       notify(res?.message || (res?.success ? '已添加' : '添加失败'), res?.success ? 'success' : 'error')
       await refreshMcps()
     } catch (err: any) {
       notify(err?.message || '操作失败', 'error')
     }
     setMcpOperating(null)
-  }, [sessionId, onDance, notify, refreshMcps])
+  }, [isGlobal, scopeSessionId, onDance, notify, refreshMcps])
 
   const removeMcpWithUndo = useCallback(async (name: string) => {
     setMcpOperating(name)
     onDance()
     try {
-      const res = await ipc.removeMcp(sessionId, name)
+      const res = isGlobal
+        ? await ipc.uninstallMcp(name)
+        : await ipc.removeMcp(scopeSessionId, name)
       if (res?.success) {
-        notify(`已移除「${name}」`, 'success', UNDO_MS, {
-          label: '撤销',
-          run: () => { void addMcp(name) },
-        })
+        if (isGlobal) notify(`已从全局仓库卸载「${name}」`, 'success')
+        else notify(`已移除「${name}」`, 'success', UNDO_MS, {
+            label: '撤销',
+            run: () => { void addMcp(name) },
+          })
       } else {
         notify(res?.message || '移除失败', 'error')
       }
@@ -305,12 +342,21 @@ export default function SkillsPanel({ sessionId, onClose, onSay, onDance }: Prop
       notify(err?.message || '操作失败', 'error')
     }
     setMcpOperating(null)
-  }, [sessionId, onDance, notify, refreshMcps, addMcp])
+  }, [isGlobal, scopeSessionId, onDance, notify, refreshMcps, addMcp])
 
   const toggleMcp = (name: string) => {
     if (mcpOperating) return
     if (mcpDeployed.has(name)) void removeMcpWithUndo(name)
     else void addMcp(name)
+  }
+
+  const confirmUninstallGlobalMcp = (name: string) => {
+    setConfirm({
+      title: `卸载 MCP「${name}」？`,
+      body: '将从 mcpsmgr 中央仓库移除该定义；已经写入项目的配置不会被自动删除。',
+      confirmLabel: '卸载',
+      onConfirm: () => { void removeMcpWithUndo(name) },
+    })
   }
 
   const submitMcpManual = async () => {
@@ -327,7 +373,7 @@ export default function SkillsPanel({ sessionId, onClose, onSay, onDance }: Prop
     setMcpOperating('__manual__')
     onDance()
     try {
-      const res = await ipc.writeManualMcp(sessionId, txt)
+      const res = await ipc.writeManualMcp(scopeSessionId, txt)
       notify(res?.message || (res?.success ? '已写入' : '写入失败'), res?.success ? 'success' : 'error', 5000)
       if (res?.success) {
         setMcpManualText('')
@@ -374,7 +420,7 @@ export default function SkillsPanel({ sessionId, onClose, onSay, onDance }: Prop
   )
 
   const renderSkillRow = (skill: string) => {
-    const on = deployed.has(skill)
+    const on = isGlobal || deployed.has(skill)
     return (
       <div
         key={skill}
@@ -390,14 +436,20 @@ export default function SkillsPanel({ sessionId, onClose, onSay, onDance }: Prop
         }}
       >
         <span style={{ flex: 1, minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{skill}</span>
-        {renderSwitch(on, operating === skill, () => toggleSkill(skill), on ? '点击移除部署' : '点击部署')}
+        {isGlobal
+          ? <button
+              onClick={(event) => { event.stopPropagation(); confirmUninstallGlobalSkill(skill) }}
+              disabled={operating === skill}
+              style={{ border: 'none', background: 'none', color: C.red, fontSize: 11, cursor: 'pointer', opacity: operating === skill ? 0.5 : 1 }}
+            >卸载</button>
+          : renderSwitch(on, operating === skill, () => toggleSkill(skill), on ? '点击移除部署' : '点击部署')}
       </div>
     )
   }
 
   const renderDetailCard = () => {
     if (!selected || mode !== 'manage') return null
-    const on = deployed.has(selected)
+    const on = isGlobal || deployed.has(selected)
     const sources = sourcesOf(selected)
     return (
       <div style={{
@@ -406,7 +458,9 @@ export default function SkillsPanel({ sessionId, onClose, onSay, onDance }: Prop
       }}>
         <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 6 }}>
           <span style={{ fontSize: 14, fontWeight: 600, flex: 1, minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{selected}</span>
-          <span style={{ fontSize: 11, color: on ? C.green : C.textDim }}>{on ? '已部署' : '未部署'}</span>
+          <span style={{ fontSize: 11, color: on ? C.green : C.textDim }}>
+            {isGlobal ? '已安装' : on ? '已部署' : '未部署'}
+          </span>
           <button onClick={() => setSelected(null)} style={{ background: 'none', border: 'none', color: C.textDim, cursor: 'pointer', fontSize: 13 }}>✕</button>
         </div>
         {selectedInfo === 'loading' && <div style={{ fontSize: 12, color: C.textDim }}>查询 registry…</div>}
@@ -426,7 +480,7 @@ export default function SkillsPanel({ sessionId, onClose, onSay, onDance }: Prop
         )}
         <div style={{ display: 'flex', gap: 8, marginTop: 10 }}>
           <button
-            onClick={() => toggleSkill(selected)}
+            onClick={() => isGlobal ? confirmUninstallGlobalSkill(selected) : toggleSkill(selected)}
             disabled={operating === selected}
             style={{
               padding: '4px 14px', borderRadius: 7,
@@ -436,7 +490,7 @@ export default function SkillsPanel({ sessionId, onClose, onSay, onDance }: Prop
               fontSize: 12, cursor: 'pointer', fontFamily: 'inherit',
               opacity: operating === selected ? 0.5 : 1,
             }}
-          >{on ? '移除部署' : '部署到当前会话'}</button>
+          >{isGlobal ? '从全局仓库卸载' : on ? '移除部署' : '部署到当前会话'}</button>
         </div>
       </div>
     )
@@ -456,7 +510,7 @@ export default function SkillsPanel({ sessionId, onClose, onSay, onDance }: Prop
           >
             {isCollapsed ? '▸' : '▾'} {title} <span style={{ color: C.textDim }}>{kind === 'group' ? `(组合包 · ${skills.length})` : `(${skills.length})`}</span>
           </div>
-          {skills.length > 1 && (
+          {!isGlobal && skills.length > 1 && (
             <button
               onClick={(e) => { e.stopPropagation(); allDeployed ? removeAll(title, skills) : void deployAll(skills) }}
               disabled={operating === '__group__'}
@@ -484,7 +538,7 @@ export default function SkillsPanel({ sessionId, onClose, onSay, onDance }: Prop
     }}>
       {/* Header */}
       <div data-drag-handle style={{ ...popupHeader(), marginBottom: 10, flexShrink: 0 }}>
-        <span style={{ fontSize: 18, fontWeight: 600 }}>📦 {tab === 'skills' ? '技能管理' : 'MCP 管理'}</span>
+        <span style={{ fontSize: 18, fontWeight: 600 }}>📦 {isGlobal ? '全局 ' : ''}{tab === 'skills' ? '技能管理' : 'MCP 管理'}</span>
         <button onClick={onClose} style={{ ...btnClose(), fontSize: 20 }}>✕</button>
       </div>
 
@@ -494,7 +548,9 @@ export default function SkillsPanel({ sessionId, onClose, onSay, onDance }: Prop
         fontSize: 11, color: C.textDim,
         background: `${C.accent}12`, border: `1px solid ${C.accent}30`,
       }}>
-        部署/移除仅作用于<b style={{ color: C.accent }}>当前会话</b>的运行环境
+        {isGlobal
+          ? <>安装/卸载作用于 <b style={{ color: C.accent }}>skillsmgr / mcpsmgr 全局仓库</b></>
+          : <>部署/移除仅作用于<b style={{ color: C.accent }}>当前会话</b>的运行环境</>}
       </div>
 
       {/* Tabs */}
@@ -623,7 +679,7 @@ export default function SkillsPanel({ sessionId, onClose, onSay, onDance }: Prop
           )}
 
           {/* Deployed zone — at-a-glance answer to "这个会话激活了哪些技能" */}
-          {!loading && available && (
+          {!isGlobal && !loading && available && (
             <div style={{
               border: `1px solid ${C.accent}3d`, background: `${C.accent}0a`,
               borderRadius: 12, padding: '6px 6px 4px', marginBottom: 10,
@@ -730,7 +786,7 @@ export default function SkillsPanel({ sessionId, onClose, onSay, onDance }: Prop
             value={mcpInput}
             onChange={(e) => setMcpInput(e.target.value)}
             onKeyDown={(e) => { if (e.key === 'Enter') void addMcpFromInput() }}
-            placeholder="central 名 / owner/repo / GitHub URL"
+            placeholder={isGlobal ? 'owner/repo / GitHub URL' : 'central 名 / owner/repo / GitHub URL'}
             style={{
               flex: 1, padding: '5px 10px', borderRadius: 8,
               border: `1px solid ${C.border}1c`, background: `${C.well}cc`,
@@ -746,11 +802,11 @@ export default function SkillsPanel({ sessionId, onClose, onSay, onDance }: Prop
               cursor: 'pointer', fontFamily: 'inherit',
               opacity: !!mcpOperating || !mcpInput.trim() ? 0.5 : 1,
             }}
-          >添加</button>
+          >{isGlobal ? '安装' : '添加'}</button>
         </div>
 
         {/* Manual paste JSON (validated before submit) */}
-        <div style={{ marginBottom: 10, flexShrink: 0 }}>
+        {!isGlobal && <div style={{ marginBottom: 10, flexShrink: 0 }}>
           <div
             onClick={() => setMcpManualOpen((v) => !v)}
             style={{ fontSize: 12, color: C.textDim, cursor: 'pointer', userSelect: 'none', padding: '2px 0' }}
@@ -792,7 +848,7 @@ export default function SkillsPanel({ sessionId, onClose, onSay, onDance }: Prop
               </div>
             </div>
           )}
-        </div>
+        </div>}
 
         <div style={{ overflowY: 'auto', flex: 1, minHeight: 0 }}>
           {!mcpAvailable && (
@@ -806,7 +862,7 @@ export default function SkillsPanel({ sessionId, onClose, onSay, onDance }: Prop
             <div style={{ fontSize: 14, color: C.textDim, textAlign: 'center', padding: 20 }}>加载中...</div>
           )}
 
-          {!mcpLoading && mcpDeployed.size > 0 && (
+          {!isGlobal && !mcpLoading && mcpDeployed.size > 0 && (
             <div style={{ marginBottom: 10 }}>
               <div style={{ fontSize: 13, color: C.textDim, marginBottom: 6 }}>── 当前项目已部署 ({mcpDeployed.size}) ──</div>
               {[...mcpDeployed].map((name) => {
@@ -841,7 +897,7 @@ export default function SkillsPanel({ sessionId, onClose, onSay, onDance }: Prop
 
           {!mcpLoading && mcpCentral.length > 0 && (
             <div>
-              <div style={{ fontSize: 13, color: C.textDim, marginBottom: 6 }}>── 中央仓库 ({mcpCentral.length}) ──</div>
+              <div style={{ fontSize: 13, color: C.textDim, marginBottom: 6 }}>── {isGlobal ? '已安装到全局仓库' : '中央仓库'} ({mcpCentral.length}) ──</div>
               {mcpCentral.map((s) => (
                 <div
                   key={`c:${s.name}`}
@@ -854,7 +910,13 @@ export default function SkillsPanel({ sessionId, onClose, onSay, onDance }: Prop
                       <div style={{ fontSize: 12, color: C.textDim, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{s.description}</div>
                     )}
                   </div>
-                  {renderSwitch(mcpDeployed.has(s.name), mcpOperating === s.name, () => toggleMcp(s.name), mcpDeployed.has(s.name) ? '点击移除' : '点击部署')}
+                  {isGlobal
+                    ? <button
+                        onClick={() => confirmUninstallGlobalMcp(s.name)}
+                        disabled={mcpOperating === s.name}
+                        style={{ border: 'none', background: 'none', color: C.red, fontSize: 11, cursor: 'pointer', opacity: mcpOperating === s.name ? 0.5 : 1 }}
+                      >卸载</button>
+                    : renderSwitch(mcpDeployed.has(s.name), mcpOperating === s.name, () => toggleMcp(s.name), mcpDeployed.has(s.name) ? '点击移除' : '点击部署')}
                 </div>
               ))}
             </div>
@@ -863,7 +925,7 @@ export default function SkillsPanel({ sessionId, onClose, onSay, onDance }: Prop
           {!mcpLoading && mcpAvailable && mcpCentral.length === 0 && mcpDeployed.size === 0 && (
             <div style={{ fontSize: 14, color: C.textDim, textAlign: 'center', padding: 20 }}>
               还没有任何 MCP server<br />
-              <span style={{ fontSize: 13 }}>用上面的输入框添加 owner/repo</span>
+              <span style={{ fontSize: 13 }}>用上面的输入框{isGlobal ? '安装' : '添加'} owner/repo</span>
             </div>
           )}
         </div>
