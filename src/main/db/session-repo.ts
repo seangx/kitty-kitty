@@ -6,6 +6,7 @@ export interface SessionRow {
   tmuxName: string
   title: string
   tool: string
+  color: string | null
   cwd: string
   mainPane: string
   status: string
@@ -39,15 +40,15 @@ export interface GroupRow {
 export function saveSession(session: TmuxSession & { cwd?: string }): void {
   const db = getDB()
   db.prepare(`
-    INSERT OR REPLACE INTO sessions (id, tmux_name, title, tool, cwd, main_pane, status, created_at, updated_at)
-    VALUES (?, ?, ?, ?, ?, COALESCE((SELECT main_pane FROM sessions WHERE id = ?), '0.0'), ?, ?, datetime('now'))
-  `).run(session.id, session.tmuxName, session.title, session.tool, session.cwd || '', session.id, session.status, session.createdAt)
+    INSERT OR REPLACE INTO sessions (id, tmux_name, title, tool, cwd, main_pane, status, created_at, updated_at, color)
+    VALUES (?, ?, ?, ?, ?, COALESCE((SELECT main_pane FROM sessions WHERE id = ?), '0.0'), ?, ?, datetime('now'), (SELECT color FROM sessions WHERE id = ?))
+  `).run(session.id, session.tmuxName, session.title, session.tool, session.cwd || '', session.id, session.status, session.createdAt, session.id)
 }
 
 export function listSessions(): SessionRow[] {
   const db = getDB()
   return db.prepare(`
-    SELECT s.id, s.tmux_name as tmuxName, s.title, s.tool, s.cwd, s.status,
+    SELECT s.id, s.tmux_name as tmuxName, s.title, s.tool, s.color, s.cwd, s.status,
            s.main_pane as mainPane, s.hidden,
            s.roles, s.expertise, s.pane_id as paneId,
            COALESCE(s.claude_session_id, '') as externalSessionId,
@@ -86,6 +87,11 @@ export function updateSessionGroup(id: string, groupId: string | null): void {
 export function updateSessionTool(id: string, tool: string): void {
   const db = getDB()
   db.prepare("UPDATE sessions SET tool = ?, updated_at = datetime('now') WHERE id = ?").run(tool, id)
+}
+
+export function updateSessionColor(id: string, color: string | null): void {
+  const db = getDB()
+  db.prepare("UPDATE sessions SET color = ?, updated_at = datetime('now') WHERE id = ?").run(color, id)
 }
 
 export function updateSessionMainPane(id: string, mainPane: string): void {
@@ -148,7 +154,7 @@ export function deleteSession(id: string): void {
 export function getSessionByTmuxName(tmuxName: string): SessionRow | undefined {
   const db = getDB()
   return db.prepare(`
-    SELECT s.id, s.tmux_name as tmuxName, s.title, s.tool, s.cwd, s.status,
+    SELECT s.id, s.tmux_name as tmuxName, s.title, s.tool, s.color, s.cwd, s.status,
            s.main_pane as mainPane, s.pane_id as paneId,
            COALESCE(s.claude_session_id, '') as externalSessionId,
            COALESCE(s.hive_agent_id, '') as hiveAgentId,
@@ -222,7 +228,7 @@ export function setGroupMainSession(groupId: string, sessionId: string | null): 
 export function listSessionsByGroup(groupId: string): (SessionRow & { hidden?: number })[] {
   const db = getDB()
   return db.prepare(`
-    SELECT s.id, s.tmux_name as tmuxName, s.title, s.tool, s.cwd, s.status,
+    SELECT s.id, s.tmux_name as tmuxName, s.title, s.tool, s.color, s.cwd, s.status,
            s.main_pane as mainPane, s.hidden, s.pane_id as paneId,
            COALESCE(s.claude_session_id, '') as externalSessionId,
            COALESCE(s.hive_agent_id, '') as hiveAgentId,

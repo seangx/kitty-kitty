@@ -39,6 +39,7 @@ function waitForNextPaint(): Promise<void> {
 export default function PetCanvas() {
   const [animation, setAnimation] = useState<AnimationState>('idle')
   const [showInput, setShowInput] = useState(false)
+  const [createTargetGroupId, setCreateTargetGroupId] = useState<string | null>(null)
   const [showSettings, setShowSettings] = useState(false)
   const [dirPick, setDirPick] = useState<DirPickState | null>(null)
   const [contextMenu, setContextMenu] = useState<{ x: number; y: number } | null>(null)
@@ -92,6 +93,7 @@ export default function PetCanvas() {
 
   const closeAll = useCallback(() => {
     setShowInput(false)
+    setCreateTargetGroupId(null)
     setShowSettings(false)
     setDirPick(null)
     setContextMenu(null)
@@ -272,7 +274,7 @@ export default function PetCanvas() {
 
   const handleContextMenu = useCallback((e: React.MouseEvent) => {
     e.preventDefault(); e.stopPropagation()
-    setShowInput(false); setShowSettings(false); setDirPick(null)
+    setShowInput(false); setCreateTargetGroupId(null); setShowSettings(false); setDirPick(null)
     setContextMenu({ x: e.clientX, y: e.clientY })
   }, [])
 
@@ -297,16 +299,32 @@ export default function PetCanvas() {
     document.addEventListener('mousemove', onMove); document.addEventListener('mouseup', onUp)
   }, [anyPopup, deckOpening])
 
+  const openSessionCreator = useCallback((groupId?: string) => {
+    setCreateTargetGroupId(groupId || null)
+    setShowInput(true)
+  }, [])
+
+  const closeSessionCreator = useCallback(() => {
+    setShowInput(false)
+    setCreateTargetGroupId(null)
+  }, [])
+
   const handleCreateSession = useCallback(async (message: string, tool: ToolId) => {
+    const targetGroupId = createTargetGroupId
     setLastTool(tool)
     try {
       machine.forceState('dance', 15000)
       say(tool === 'codex' ? '启动 Codex 中喵~' : tool === 'opencode' ? '启动 OpenCode 中喵~' : '启动中喵~')
-      await createSession(tool, message)
+      if (targetGroupId) {
+        await window.api.invoke('session:create-in-group', targetGroupId, tool, message)
+        await loadSessions()
+      } else {
+        await createSession(tool, message)
+      }
       machine.forceState('happy', 2000)
       say('开始新对话喵~')
     } catch (err) { console.error('[kitty] create session failed:', err); machine.forceState('sad', 2000); say('出错了喵...') }
-  }, [createSession, machine, say, setLastTool])
+  }, [createSession, createTargetGroupId, loadSessions, machine, say, setLastTool])
 
   const performAttach = useCallback(async (id: string) => {
     machine.forceState('dance', 15000)
@@ -422,7 +440,7 @@ export default function PetCanvas() {
   }, [dirPick, machine, loadSessions, say, setLastTool])
 
   const menuItems = useMemo(() => [
-    { label: '💬 新对话', onClick: () => setShowInput(true) },
+    { label: '💬 新对话', onClick: () => openSessionCreator() },
     { label: '📂 在目录中开始', onClick: handleOpenInDir },
     { label: '📁 新建分组', onClick: () => setGroupPrompt(true) },
     { separator: true as const },
@@ -440,7 +458,7 @@ export default function PetCanvas() {
     }},
     { separator: true as const },
     { label: '⚙️ 设置', onClick: () => setShowSettings(true) },
-  ], [handleOpenInDir, loadSessions, machine, say])
+  ], [handleOpenInDir, loadSessions, machine, openSessionCreator, say])
 
 
   // When popup is open, disable click-through so popup is interactive
@@ -638,7 +656,7 @@ export default function PetCanvas() {
     )}
 
     {/* Floating popups — outside pet area */}
-    {showInput && <DraggablePopup topOffset={deckOpen ? 0 : PET_ANIMATION_HEADROOM}><InputPopup defaultTool={lastTool} onSubmit={handleCreateSession} onClose={() => setShowInput(false)} /></DraggablePopup>}
+    {showInput && <DraggablePopup topOffset={deckOpen ? 0 : PET_ANIMATION_HEADROOM}><InputPopup defaultTool={lastTool} onSubmit={handleCreateSession} onClose={closeSessionCreator} /></DraggablePopup>}
     {showSettings && <DraggablePopup topOffset={deckOpen ? 0 : PET_ANIMATION_HEADROOM}><SettingsPanel onClose={() => setShowSettings(false)} /></DraggablePopup>}
     {dirPick && (
       <DraggablePopup topOffset={deckOpen ? 0 : PET_ANIMATION_HEADROOM}>
@@ -735,7 +753,7 @@ export default function PetCanvas() {
         edge={deckEdge}
         closing={deckClosing}
         onClose={closeDeck}
-        onCreateDirect={() => setShowInput(true)}
+        onCreateDirect={openSessionCreator}
         onCreateInDirectory={handleOpenInDir}
         onAttach={handleAttach}
         onKill={killSession}

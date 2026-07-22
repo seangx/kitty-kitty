@@ -71,6 +71,9 @@ export const searchSkills = (query: string) =>
 export const installSkill = (skillName: string) =>
   api().invoke(IPC.SKILLS_INSTALL, skillName) as Promise<SkillOpResult>
 
+export const uninstallSkill = (skillName: string) =>
+  api().invoke(IPC.SKILLS_UNINSTALL, skillName) as Promise<SkillOpResult>
+
 // MCPs
 export const listMcps = (sessionId: string) =>
   api().invoke(IPC.MCPS_LIST, sessionId) as Promise<McpsListResult>

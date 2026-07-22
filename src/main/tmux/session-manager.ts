@@ -116,7 +116,14 @@ export function hasTmux(): boolean {
 /**
  * Create a new tmux session running the specified tool
  */
-export function createTmuxSession(tool: string, firstMessage?: string, cwd?: string, launchScript?: string, presetId?: string): TmuxSession {
+export function createTmuxSession(
+  tool: string,
+  firstMessage?: string,
+  cwd?: string,
+  launchScript?: string,
+  presetId?: string,
+  presetTitle?: string,
+): TmuxSession {
   // Callers can pass a pre-allocated id (e.g. when registering with hive
   // BEFORE the pane spawns, to use the same key end-to-end). Otherwise
   // generate fresh.
@@ -132,7 +139,7 @@ export function createTmuxSession(tool: string, firstMessage?: string, cwd?: str
   }
 
   const dirName = require('path').basename(cwd)
-  const title = firstMessage?.slice(0, 40) || dirName
+  const title = presetTitle || firstMessage?.slice(0, 40) || dirName
 
   // Use launch script if provided, otherwise raw tool command
   const command = launchScript || getToolCommand(tool)

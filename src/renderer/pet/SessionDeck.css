@@ -563,6 +563,54 @@
 
 .session-deck__menu button:hover { background: rgba(255, 255, 255, .08); }
 .session-deck__menu button.is-danger { color: #ff8e98; }
+.session-deck__color-picker {
+  margin: 4px 4px 5px;
+  padding: 7px 6px 8px;
+  border-top: 1px solid rgba(224, 229, 245, .09);
+  border-bottom: 1px solid rgba(224, 229, 245, .09);
+}
+
+.session-deck__color-picker > span {
+  display: block;
+  margin-bottom: 7px;
+  color: var(--deck-muted);
+  font-size: 10px;
+}
+
+.session-deck__color-picker > div {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.session-deck__menu .session-deck__color-swatch {
+  display: inline-flex;
+  width: 18px;
+  height: 18px;
+  padding: 0;
+  border: 1px solid rgba(255, 255, 255, .2);
+  border-radius: 50%;
+  flex: none;
+  align-items: center;
+  justify-content: center;
+  color: var(--deck-muted);
+  font: 500 12px/1 inherit;
+}
+
+.session-deck__menu .session-deck__color-swatch:hover {
+  background-color: inherit;
+  transform: scale(1.1);
+}
+
+.session-deck__menu .session-deck__color-swatch.is-selected {
+  outline: 2px solid rgba(255, 255, 255, .9);
+  outline-offset: 2px;
+}
+
+.session-deck__menu .session-deck__color-swatch.is-default {
+  border-style: dashed;
+  background: rgba(10, 12, 20, .86);
+}
 .session-deck__menu-sublist {
   max-height: 190px;
   margin: 2px 0 3px 8px;

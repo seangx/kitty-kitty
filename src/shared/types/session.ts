@@ -3,6 +3,7 @@ export interface SessionInfo {
   tmuxName: string
   title: string
   tool: string
+  color?: string
   cwd: string
   status: 'running' | 'detached' | 'dead'
   createdAt: string

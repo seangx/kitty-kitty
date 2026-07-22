@@ -45,4 +45,8 @@ export function registerSkillsHandlers(): void {
   ipcMain.handle(IPC.SKILLS_INSTALL, async (_event, skillName: string) => {
     return skills.installSkill(skillName)
   })
+
+  ipcMain.handle(IPC.SKILLS_UNINSTALL, async (_event, skillName: string) => {
+    return skills.uninstallSkill(skillName)
+  })
 }
