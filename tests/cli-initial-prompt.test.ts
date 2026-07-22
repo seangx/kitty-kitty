@@ -68,13 +68,22 @@ test('passes handoff as the initial prompt to a fresh bare Codex session', () =>
 })
 
 test('passes handoff through the Codex CLI when attaching to a remote thread', () => {
-  const script = readGenerated(generateCodexRemoteScript(
-    'ws://127.0.0.1:41234',
-    'codex-thread-id',
-    undefined,
-    undefined,
-    '请读 /tmp/handoff.md',
-  ))
+  const dir = mkdtempSync(join(tmpdir(), 'kitty-default-tool-command-'))
+  const configPath = join(dir, 'config.json')
+  let script: string
+  try {
+    writeFileSync(configPath, '{}')
+    script = readGenerated(generateCodexRemoteScript(
+      'ws://127.0.0.1:41234',
+      'codex-thread-id',
+      undefined,
+      undefined,
+      '请读 /tmp/handoff.md',
+      configPath,
+    ))
+  } finally {
+    rmSync(dir, { recursive: true, force: true })
+  }
 
   assert.match(script, /codex resume 'codex-thread-id' --remote 'ws:\/\/127\.0\.0\.1:41234' '请读 \/tmp\/handoff\.md'/)
 })
