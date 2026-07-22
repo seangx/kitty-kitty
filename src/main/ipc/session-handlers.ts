@@ -8,7 +8,7 @@ import { execSync, spawn } from 'child_process'
 import { v4 as uuid } from 'uuid'
 import { log } from '../logger'
 import * as tmux from '../tmux/session-manager'
-import { generateLaunchScript, type LaunchMode, isToolInstalled, getInstallHint, getNtfyTopic, setNtfyTopic, getCodexHiveBridge, setCodexHiveBridge, needsDevChannelAutoAccept, generateCodexRemoteScript, generateOpenCodeAttachScript, injectHiveIdentity, injectSessionEnv, injectOpenCodeMemory } from '../tmux/cli-wrapper'
+import { generateLaunchScript, type LaunchMode, isToolInstalled, getInstallHint, getNtfyTopic, setNtfyTopic, getCodexHiveBridge, setCodexHiveBridge, getUserToolCommand, getUserToolCommands, setUserToolCommand, needsDevChannelAutoAccept, generateCodexRemoteScript, generateOpenCodeAttachScript, injectHiveIdentity, injectSessionEnv, injectOpenCodeMemory } from '../tmux/cli-wrapper'
 import { registerCodexAgent, codexPaneWs, codexSetThread, renameAgent, hiveSupportsSwitchTool } from '../hive-codex'
 import { openCodePaneServer, openCodePromptAsync, openCodeSetSession, type OpenCodePaneServerResult } from '../hive-opencode'
 import { daemonRespawn, selectFreshDaemonAttach, type DaemonRespawnAttach } from '../hive-runtime'
@@ -1414,6 +1414,13 @@ export function registerSessionHandlers(): void {
     return { success: true }
   })
 
+  // Executable aliases only. The semantic ids sent to Hive and used for
+  // session history, Skills and MCP routing remain claude/codex/opencode.
+  ipcMain.handle(IPC.CONFIG_TOOL_COMMANDS_GET, () => getUserToolCommands())
+  ipcMain.handle(IPC.CONFIG_TOOL_COMMAND_SET, (_event, tool: string, command: string) => {
+    return { success: true, command: setUserToolCommand(tool, command) }
+  })
+
   ipcMain.handle(IPC.SESSION_CREATE_IN_GROUP, async (_event, groupId: string, tool: string, firstMessage?: string) => {
     const t = tool || 'claude'
     if (!['claude', 'codex', 'opencode'].includes(t)) throw new Error(`Unsupported tool: ${t}`)
@@ -2026,9 +2033,10 @@ function paneCodexThread(target: string): string {
     let argvResumeId = ''
     let remotePort = ''
     try {
+      const codexExecutable = basename(getUserToolCommand('codex'))
       const cmds = execSync(`ps -o command= -p ${pids.join(',')}`, { encoding: 'utf-8', stdio: ['ignore', 'pipe', 'ignore'] })
       for (const line of cmds.split('\n')) {
-        if (!/\bcodex\b/.test(line)) continue
+        if (!line.includes(codexExecutable)) continue
         const rm = line.match(/\bresume\s+([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})\b/)
         if (rm) argvResumeId = rm[1]
         const pm = line.match(/--remote\s+ws:\/\/[^:\s]+:(\d+)/)

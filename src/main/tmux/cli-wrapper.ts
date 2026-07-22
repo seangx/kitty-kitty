@@ -1,6 +1,6 @@
-import { writeFileSync, chmodSync, existsSync, readFileSync, mkdirSync } from 'fs'
+import { writeFileSync, chmodSync, existsSync, readFileSync, mkdirSync, accessSync, constants } from 'fs'
 import { execSync } from 'child_process'
-import { join } from 'path'
+import { dirname, join } from 'path'
 import { tmpdir, homedir } from 'os'
 
 /** Common binary directories not in GUI app's PATH */
@@ -14,6 +14,14 @@ const EXTRA_BIN_DIRS = [
 ]
 
 function findBinary(name: string): string | null {
+  if (name.includes('/')) {
+    try {
+      accessSync(name, constants.X_OK)
+      return name
+    } catch {
+      return null
+    }
+  }
   for (const dir of EXTRA_BIN_DIRS) {
     const p = join(dir, name)
     if (existsSync(p)) return p
@@ -39,10 +47,14 @@ function findBinary(name: string): string | null {
 export type LaunchMode = 'continue' | 'new' | 'resume' | 'restore'
 
 interface ToolConfig {
+  /** Stable semantic id used by Kitty, Hive, Skills, MCPs and history. */
+  id: string
   /** Base command */
   cmd: string
   /** Default arguments appended to every invocation */
   defaultArgs?: string
+  /** Resolved user arguments for this semantic tool id. */
+  userArgs?: string
   /** Flag to continue most recent session */
   continueFlag?: string
   /** Flag to resume a specific session, followed by session ID */
@@ -61,6 +73,9 @@ interface ToolConfig {
  *   "toolArgs": {
  *     "claude": "--dangerously-skip-permissions",
  *     "codex": "--some-flag"
+ *   },
+ *   "toolCommands": {
+ *     "codex": "codex-debug"
  *   }
  * }
  */
@@ -68,28 +83,35 @@ const CONFIG_PATH = join(homedir(), '.kitty-kitty', 'config.json')
 
 interface KittyConfig {
   toolArgs?: Record<string, string>
+  /** Executable override only; semantic tool ids never change. */
+  toolCommands?: Record<string, string>
   ntfyTopic?: string
   /** Path B: route codex pane spawn through hive supervisor (codex --remote ws). */
   codexHiveBridge?: boolean
 }
 
-function loadConfig(): KittyConfig {
+function loadConfig(configPath = CONFIG_PATH): KittyConfig {
   try {
-    if (existsSync(CONFIG_PATH)) {
-      return JSON.parse(readFileSync(CONFIG_PATH, 'utf-8'))
+    if (existsSync(configPath)) {
+      return JSON.parse(readFileSync(configPath, 'utf-8'))
     }
   } catch { /* ignore parse errors */ }
   // Create default config if missing
   const defaultConfig: KittyConfig = { toolArgs: { claude: '' } }
   try {
-    mkdirSync(join(homedir(), '.kitty-kitty'), { recursive: true })
-    writeFileSync(CONFIG_PATH, JSON.stringify(defaultConfig, null, 2))
+    mkdirSync(dirname(configPath), { recursive: true })
+    writeFileSync(configPath, JSON.stringify(defaultConfig, null, 2))
   } catch { /* ignore */ }
   return defaultConfig
 }
 
-export function getUserToolArgs(tool: string): string {
-  const config = loadConfig()
+function saveConfig(config: KittyConfig, configPath = CONFIG_PATH): void {
+  mkdirSync(dirname(configPath), { recursive: true })
+  writeFileSync(configPath, JSON.stringify(config, null, 2) + '\n')
+}
+
+export function getUserToolArgs(tool: string, configPath = CONFIG_PATH): string {
+  const config = loadConfig(configPath)
   return config.toolArgs?.[tool] ?? ''
 }
 
@@ -117,25 +139,58 @@ export function setCodexHiveBridge(enabled: boolean): void {
 
 const TOOLS: Record<string, ToolConfig> = {
   claude: {
+    id: 'claude',
     cmd: 'claude',
     continueFlag: '-c',
     resumeFlag: '--resume',
     sessionIdFlag: '--session-id',
   },
   codex: {
+    id: 'codex',
     cmd: 'codex',
     continueFlag: 'resume --last',
     resumeFlag: 'resume',
   },
   opencode: {
+    id: 'opencode',
     cmd: 'opencode',
     continueFlag: '--continue',
     resumeFlag: '--session',
     promptFlag: '--prompt',
   },
   shell: {
+    id: 'shell',
     cmd: '$SHELL',
   },
+}
+
+const SAFE_TOOL_COMMAND = /^(?:[A-Za-z0-9._+-]+|\/[A-Za-z0-9._+\/-]+)$/
+
+/** Resolve a user executable override while keeping the semantic tool id. */
+export function getUserToolCommand(tool: string, configPath = CONFIG_PATH): string {
+  const fallback = TOOLS[tool]?.cmd || tool
+  const configured = loadConfig(configPath).toolCommands?.[tool]?.trim()
+  return configured && SAFE_TOOL_COMMAND.test(configured) ? configured : fallback
+}
+
+export function getUserToolCommands(configPath = CONFIG_PATH): Record<string, string> {
+  return Object.fromEntries(['claude', 'codex', 'opencode'].map((tool) => [tool, getUserToolCommand(tool, configPath)]))
+}
+
+export function setUserToolCommand(tool: string, command: string, configPath = CONFIG_PATH): string {
+  if (!TOOLS[tool] || tool === 'shell') throw new Error(`不支持的工具: ${tool}`)
+  const value = command.trim()
+  if (value && !SAFE_TOOL_COMMAND.test(value)) {
+    throw new Error('命令只能是可执行文件名，或不含空格的绝对路径')
+  }
+  const config = loadConfig(configPath)
+  const commands = { ...(config.toolCommands || {}) }
+  if (!value || value === TOOLS[tool].cmd) delete commands[tool]
+  else commands[tool] = value
+  if (Object.keys(commands).length) config.toolCommands = commands
+  else delete config.toolCommands
+  saveConfig(config, configPath)
+  return getUserToolCommand(tool, configPath)
 }
 
 /**
@@ -145,13 +200,17 @@ export function isToolInstalled(tool: string): boolean {
   const config = TOOLS[tool]
   if (!config) return false
   if (tool === 'shell') return true
-  return findBinary(config.cmd) !== null
+  return findBinary(getUserToolCommand(tool)) !== null
 }
 
 /**
  * Get human-readable install instructions for a tool.
  */
 export function getInstallHint(tool: string): string {
+  const configured = getUserToolCommand(tool)
+  if (TOOLS[tool] && configured !== TOOLS[tool].cmd) {
+    return `已配置命令 ${configured}，但当前找不到或不可执行`
+  }
   switch (tool) {
     case 'claude': return '安装方法: npm install -g @anthropic-ai/claude-code'
     case 'codex': return '安装方法: npm install -g @openai/codex'
@@ -172,8 +231,14 @@ export function generateLaunchScript(
   sessionId?: string,
   extraArgs?: string,
   initialPrompt?: string,
+  configPath = CONFIG_PATH,
 ): string {
-  const config = TOOLS[tool] || { cmd: tool }
+  const base = TOOLS[tool] || { id: tool, cmd: tool }
+  const config = {
+    ...base,
+    cmd: getUserToolCommand(tool, configPath),
+    userArgs: getUserToolArgs(tool, configPath),
+  }
   const scriptPath = join(tmpdir(), `kitty_launch_${Date.now()}.sh`)
 
   let script: string
@@ -291,7 +356,7 @@ export function injectOpenCodeMemory(scriptPath: string, memoryFile: string | nu
  * Get the raw command string for a tool (for simple cases).
  */
 export function getToolCommand(tool: string): string {
-  return TOOLS[tool]?.cmd || tool
+  return getUserToolCommand(tool)
 }
 
 /**
@@ -310,12 +375,14 @@ export function generateCodexRemoteScript(
   cwd?: string,
   bannerText?: string,
   initialPrompt?: string,
+  configPath = CONFIG_PATH,
 ): string {
   const scriptPath = join(tmpdir(), `kitty_launch_${Date.now()}.sh`)
   const promptArg = initialPrompt ? ` ${shellQuoteForSh(initialPrompt)}` : ''
+  const executable = getUserToolCommand('codex', configPath)
   const cmd = threadId
-    ? `codex resume ${shellQuoteForSh(threadId)} --remote ${shellQuoteForSh(wsUrl)}${promptArg}`
-    : `codex --remote ${shellQuoteForSh(wsUrl)}${promptArg}`
+    ? `${executable} resume ${shellQuoteForSh(threadId)} --remote ${shellQuoteForSh(wsUrl)}${promptArg}`
+    : `${executable} --remote ${shellQuoteForSh(wsUrl)}${promptArg}`
   // Banner: when set, runs before codex spawns. `clear` wipes the previous
   // pane content (e.g. the WebSocket reset error printed by the old codex
   // client when hive SIGTERM'd its daemon) so the user's first visible glimpse
@@ -345,12 +412,14 @@ export function generateOpenCodeAttachScript(
   },
   cwd?: string,
   extraArgs?: string,
+  configPath = CONFIG_PATH,
 ): string {
   const scriptPath = join(tmpdir(), `kitty_launch_${Date.now()}.sh`)
   const args = extraArgs?.trim() ? ` ${extraArgs.trim()}` : ''
+  const executable = getUserToolCommand('opencode', configPath)
   let script = `#!/bin/bash
 ${PATH_PREAMBLE}
-opencode attach ${shellQuoteForSh(pane.serverUrl)} --session ${shellQuoteForSh(pane.sessionId)} --username ${shellQuoteForSh(pane.username)} --password ${shellQuoteForSh(pane.password)}${args}
+${executable} attach ${shellQuoteForSh(pane.serverUrl)} --session ${shellQuoteForSh(pane.sessionId)} --username ${shellQuoteForSh(pane.username)} --password ${shellQuoteForSh(pane.password)}${args}
 # Keep shell alive when TUI exits so the pane doesn't vanish silently
 exec $SHELL
 `
@@ -375,7 +444,7 @@ const PATH_PREAMBLE = 'export PATH="/opt/homebrew/bin:/usr/local/bin:$HOME/.loca
 function baseCmd(config: ToolConfig, extraArgs?: string): string {
   const parts = [config.cmd]
   if (config.defaultArgs) parts.push(config.defaultArgs)
-  const userArgs = getUserToolArgs(config.cmd)
+  const userArgs = config.userArgs ?? getUserToolArgs(config.id)
   if (userArgs) parts.push(userArgs)
   if (extraArgs && extraArgs.trim()) parts.push(extraArgs.trim())
   return parts.join(' ')

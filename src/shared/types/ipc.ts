@@ -44,4 +44,6 @@ export const IPC = {
   NTFY_MESSAGE: 'ntfy:message',
   NTFY_TOPIC_GET: 'ntfy:topic:get',
   NTFY_TOPIC_SET: 'ntfy:topic:set',
+  CONFIG_TOOL_COMMANDS_GET: 'config:tool-commands:get',
+  CONFIG_TOOL_COMMAND_SET: 'config:tool-command:set',
 } as const

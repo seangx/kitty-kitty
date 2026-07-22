@@ -86,6 +86,25 @@ test('settings exposes a global Skills and MCP repository manager', async () => 
   assert.match(skillsHandlers, /IPC\.SKILLS_GLOBAL_ADD/)
 })
 
+test('settings configures executable aliases without changing semantic tool ids', async () => {
+  const [settings, handlers, wrapper, directoryTools] = await Promise.all([
+    source('src/renderer/pet/SettingsPanel.tsx'),
+    source('src/main/ipc/session-handlers.ts'),
+    source('src/main/tmux/cli-wrapper.ts'),
+    source('src/shared/directory-session.ts'),
+  ])
+
+  assert.match(settings, /config:tool-commands:get/)
+  assert.match(settings, /config:tool-command:set/)
+  assert.match(settings, /Hive 中仍使用原 tool id/)
+  assert.match(handlers, /IPC\.CONFIG_TOOL_COMMAND_SET/)
+  assert.match(handlers, /basename\(getUserToolCommand\('codex'\)\)/)
+  assert.match(wrapper, /toolCommands\?: Record<string, string>/)
+  assert.match(wrapper, /getUserToolCommand\('codex'/)
+  assert.match(directoryTools, /'claude' \| 'codex' \| 'opencode'/)
+  assert.doesNotMatch(directoryTools, /codex-debug/)
+})
+
 test('global Codex skill state follows the skillsmgr directory and both manifest filename cases', () => {
   const home = mkdtempSync(join(tmpdir(), 'kitty-global-skills-'))
   try {

@@ -23,10 +23,21 @@ interface ArchivedGroup {
   sessionCount: number
 }
 
+type ConfigurableTool = 'claude' | 'codex' | 'opencode'
+const CONFIGURABLE_TOOLS: Array<{ id: ConfigurableTool; label: string }> = [
+  { id: 'claude', label: 'Claude' },
+  { id: 'codex', label: 'Codex' },
+  { id: 'opencode', label: 'OpenCode' },
+]
+
 export default function SettingsPanel({ onClose }: Props) {
   const { bubble, setBubble, resetBubble } = useConfigStore()
   const [ntfyTopic, setNtfyTopic] = useState('')
   const [codexHiveBridge, setCodexHiveBridgeState] = useState(false)
+  const [toolCommands, setToolCommands] = useState<Record<ConfigurableTool, string>>({
+    claude: 'claude', codex: 'codex', opencode: 'opencode',
+  })
+  const [toolCommandError, setToolCommandError] = useState('')
   const [archivedGroups, setArchivedGroups] = useState<ArchivedGroup[]>([])
   const ntfyTimer = useRef<ReturnType<typeof setTimeout> | null>(null)
 
@@ -37,6 +48,14 @@ export default function SettingsPanel({ onClose }: Props) {
   useEffect(() => {
     window.api.invoke('ntfy:topic:get').then((t: any) => setNtfyTopic(t || '')).catch(() => {})
     window.api.invoke('config:codex-hive-bridge:get').then((v: any) => setCodexHiveBridgeState(!!v)).catch(() => {})
+    window.api.invoke('config:tool-commands:get').then((commands: any) => {
+      if (!commands || typeof commands !== 'object') return
+      setToolCommands({
+        claude: String(commands.claude || 'claude'),
+        codex: String(commands.codex || 'codex'),
+        opencode: String(commands.opencode || 'opencode'),
+      })
+    }).catch(() => {})
     loadArchived()
   }, [])
 
@@ -46,6 +65,16 @@ export default function SettingsPanel({ onClose }: Props) {
       loadArchived()
     } catch (e) {
       console.error('unarchive failed:', e)
+    }
+  }
+
+  const saveToolCommand = async (tool: ConfigurableTool) => {
+    try {
+      const result: any = await window.api.invoke('config:tool-command:set', tool, toolCommands[tool])
+      setToolCommands((current) => ({ ...current, [tool]: String(result?.command || tool) }))
+      setToolCommandError('')
+    } catch (error: any) {
+      setToolCommandError(error?.message || '命令保存失败')
     }
   }
 
@@ -95,7 +124,30 @@ export default function SettingsPanel({ onClose }: Props) {
           <span style={{ fontSize: 9, color: T.warning, border: `1px solid ${T.warning}55`, borderRadius: 4, padding: '0 4px' }}>实验</span>
         </label>
         <div style={{ fontSize: 10, color: T.faint, marginTop: 3, marginLeft: 22 }}>
-          codex 新建会话用 <code>codex --remote</code> 接到 kitty-hive 的 daemon，可接收 hive 推送
+          Codex 新建会话用 <code>{toolCommands.codex} --remote</code> 接到 kitty-hive 的 daemon，可接收 hive 推送
+        </div>
+      </div>
+
+      <div style={{ marginBottom: 14 }}>
+        <div style={{ fontSize: 12, color: T.text, marginBottom: 6 }}>工具可执行命令</div>
+        <div style={{ display: 'flex', flexDirection: 'column', gap: 5 }}>
+          {CONFIGURABLE_TOOLS.map(({ id, label }) => (
+            <label key={id} style={{ display: 'grid', gridTemplateColumns: '68px 1fr', alignItems: 'center', gap: 7 }}>
+              <span style={{ fontSize: 10, color: T.faint }}>{label}</span>
+              <input
+                value={toolCommands[id]}
+                onChange={(event) => setToolCommands((current) => ({ ...current, [id]: event.target.value }))}
+                onBlur={() => { void saveToolCommand(id) }}
+                onKeyDown={(event) => { if (event.key === 'Enter') event.currentTarget.blur() }}
+                spellCheck={false}
+                aria-label={`${label} 可执行命令`}
+                style={{ ...inputWell({ mono: true }), padding: '5px 8px', fontSize: 10.5 }}
+              />
+            </label>
+          ))}
+        </div>
+        <div style={{ fontSize: 10, color: toolCommandError ? T.danger : T.faint, marginTop: 4 }}>
+          {toolCommandError || '新建或重启会话后生效；Hive 中仍使用原 tool id'}
         </div>
       </div>
 

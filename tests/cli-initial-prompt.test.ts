@@ -1,6 +1,8 @@
 import assert from 'node:assert/strict'
 import { execFileSync } from 'node:child_process'
-import { readFileSync, statSync, unlinkSync } from 'node:fs'
+import { mkdtempSync, readFileSync, rmSync, statSync, unlinkSync, writeFileSync } from 'node:fs'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
 import test from 'node:test'
 import {
   generateCodexRemoteScript,
@@ -8,6 +10,8 @@ import {
   generateOpenCodeAttachScript,
   injectHiveIdentity,
   injectOpenCodeMemory,
+  getUserToolCommands,
+  setUserToolCommand,
 } from '../src/main/tmux/cli-wrapper.ts'
 
 function readGenerated(path: string): string {
@@ -73,6 +77,38 @@ test('passes handoff through the Codex CLI when attaching to a remote thread', (
   ))
 
   assert.match(script, /codex resume 'codex-thread-id' --remote 'ws:\/\/127\.0\.0\.1:41234' '请读 \/tmp\/handoff\.md'/)
+})
+
+test('uses a configured executable alias while keeping Codex launch semantics', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'kitty-tool-command-'))
+  const configPath = join(dir, 'config.json')
+  try {
+    writeFileSync(configPath, JSON.stringify({
+      codexHiveBridge: true,
+      toolArgs: { codex: '--dangerously-bypass-approvals-and-sandbox' },
+    }))
+    assert.equal(setUserToolCommand('codex', 'codex-debug', configPath), 'codex-debug')
+    assert.deepEqual(getUserToolCommands(configPath), {
+      claude: 'claude', codex: 'codex-debug', opencode: 'opencode',
+    })
+
+    const local = readGenerated(generateLaunchScript(
+      'codex', 'new', undefined, undefined, undefined, undefined, undefined, configPath,
+    ))
+    const remote = readGenerated(generateCodexRemoteScript(
+      'ws://127.0.0.1:41234', 'thread-id', undefined, undefined, undefined, configPath,
+    ))
+    assert.match(local, /^codex-debug --dangerously-bypass-approvals-and-sandbox$/m)
+    assert.match(remote, /^codex-debug resume 'thread-id' --remote /m)
+
+    const stored = JSON.parse(readFileSync(configPath, 'utf8'))
+    assert.equal(stored.codexHiveBridge, true)
+    assert.equal(stored.toolCommands.codex, 'codex-debug')
+    assert.throws(() => setUserToolCommand('codex', 'codex-debug; rm', configPath), /命令只能/)
+    assert.equal(setUserToolCommand('codex', '', configPath), 'codex')
+  } finally {
+    rmSync(dir, { recursive: true, force: true })
+  }
 })
 
 test('passes OpenCode initial messages through --prompt instead of TUI input', () => {

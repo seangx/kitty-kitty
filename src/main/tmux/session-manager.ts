@@ -4,7 +4,7 @@ import { join } from 'path'
 import { tmpdir, homedir } from 'os'
 import { v4 as uuid } from 'uuid'
 import { getDB } from '../db/database'
-import { injectHiveIdentity } from './cli-wrapper'
+import { getToolCommand as getConfiguredToolCommand, injectHiveIdentity } from './cli-wrapper'
 import {
   childGroupTmuxNamesForTmuxSql,
   groupDepthForTmuxSql,
@@ -85,20 +85,10 @@ export interface TmuxSession {
 
 const SESSION_PREFIX = 'kitty_'
 
-/**
- * Supported CLI tools and their commands
- */
-const TOOL_COMMANDS: Record<string, string> = {
-  claude: 'claude',
-  codex: 'codex',
-  opencode: 'opencode',
-  shell: '$SHELL'
-}
-
 export function getToolCommand(tool: string): string {
   // Only used as fallback when no launch script is provided.
-  // Launch scripts from cli-wrapper.ts handle user config (toolArgs).
-  return TOOL_COMMANDS[tool] || tool
+  // Keep it on the same executable mapping as generated launch scripts.
+  return getConfiguredToolCommand(tool)
 }
 
 /**
