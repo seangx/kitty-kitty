@@ -13,6 +13,9 @@ import { join, basename } from 'path'
 import { homedir } from 'os'
 import { log } from '../logger'
 import type { SkillCategory, GroupInfo, SearchResult, NativeSkill } from '@shared/types/skills'
+import { listGlobalDeployedSkills } from './global-repository'
+
+export { listGlobalDeployedSkills } from './global-repository'
 
 const execFileAsync = promisify(execFile)
 
@@ -209,6 +212,33 @@ export async function uninstallSkill(name: string): Promise<{ success: boolean; 
   if (result.success) return { success: true, message: `${safeName} 已从全局仓库卸载` }
   const errData = parseJson<any>(result.stdout || result.stderr, null)
   return { success: false, message: errData?.error || result.stderr.trim() || '卸载失败' }
+}
+
+export async function addGlobalSkill(name: string, tool: string): Promise<{ success: boolean; message: string }> {
+  const safeName = validateName(name)
+  const agent = TOOL_AGENT_MAP[tool]
+  if (!agent || tool === 'shell') return { success: false, message: `不支持的工具: ${tool}` }
+  if (listGlobalDeployedSkills(tool).includes(safeName)) {
+    return { success: true, message: `${safeName} 已部署到 ${agent} 全局` }
+  }
+  const result = await runSkillsMgr(['add', safeName, '-a', agent, '-g', '--json'])
+  if (result.success && listGlobalDeployedSkills(tool).includes(safeName)) {
+    return { success: true, message: `${safeName} 已部署到 ${agent} 全局` }
+  }
+  const errData = parseJson<any>(result.stdout || result.stderr, null)
+  return { success: false, message: errData?.error || result.stderr.trim() || '全局部署失败' }
+}
+
+export async function removeGlobalSkill(name: string, tool: string): Promise<{ success: boolean; message: string }> {
+  const safeName = validateName(name)
+  const agent = TOOL_AGENT_MAP[tool]
+  if (!agent || tool === 'shell') return { success: false, message: `不支持的工具: ${tool}` }
+  const result = await runSkillsMgr(['remove', safeName, '-a', agent, '-g', '--json'])
+  if (result.success && !listGlobalDeployedSkills(tool).includes(safeName)) {
+    return { success: true, message: `${safeName} 已从 ${agent} 全局移除` }
+  }
+  const errData = parseJson<any>(result.stdout || result.stderr, null)
+  return { success: false, message: errData?.error || result.stderr.trim() || '移除全局部署失败' }
 }
 
 // ─── Native Skills Scanner ────────────────────────────

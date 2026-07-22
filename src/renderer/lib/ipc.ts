@@ -74,6 +74,12 @@ export const installSkill = (skillName: string) =>
 export const uninstallSkill = (skillName: string) =>
   api().invoke(IPC.SKILLS_UNINSTALL, skillName) as Promise<SkillOpResult>
 
+export const addGlobalSkill = (skillName: string, tool = 'codex') =>
+  api().invoke(IPC.SKILLS_GLOBAL_ADD, skillName, tool) as Promise<SkillOpResult>
+
+export const removeGlobalSkill = (skillName: string, tool = 'codex') =>
+  api().invoke(IPC.SKILLS_GLOBAL_REMOVE, skillName, tool) as Promise<SkillOpResult>
+
 // MCPs
 export const listMcps = (sessionId: string) =>
   api().invoke(IPC.MCPS_LIST, sessionId) as Promise<McpsListResult>
@@ -89,6 +95,12 @@ export const installMcp = (source: string) =>
 
 export const uninstallMcp = (name: string) =>
   api().invoke(IPC.MCPS_UNINSTALL, name) as Promise<McpOpResult>
+
+export const addGlobalMcp = (name: string, tool = 'codex') =>
+  api().invoke(IPC.MCPS_GLOBAL_ADD, name, tool) as Promise<McpOpResult>
+
+export const removeGlobalMcp = (name: string, tool = 'codex') =>
+  api().invoke(IPC.MCPS_GLOBAL_REMOVE, name, tool) as Promise<McpOpResult>
 
 export const writeManualMcp = (sessionId: string, jsonText: string) =>
   api().invoke(IPC.MCPS_WRITE_MANUAL, sessionId, jsonText) as Promise<McpOpResult>

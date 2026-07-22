@@ -1,6 +1,10 @@
 import assert from 'node:assert/strict'
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs'
 import { readFile } from 'node:fs/promises'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
 import test from 'node:test'
+import { listGlobalDeployedSkills } from '../src/main/skills/global-repository.ts'
 
 const ROOT = new URL('../', import.meta.url)
 
@@ -69,8 +73,31 @@ test('settings exposes a global Skills and MCP repository manager', async () => 
   assert.match(panel, /const isGlobal = !sessionId/)
   assert.match(panel, /isGlobal\s*\? await ipc\.installSkill/)
   assert.match(panel, /await ipc\.uninstallSkill/)
+  assert.match(panel, /await ipc\.addGlobalSkill\(name, 'codex'\)/)
+  assert.match(panel, /await ipc\.removeGlobalSkill\(name, 'codex'\)/)
   assert.match(panel, /isGlobal\s*\? await ipc\.installMcp/)
   assert.match(panel, /await ipc\.uninstallMcp/)
+  assert.match(panel, /await ipc\.addGlobalMcp\(name, 'codex'\)/)
+  assert.match(panel, /await ipc\.removeGlobalMcp\(name, 'codex'\)/)
   assert.match(ipcTypes, /SKILLS_UNINSTALL: 'skills:uninstall'/)
+  assert.match(ipcTypes, /SKILLS_GLOBAL_ADD: 'skills:global-add'/)
+  assert.match(ipcTypes, /MCPS_GLOBAL_ADD: 'mcps:global-add'/)
   assert.match(skillsHandlers, /IPC\.SKILLS_UNINSTALL/)
+  assert.match(skillsHandlers, /IPC\.SKILLS_GLOBAL_ADD/)
+})
+
+test('global Codex skill state follows the skillsmgr directory and both manifest filename cases', () => {
+  const home = mkdtempSync(join(tmpdir(), 'kitty-global-skills-'))
+  try {
+    const root = join(home, '.codex', 'skills')
+    mkdirSync(join(root, 'lowercase'), { recursive: true })
+    mkdirSync(join(root, 'uppercase'), { recursive: true })
+    mkdirSync(join(root, 'not-a-skill'), { recursive: true })
+    writeFileSync(join(root, 'lowercase', 'skill.md'), '# lower')
+    writeFileSync(join(root, 'uppercase', 'SKILL.md'), '# upper')
+
+    assert.deepEqual(listGlobalDeployedSkills('codex', { home }), ['lowercase', 'uppercase'])
+  } finally {
+    rmSync(home, { recursive: true, force: true })
+  }
 })

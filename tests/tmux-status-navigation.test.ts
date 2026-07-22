@@ -113,3 +113,20 @@ test('app startup refreshes tmux status bars without waiting for the Deck to ope
   assert.ok(ipcIndex >= 0)
   assert.ok(refreshIndex > ipcIndex)
 })
+
+test('status rows are rendered before an atomic session switch without async cache frames', () => {
+  const source = readFileSync(new URL('../src/main/tmux/session-manager.ts', import.meta.url), 'utf8')
+  const applyStart = source.indexOf('function applyStatusLineOptions')
+  const applyEnd = source.indexOf('/**\n * Apply kitty-kitty status bar', applyStart)
+  const block = source.slice(applyStart, applyEnd)
+
+  assert.ok(applyStart >= 0)
+  assert.ok(applyEnd > applyStart)
+  assert.match(block, /execFileSync\(\s*rowScript/)
+  assert.doesNotMatch(block, /#\(\$\{rowScript\}/)
+  assert.ok(block.indexOf('status-format[') < block.lastIndexOf('status ${statusValue}'))
+
+  const clickBinding = source.match(/bind-key -T root MouseDown1Status[^\n]+/)?.[0] || ''
+  assert.match(clickBinding, /run-shell '/)
+  assert.doesNotMatch(clickBinding, /run-shell -b/)
+})

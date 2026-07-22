@@ -14,7 +14,9 @@ export function registerSkillsHandlers(): void {
 
     const [{ categories, groups }, deployed] = await Promise.all([
       skills.listSkills(),
-      session?.cwd ? skills.listDeployed(session.cwd) : Promise.resolve([]),
+      sessionId
+        ? (session?.cwd ? skills.listDeployed(session.cwd) : Promise.resolve([]))
+        : Promise.resolve(skills.listGlobalDeployedSkills('codex')),
     ])
 
     const native = session ? skills.listNativeSkills(session.tool, session.cwd) : []
@@ -48,5 +50,13 @@ export function registerSkillsHandlers(): void {
 
   ipcMain.handle(IPC.SKILLS_UNINSTALL, async (_event, skillName: string) => {
     return skills.uninstallSkill(skillName)
+  })
+
+  ipcMain.handle(IPC.SKILLS_GLOBAL_ADD, async (_event, skillName: string, tool: string) => {
+    return skills.addGlobalSkill(skillName, tool)
+  })
+
+  ipcMain.handle(IPC.SKILLS_GLOBAL_REMOVE, async (_event, skillName: string, tool: string) => {
+    return skills.removeGlobalSkill(skillName, tool)
   })
 }

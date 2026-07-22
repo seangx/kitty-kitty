@@ -1,4 +1,4 @@
-import { execSync, exec } from 'child_process'
+import { execFileSync, execSync, exec } from 'child_process'
 import { existsSync, writeFileSync, chmodSync } from 'fs'
 import { join } from 'path'
 import { tmpdir, homedir } from 'os'
@@ -486,14 +486,48 @@ function applyStatusLineOptions(tmuxName: string): void {
   const statusValue = statusOptionValueForLineCount(lineCount)
   const sq = shellQuote(tmuxName)
 
-  execSync(`${TMUX} set-option -t ${sq} status ${statusValue}`, { stdio: 'ignore' })
+  let paneId = ''
+  let clientWidth = 200
+  try {
+    const geometry = execFileSync(
+      TMUX,
+      ['display-message', '-t', tmuxName, '-p', '#{pane_id}\t#{client_width}\t#{window_width}'],
+      { encoding: 'utf-8', stdio: ['ignore', 'pipe', 'ignore'] },
+    ).trim().split('\t')
+    paneId = geometry[0] || ''
+    const measured = Number(geometry[1]) || Number(geometry[2])
+    if (Number.isFinite(measured) && measured > 0) clientWidth = measured
+  } catch { /* use safe defaults for a detached session */ }
+
+  // Render each row synchronously into a tmux option. `#(script ...)` status
+  // commands are asynchronous and tmux reuses their previous output while a
+  // newly selected session is loading. When the target has an extra child-row,
+  // that cache briefly shows the old root row twice with two active groups.
+  // Literal, per-session rows make the session switch atomic and preserve the
+  // user click ranges without waiting for a background shell result.
+  const renderedRows: string[] = []
+  for (let line = 0; line < lineCount; line++) {
+    let row = ''
+    try {
+      row = execFileSync(
+        rowScript,
+        [String(line), tmuxName, paneId, String(clientWidth)],
+        { encoding: 'utf-8', stdio: ['ignore', 'pipe', 'ignore'] },
+      )
+    } catch { /* an empty row is safer than a stale row from another session */ }
+    renderedRows.push(row)
+  }
+
+  // Update formats before exposing a larger row count. This avoids one frame
+  // where tmux reveals an old status-format slot from a previous layout.
   for (let line = 0; line < lineCount; line++) {
     const clock = line === lineCount - 1
       ? '#[fill=#1b1e2a,align=right]#[fg=#8f96b0] %H:%M '
       : '#[fill=#1b1e2a]'
-    const format = `#[bg=#1b1e2a]#(${rowScript} ${line} #{session_name} #{pane_id} #{client_width})${clock}`
+    const format = `#[bg=#1b1e2a]${renderedRows[line]}${clock}`
     execSync(`${TMUX} set-option -t ${sq} status-format[${line}] ${shellQuote(format)}`, { stdio: 'ignore' })
   }
+  execSync(`${TMUX} set-option -t ${sq} status ${statusValue}`, { stdio: 'ignore' })
 }
 
 /**
@@ -729,7 +763,7 @@ function bindStatusClickKeys(): void {
     // mouse_status_range to the user range string we tagged in status-format.
     // Default MouseDown1Status (select window) is irrelevant here since our
     // window-status-format is empty.
-    execSync(`${TMUX} bind-key -T root MouseDown1Status run-shell -b '${script} "#{mouse_status_range}" "#{client_name}" "#{session_name}"'`, { stdio: 'ignore' })
+    execSync(`${TMUX} bind-key -T root MouseDown1Status run-shell '${script} "#{mouse_status_range}" "#{client_name}" "#{session_name}"'`, { stdio: 'ignore' })
   } catch { /* ignore */ }
 }
 

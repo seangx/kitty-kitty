@@ -10,7 +10,7 @@ import {
   findSavedServers,
   runCli,
 } from '../src/main/mcps/cli-runner.ts'
-import { listCentralFromFs, missingCentralDefinitionPath } from '../src/main/mcps/central-repository.ts'
+import { listCentralFromFs, missingCentralDefinitionPath, readCentralConfigFromFs } from '../src/main/mcps/central-repository.ts'
 
 test('supplies an authorized answer to a headless CLI prompt through stdin', async () => {
   const script = `
@@ -83,12 +83,22 @@ test('repairs and scans scoped MCP central definitions safely', () => {
     writeFileSync(nested, JSON.stringify({
       name: '@upstash/context7',
       description: 'Context7 MCP',
+      source: 'https://github.com/upstash/context7',
+      default: { transport: 'stdio', command: 'npx', args: ['-y', '@upstash/context7'], env: {} },
+      overrides: { codex: { args: ['@upstash/context7@latest'] } },
     }))
     assert.deepEqual(listCentralFromFs(central), [{
       name: '@upstash/context7',
       description: 'Context7 MCP',
       source: 'central',
     }])
+    assert.deepEqual(readCentralConfigFromFs(central, '@upstash/context7'), {
+      transport: 'stdio',
+      command: 'npx',
+      args: ['@upstash/context7@latest'],
+      env: {},
+    })
+    assert.equal(readCentralConfigFromFs(central, '../../outside'), null)
   } finally {
     rmSync(central, { recursive: true, force: true })
   }

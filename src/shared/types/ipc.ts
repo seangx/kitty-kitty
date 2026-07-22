@@ -14,6 +14,8 @@ export const IPC = {
   SKILLS_SEARCH: 'skills:search',
   SKILLS_INSTALL: 'skills:install',
   SKILLS_UNINSTALL: 'skills:uninstall',
+  SKILLS_GLOBAL_ADD: 'skills:global-add',
+  SKILLS_GLOBAL_REMOVE: 'skills:global-remove',
 
   // MCPs (mcpsmgr integration)
   MCPS_LIST: 'mcps:list',
@@ -21,6 +23,8 @@ export const IPC = {
   MCPS_REMOVE: 'mcps:remove',
   MCPS_INSTALL: 'mcps:install',
   MCPS_UNINSTALL: 'mcps:uninstall',
+  MCPS_GLOBAL_ADD: 'mcps:global-add',
+  MCPS_GLOBAL_REMOVE: 'mcps:global-remove',
   MCPS_WRITE_MANUAL: 'mcps:write-manual',
 
   // Pet

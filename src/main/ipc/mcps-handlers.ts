@@ -7,7 +7,9 @@ export function registerMcpsHandlers(): void {
   ipcMain.handle(IPC.MCPS_LIST, async (_event, sessionId: string) => {
     const available = await mcps.isAvailable()
     const session = sessionRepo.listSessions().find((s) => s.id === sessionId)
-    const { central, deployed } = await mcps.listMcps(session?.cwd, session?.tool)
+    const { central, deployed } = sessionId
+      ? await mcps.listMcps(session?.cwd, session?.tool)
+      : { central: (await mcps.listMcps()).central, deployed: mcps.listGlobalCodexMcps() }
     return { available, central, deployed }
   })
 
@@ -33,6 +35,14 @@ export function registerMcpsHandlers(): void {
 
   ipcMain.handle(IPC.MCPS_UNINSTALL, async (_event, name: string) => {
     return mcps.uninstallMcp(name)
+  })
+
+  ipcMain.handle(IPC.MCPS_GLOBAL_ADD, async (_event, name: string, tool: string) => {
+    return mcps.addGlobalMcp(name, tool)
+  })
+
+  ipcMain.handle(IPC.MCPS_GLOBAL_REMOVE, async (_event, name: string, tool: string) => {
+    return mcps.removeGlobalMcp(name, tool)
   })
 
   ipcMain.handle(IPC.MCPS_WRITE_MANUAL, async (_event, sessionId: string, jsonText: string) => {

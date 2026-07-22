@@ -13,6 +13,28 @@ export interface CentralMcpInfo {
   source: 'central'
 }
 
+/** Read one installed JSON definition and resolve its agent override. */
+export function readCentralConfigFromFs(
+  centralDir: string,
+  name: string,
+  agent = 'codex',
+): Record<string, unknown> | null {
+  const target = resolve(centralDir, `${name}.json`)
+  const rel = relative(resolve(centralDir), target)
+  if (!rel || rel.startsWith('..') || isAbsolute(rel) || !existsSync(target)) return null
+  try {
+    const definition = JSON.parse(readFileSync(target, 'utf-8'))
+    const base = definition?.default
+    if (!base || typeof base !== 'object' || Array.isArray(base)) return null
+    const override = definition?.overrides?.[agent]
+    return override && typeof override === 'object' && !Array.isArray(override)
+      ? { ...base, ...override }
+      : { ...base }
+  } catch {
+    return null
+  }
+}
+
 /** Return only a missing JSON definition path contained by centralDir. */
 export function missingCentralDefinitionPath(result: CliOutput, centralDir: string): string | null {
   const output = `${result.stderr}\n${result.stdout}\n${result.errorMessage || ''}`
