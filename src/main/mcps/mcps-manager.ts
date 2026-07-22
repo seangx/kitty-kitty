@@ -23,7 +23,11 @@ import {
   type CliResult,
 } from './cli-runner'
 import { listDeployed, listDeployedForTool, readConfiguredServers } from './deployment-scanner'
-import { listCentralFromFs as scanCentralFromFs, missingCentralDefinitionPath as findMissingCentralDefinitionPath } from './central-repository'
+import {
+  listCentralFromFs as scanCentralFromFs,
+  missingCentralDefinitionPath as findMissingCentralDefinitionPath,
+  readCentralConfigFromFs,
+} from './central-repository'
 
 export { parseCodexMcpToml, parseJsonc, toClaudeMcp, toCodexMcp, toOpenCodeMcp } from './config-converters'
 
@@ -150,6 +154,52 @@ export async function listMcps(cwd?: string, tool?: string): Promise<{ central: 
   const central = listCentralFromFs()
   const deployed = cwd ? (tool ? listDeployedForTool(cwd, tool) : listDeployed(cwd)) : []
   return { central, deployed }
+}
+
+export function listGlobalCodexMcps(): string[] {
+  return listDeployedForTool(homedir(), 'codex')
+}
+
+export async function addGlobalMcp(name: string, tool: string): Promise<{ success: boolean; message: string }> {
+  const safe = validateName(name)
+  if (tool !== 'codex') return { success: false, message: `暂不支持 ${tool} 的全局 MCP 配置` }
+  if (listGlobalCodexMcps().includes(safe)) {
+    return { success: true, message: `${safe} 已部署到 Codex 全局` }
+  }
+
+  // mcpsmgr 0.3 rejects scoped central names such as @upstash/context7 and
+  // re-running their GitHub URL prompts to overwrite the already-installed
+  // definition. Reuse the trusted central definition directly instead. This
+  // also gives us a real file postcondition instead of trusting CLI exit 0.
+  const config = readCentralConfigFromFs(CENTRAL_DIR, safe, 'codex')
+  if (config) {
+    try {
+      writeTomlMcp(homedir(), { [safe]: config })
+    } catch (err: any) {
+      return { success: false, message: err?.message || 'Codex 全局部署失败' }
+    }
+  } else {
+    const result = await runMcpsMgrWithScopedRetry(['add', safe, '-a', 'codex', '--global', '-y'], undefined, 'y\n')
+    if (!result.success) return { success: false, message: cliFailureMessage(result, 'Codex 全局部署失败') }
+  }
+  if (listGlobalCodexMcps().includes(safe)) {
+    return { success: true, message: `${safe} 已部署到 Codex 全局` }
+  }
+  return { success: false, message: 'Codex 全局部署未写入配置' }
+}
+
+export async function removeGlobalMcp(name: string, tool: string): Promise<{ success: boolean; message: string }> {
+  const safe = validateName(name)
+  if (tool !== 'codex') return { success: false, message: `暂不支持 ${tool} 的全局 MCP 配置` }
+  try {
+    const removed = removeTomlMcp(homedir(), safe)
+    return {
+      success: true,
+      message: removed ? `${safe} 已从 Codex 全局移除` : `${safe} 未部署到 Codex 全局`,
+    }
+  } catch (err: any) {
+    return { success: false, message: err?.message || '移除 Codex 全局 MCP 失败' }
+  }
 }
 
 /**

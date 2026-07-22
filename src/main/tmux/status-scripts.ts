@@ -126,7 +126,9 @@ add_item() {
   ITEMS_PLAIN="\$ITEMS_PLAIN\$SEP_TEXT\$LABEL"
   SAFE_LABEL=\$(escape_status_text "\$LABEL")
   if [ "\$ACTIVE" = "1" ]; then
-    STYLE='#[fg=#06b6d4,bg=#3a3a5c,bold]'
+    # Per-session colors let navigation pulse the selected hierarchy without
+    # rebuilding a row or bringing back tmux's asynchronous command cache.
+    STYLE='#[fg=#{@kitty_active_fg},bg=#{@kitty_active_bg},bold]'
   else
     STYLE='#[fg=#706f8a,bg=#1e1e36]'
   fi
@@ -306,11 +308,31 @@ finish_navigation() {
   tmux_is_alive "\$TARGET_TMUX" || exit 0
   if [ -n "\$TARGET_PANE" ]; then \$TMUX_BIN select-pane -t "\$TARGET_PANE" 2>/dev/null || true; fi
   ensure_client
-  if [ -n "\$CLIENT" ]; then \$TMUX_BIN switch-client -c "\$CLIENT" -t "\$TARGET_TMUX" 2>/dev/null || exit 0; fi
+  if [ -n "\$CLIENT" ]; then
+    # Prime the target before switching so the first visible destination frame
+    # is already the pressed state. Two short color steps settle to normal.
+    \$TMUX_BIN set-option -t "\$TARGET_TMUX" @kitty_active_fg '#cffafe' 2>/dev/null || true
+    \$TMUX_BIN set-option -t "\$TARGET_TMUX" @kitty_active_bg '#155e75' 2>/dev/null || true
+    if ! \$TMUX_BIN switch-client -c "\$CLIENT" -t "\$TARGET_TMUX" 2>/dev/null; then
+      \$TMUX_BIN set-option -t "\$TARGET_TMUX" @kitty_active_fg '#06b6d4' 2>/dev/null || true
+      \$TMUX_BIN set-option -t "\$TARGET_TMUX" @kitty_active_bg '#3a3a5c' 2>/dev/null || true
+      exit 0
+    fi
+  fi
   ROOT_GID=\$(sqlite3 "\$DB" "${rootGroupForTmuxSql("'\$TARGET_TMUX'")}" 2>/dev/null)
   [ -z "\$ROOT_GID" ] && ROOT_GID="__ungrouped__"
   \$TMUX_BIN set-environment -g KITTY_ACTIVE_GROUP "\$ROOT_GID" 2>/dev/null || true
   \$TMUX_BIN refresh-client -S 2>/dev/null || true
+  if [ -n "\$CLIENT" ]; then
+    sleep 0.045
+    \$TMUX_BIN set-option -t "\$TARGET_TMUX" @kitty_active_fg '#67e8f9' 2>/dev/null || true
+    \$TMUX_BIN set-option -t "\$TARGET_TMUX" @kitty_active_bg '#334155' 2>/dev/null || true
+    \$TMUX_BIN refresh-client -S 2>/dev/null || true
+    sleep 0.045
+    \$TMUX_BIN set-option -t "\$TARGET_TMUX" @kitty_active_fg '#06b6d4' 2>/dev/null || true
+    \$TMUX_BIN set-option -t "\$TARGET_TMUX" @kitty_active_bg '#3a3a5c' 2>/dev/null || true
+    \$TMUX_BIN refresh-client -S 2>/dev/null || true
+  fi
   exit 0
 }
 

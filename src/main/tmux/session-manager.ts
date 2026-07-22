@@ -1,4 +1,4 @@
-import { execSync, exec } from 'child_process'
+import { execFileSync, execSync, exec } from 'child_process'
 import { existsSync, writeFileSync, chmodSync } from 'fs'
 import { join } from 'path'
 import { tmpdir, homedir } from 'os'
@@ -486,14 +486,48 @@ function applyStatusLineOptions(tmuxName: string): void {
   const statusValue = statusOptionValueForLineCount(lineCount)
   const sq = shellQuote(tmuxName)
 
-  execSync(`${TMUX} set-option -t ${sq} status ${statusValue}`, { stdio: 'ignore' })
+  let paneId = ''
+  let clientWidth = 200
+  try {
+    const geometry = execFileSync(
+      TMUX,
+      ['display-message', '-t', tmuxName, '-p', '#{pane_id}\t#{client_width}\t#{window_width}'],
+      { encoding: 'utf-8', stdio: ['ignore', 'pipe', 'ignore'] },
+    ).trim().split('\t')
+    paneId = geometry[0] || ''
+    const measured = Number(geometry[1]) || Number(geometry[2])
+    if (Number.isFinite(measured) && measured > 0) clientWidth = measured
+  } catch { /* use safe defaults for a detached session */ }
+
+  // Render each row synchronously into a tmux option. `#(script ...)` status
+  // commands are asynchronous and tmux reuses their previous output while a
+  // newly selected session is loading. When the target has an extra child-row,
+  // that cache briefly shows the old root row twice with two active groups.
+  // Literal, per-session rows make the session switch atomic and preserve the
+  // user click ranges without waiting for a background shell result.
+  const renderedRows: string[] = []
+  for (let line = 0; line < lineCount; line++) {
+    let row = ''
+    try {
+      row = execFileSync(
+        rowScript,
+        [String(line), tmuxName, paneId, String(clientWidth)],
+        { encoding: 'utf-8', stdio: ['ignore', 'pipe', 'ignore'] },
+      )
+    } catch { /* an empty row is safer than a stale row from another session */ }
+    renderedRows.push(row)
+  }
+
+  // Update formats before exposing a larger row count. This avoids one frame
+  // where tmux reveals an old status-format slot from a previous layout.
   for (let line = 0; line < lineCount; line++) {
     const clock = line === lineCount - 1
       ? '#[fill=#1b1e2a,align=right]#[fg=#8f96b0] %H:%M '
       : '#[fill=#1b1e2a]'
-    const format = `#[bg=#1b1e2a]#(${rowScript} ${line} #{session_name} #{pane_id} #{client_width})${clock}`
+    const format = `#[bg=#1b1e2a]${renderedRows[line]}${clock}`
     execSync(`${TMUX} set-option -t ${sq} status-format[${line}] ${shellQuote(format)}`, { stdio: 'ignore' })
   }
+  execSync(`${TMUX} set-option -t ${sq} status ${statusValue}`, { stdio: 'ignore' })
 }
 
 /**
@@ -518,6 +552,8 @@ export function applyKittyStatusBar(tmuxName: string): void {
       `set-option -t ${sq} status on`,
       `set-option -t ${sq} status-position bottom`,
       `set-option -t ${sq} status-style "bg=#1b1e2a,fg=#8f96b0"`,
+      `set-option -t ${sq} @kitty_active_fg "#06b6d4"`,
+      `set-option -t ${sq} @kitty_active_bg "#3a3a5c"`,
       // No window list — everything is in status-format
       `set-window-option -t ${sq} window-status-format ""`,
       `set-window-option -t ${sq} window-status-current-format ""`,
@@ -729,7 +765,7 @@ function bindStatusClickKeys(): void {
     // mouse_status_range to the user range string we tagged in status-format.
     // Default MouseDown1Status (select window) is irrelevant here since our
     // window-status-format is empty.
-    execSync(`${TMUX} bind-key -T root MouseDown1Status run-shell -b '${script} "#{mouse_status_range}" "#{client_name}" "#{session_name}"'`, { stdio: 'ignore' })
+    execSync(`${TMUX} bind-key -T root MouseDown1Status run-shell '${script} "#{mouse_status_range}" "#{client_name}" "#{session_name}"'`, { stdio: 'ignore' })
   } catch { /* ignore */ }
 }
 
@@ -878,10 +914,21 @@ if [ -n "\$BEST" ]; then
   fi
   [ -z "\$CLIENT" ] && CLIENT=\$(\$TMUX_BIN list-clients -F '#{client_name}' 2>/dev/null | head -1)
   if [ -n "\$CLIENT" ]; then
+    \$TMUX_BIN set-option -t "\$BEST" @kitty_active_fg '#cffafe' 2>/dev/null || true
+    \$TMUX_BIN set-option -t "\$BEST" @kitty_active_bg '#155e75' 2>/dev/null || true
     if \$TMUX_BIN switch-client -c "\$CLIENT" -t "\$BEST" 2>/dev/null; then
       # Only update env after successful switch
       \$TMUX_BIN set-environment -g KITTY_ACTIVE_GROUP "\$ENV_GID" 2>/dev/null
+      \$TMUX_BIN refresh-client -S 2>/dev/null || true
+      sleep 0.045
+      \$TMUX_BIN set-option -t "\$BEST" @kitty_active_fg '#67e8f9' 2>/dev/null || true
+      \$TMUX_BIN set-option -t "\$BEST" @kitty_active_bg '#334155' 2>/dev/null || true
+      \$TMUX_BIN refresh-client -S 2>/dev/null || true
+      sleep 0.045
     fi
+    # Also restores the normal palette when switch-client failed.
+    \$TMUX_BIN set-option -t "\$BEST" @kitty_active_fg '#06b6d4' 2>/dev/null || true
+    \$TMUX_BIN set-option -t "\$BEST" @kitty_active_bg '#3a3a5c' 2>/dev/null || true
   fi
 fi
 
