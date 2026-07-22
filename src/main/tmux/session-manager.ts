@@ -552,6 +552,8 @@ export function applyKittyStatusBar(tmuxName: string): void {
       `set-option -t ${sq} status on`,
       `set-option -t ${sq} status-position bottom`,
       `set-option -t ${sq} status-style "bg=#1b1e2a,fg=#8f96b0"`,
+      `set-option -t ${sq} @kitty_active_fg "#06b6d4"`,
+      `set-option -t ${sq} @kitty_active_bg "#3a3a5c"`,
       // No window list — everything is in status-format
       `set-window-option -t ${sq} window-status-format ""`,
       `set-window-option -t ${sq} window-status-current-format ""`,
@@ -912,10 +914,21 @@ if [ -n "\$BEST" ]; then
   fi
   [ -z "\$CLIENT" ] && CLIENT=\$(\$TMUX_BIN list-clients -F '#{client_name}' 2>/dev/null | head -1)
   if [ -n "\$CLIENT" ]; then
+    \$TMUX_BIN set-option -t "\$BEST" @kitty_active_fg '#cffafe' 2>/dev/null || true
+    \$TMUX_BIN set-option -t "\$BEST" @kitty_active_bg '#155e75' 2>/dev/null || true
     if \$TMUX_BIN switch-client -c "\$CLIENT" -t "\$BEST" 2>/dev/null; then
       # Only update env after successful switch
       \$TMUX_BIN set-environment -g KITTY_ACTIVE_GROUP "\$ENV_GID" 2>/dev/null
+      \$TMUX_BIN refresh-client -S 2>/dev/null || true
+      sleep 0.045
+      \$TMUX_BIN set-option -t "\$BEST" @kitty_active_fg '#67e8f9' 2>/dev/null || true
+      \$TMUX_BIN set-option -t "\$BEST" @kitty_active_bg '#334155' 2>/dev/null || true
+      \$TMUX_BIN refresh-client -S 2>/dev/null || true
+      sleep 0.045
     fi
+    # Also restores the normal palette when switch-client failed.
+    \$TMUX_BIN set-option -t "\$BEST" @kitty_active_fg '#06b6d4' 2>/dev/null || true
+    \$TMUX_BIN set-option -t "\$BEST" @kitty_active_bg '#3a3a5c' 2>/dev/null || true
   fi
 fi
 

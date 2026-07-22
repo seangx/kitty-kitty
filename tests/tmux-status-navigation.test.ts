@@ -72,6 +72,7 @@ test('nested tmux rows anchor to their parent and collapse direct panes into ung
     const hiddenLeafRow = render(2)
 
     assert.match(rootRow, /range=user\|kr:1/)
+    assert.match(rootRow, /fg=#\{@kitty_active_fg\},bg=#\{@kitty_active_bg\}/)
     assert.match(rootRow, /Root \(3\)/)
     assert.match(rootRow, /Loose 1/)
     assert.match(rootRow, /Loose 2/)
@@ -129,4 +130,20 @@ test('status rows are rendered before an atomic session switch without async cac
   const clickBinding = source.match(/bind-key -T root MouseDown1Status[^\n]+/)?.[0] || ''
   assert.match(clickBinding, /run-shell '/)
   assert.doesNotMatch(clickBinding, /run-shell -b/)
+})
+
+test('status navigation gives the selected hierarchy a short native color transition', () => {
+  const navigate = buildStatusNavigateScript({
+    tmuxBin: TMUX,
+    dbPath: '/tmp/kitty-status-transition.db',
+    sessionPrefix: 'kitty_',
+  })
+  const source = readFileSync(new URL('../src/main/tmux/session-manager.ts', import.meta.url), 'utf8')
+
+  assert.match(navigate, /@kitty_active_fg '#cffafe'/)
+  assert.match(navigate, /@kitty_active_bg '#155e75'/)
+  assert.match(navigate, /sleep 0\.045/)
+  assert.match(navigate, /@kitty_active_fg '#06b6d4'/)
+  assert.match(source, /set-option -t \$\{sq\} @kitty_active_fg "#06b6d4"/)
+  assert.match(source, /set-option -t "\\\$BEST" @kitty_active_bg '#155e75'/)
 })
