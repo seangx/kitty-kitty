@@ -9,7 +9,7 @@
     "preview": "electron-vite preview",
     "postinstall": "electron-builder install-app-deps",
     "test": "node --disable-warning=MODULE_TYPELESS_PACKAGE_JSON --test tests/*.test.ts",
-    "pack": "electron-builder --dir",
+    "pack": "electron-builder --dir && bash tools/adhoc-sign-macos-app.sh",
     "dist": "electron-builder"
   },
   "dependencies": {
