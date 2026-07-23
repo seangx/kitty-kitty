@@ -7,6 +7,7 @@ import {
 } from '../src/renderer/pet/sprite-layout.ts'
 import {
   resolveAnimationFrame,
+  stepTickTowardNearestEndpoint,
   stepTowardNearestEndpoint,
 } from '../src/renderer/pet/frame-animation.ts'
 import { PET_ANIMATION_HEADROOM } from '../src/shared/pet-window-position.ts'
@@ -32,7 +33,7 @@ async function imageSize(name: string): Promise<{ width: number; height: number 
   }
 }
 
-test('calico idle is a native-rate loop aligned to the deck transition anchor', async () => {
+test('calico idle is a native-rate ping-pong loop aligned to the deck transition anchor', async () => {
   const names = await readdir(SPRITES)
   const idle = names.filter((name) => /^idle-\d+\.(?:png|webp)$/.test(name)).sort()
   const deckOpen = names.filter((name) => /^deck-open-\d+\.png$/.test(name)).sort()
@@ -49,7 +50,7 @@ test('calico idle is a native-rate loop aligned to the deck transition anchor', 
   assert.match(layout, /'calico\/idle': \{ width: 420, height: 256 \}/)
   assert.match(pngSprite, /'idle': 42/)
   const pingPong = pngSprite.slice(pngSprite.indexOf('const PING_PONG'), pngSprite.indexOf('const ONE_SHOT'))
-  assert.doesNotMatch(pingPong, /'idle'/)
+  assert.match(pingPong, /'idle'/)
   assert.deepEqual(
     await readFile(new URL('idle-0.webp', SPRITES)),
     await readFile(new URL('idle-72.webp', SPRITES)),
@@ -130,6 +131,26 @@ test('nearest-endpoint settling chooses the shorter direction for the 73-frame i
   assert.equal(stepTowardNearestEndpoint(37, 73), 38)
   assert.equal(stepTowardNearestEndpoint(71, 73), 72)
   assert.equal(stepTowardNearestEndpoint(72, 73), 72)
+})
+
+test('ping-pong idle reverses without repeating either endpoint', () => {
+  assert.deepEqual(
+    [70, 71, 72, 73, 74].map((tick) => resolveAnimationFrame(tick, 73, true)),
+    [70, 71, 72, 71, 70],
+  )
+  assert.deepEqual(
+    [142, 143, 144, 145, 146].map((tick) => resolveAnimationFrame(tick, 73, true)),
+    [2, 1, 0, 1, 2],
+  )
+})
+
+test('ping-pong idle settles toward the nearest endpoint on either timeline half', () => {
+  assert.equal(stepTickTowardNearestEndpoint(10, 73, true), 9)
+  assert.equal(stepTickTowardNearestEndpoint(134, 73, true), 135)
+  assert.equal(stepTickTowardNearestEndpoint(37, 73, true), 38)
+  assert.equal(stepTickTowardNearestEndpoint(107, 73, true), 106)
+  assert.equal(stepTickTowardNearestEndpoint(0, 73, true), 0)
+  assert.equal(stepTickTowardNearestEndpoint(72, 73, true), 72)
 })
 
 test('one-shot deck animation holds its last frame instead of wrapping to idle', () => {
