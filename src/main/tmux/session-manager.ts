@@ -578,7 +578,7 @@ export function applyKittyStatusBar(tmuxName: string): void {
       try { execSync(`${TMUX} ${cmd}`, { stdio: 'ignore' }) } catch { /* ignore */ }
     }
 
-    // Prefix+1~9 switches root groups; Alt+1~9 switches group-level items.
+    // Prefix+1~9 and Alt+1~9 both switch root groups.
     // Key bindings are global (not per-session), only bind once via refreshAllStatusBars
     // to avoid race conditions between multiple applyKittyStatusBar calls
   } catch { /* ignore */ }
@@ -760,13 +760,13 @@ function bindStatusClickKeys(): void {
 }
 
 /**
- * Bind Alt+1~9 to the visible items in the current group's row.
+ * Bind Alt+1~9 to switch root groups without requiring the tmux prefix.
  */
 function bindAltGroupKeys(): void {
-  const navigateScript = ensureStatusNavigateScript()
+  const switchScript = ensureSwitchGroupScript()
   for (let i = 1; i <= 9; i++) {
     try {
-      execSync(`${TMUX} bind-key -n M-${i} run-shell -b '${navigateScript} level-index ${i} "#{session_name}" "#{client_name}"'`, { stdio: 'ignore' })
+      execSync(`${TMUX} bind-key -n M-${i} run-shell -b '${switchScript} ${i} "#{client_name}"'`, { stdio: 'ignore' })
     } catch { /* ignore */ }
   }
 }

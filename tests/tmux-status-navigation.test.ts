@@ -132,6 +132,19 @@ test('status rows are rendered before an atomic session switch without async cac
   assert.doesNotMatch(clickBinding, /run-shell -b/)
 })
 
+test('Alt+number switches root groups without requiring the tmux prefix', () => {
+  const source = readFileSync(new URL('../src/main/tmux/session-manager.ts', import.meta.url), 'utf8')
+  const bindStart = source.indexOf('function bindAltGroupKeys')
+  const bindEnd = source.indexOf('/**\n * Refresh the status bar', bindStart)
+  const block = source.slice(bindStart, bindEnd)
+
+  assert.ok(bindStart >= 0)
+  assert.ok(bindEnd > bindStart)
+  assert.match(block, /const switchScript = ensureSwitchGroupScript\(\)/)
+  assert.match(block, /bind-key -n M-\$\{i\} run-shell -b '\$\{switchScript\} \$\{i\} "#\{client_name\}"'/)
+  assert.doesNotMatch(block, /level-index/)
+})
+
 test('status navigation gives the selected hierarchy a short native color transition', () => {
   const navigate = buildStatusNavigateScript({
     tmuxBin: TMUX,
