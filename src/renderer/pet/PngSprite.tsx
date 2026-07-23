@@ -1,7 +1,7 @@
 import { useState, useEffect, useLayoutEffect, useMemo, useRef } from 'react'
 import type { AnimationState, SkinId } from '@shared/types/pet'
 import { getPngSpriteDisplaySize } from './sprite-layout'
-import { resolveAnimationFrame, stepTowardNearestEndpoint } from './frame-animation'
+import { resolveAnimationFrame, stepTickTowardNearestEndpoint } from './frame-animation'
 import './PngSprite.css'
 
 /**
@@ -67,7 +67,7 @@ const INTERVAL_MS: Record<AnimationState, number> = {
  *  back-and-forth read is seamless. Locomotion/tumbling clips are left as plain
  *  forward loops since reversing them would look like walking backwards. */
 const PING_PONG: Set<AnimationState> = new Set([
-  'sleep', 'sad', 'stretch', 'think', 'lick', 'talk', 'happy',
+  'idle', 'sleep', 'sad', 'stretch', 'think', 'lick', 'talk', 'happy',
 ])
 
 /** Transition clips must hold their final pose until the destination UI is ready. */
@@ -193,10 +193,9 @@ function useFrameAnimation(
       setClock((current) => {
         const tick = current.key === animationKey ? current.tick : 0
         if (settleToNearestEndpoint) {
-          const frame = resolveAnimationFrame(tick, frameCount, pingpong, oneShot)
-          const next = stepTowardNearestEndpoint(frame, frameCount)
-          if (next === frame) return current
-          return { key: animationKey, tick: tick + next - frame }
+          const nextTick = stepTickTowardNearestEndpoint(tick, frameCount, pingpong)
+          if (nextTick === tick) return current
+          return { key: animationKey, tick: nextTick }
         }
         if (oneShot && tick >= frameCount - 1) return current
         return { key: animationKey, tick: tick + 1 }

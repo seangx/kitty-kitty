@@ -23,3 +23,26 @@ export function stepTowardNearestEndpoint(frame: number, frameCount: number): nu
   if (current === 0 || current === last) return current
   return current <= last / 2 ? current - 1 : current + 1
 }
+
+/** Move the animation clock one step toward the nearest endpoint.
+ * For ping-pong clips, the same frame can occur on either half of the
+ * timeline, so the clock may need to move backward to move the image forward. */
+export function stepTickTowardNearestEndpoint(
+  tick: number,
+  frameCount: number,
+  pingpong = false,
+): number {
+  const frame = resolveAnimationFrame(tick, frameCount, pingpong)
+  const nextFrame = stepTowardNearestEndpoint(frame, frameCount)
+  if (nextFrame === frame) return tick
+  if (!pingpong) return tick + nextFrame - frame
+
+  if (resolveAnimationFrame(tick + 1, frameCount, true) === nextFrame) {
+    return tick + 1
+  }
+  const previousTick = Math.max(0, tick - 1)
+  if (resolveAnimationFrame(previousTick, frameCount, true) === nextFrame) {
+    return previousTick
+  }
+  return tick
+}
