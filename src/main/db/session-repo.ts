@@ -1,5 +1,11 @@
 import { getDB } from './database'
 import type { TmuxSession } from '../tmux/session-manager'
+import {
+  assertCodexThreadAvailable,
+  findCodexThreadCollision,
+  type CodexThreadCollision,
+  type CodexThreadSession,
+} from '../codex-thread-ownership'
 
 export interface SessionRow {
   id: string
@@ -132,7 +138,32 @@ export function updateSessionExternalId(id: string, externalSessionId: string): 
   const db = getDB()
   // DB column stays `claude_session_id` for backward compat (no migration needed);
   // semantically it now holds the external CLI session id for any tool (claude/codex/...)
+  const target = db.prepare(
+    'SELECT tool FROM sessions WHERE id = ?',
+  ).get(id) as { tool: string } | undefined
+  if (target?.tool === 'codex' && externalSessionId.trim()) {
+    const rows = db.prepare(`
+      SELECT id, title, tool,
+             COALESCE(claude_session_id, '') as externalSessionId
+      FROM sessions
+      WHERE tool = 'codex' AND COALESCE(claude_session_id, '') = ?
+    `).all(externalSessionId.trim()) as CodexThreadSession[]
+    assertCodexThreadAvailable(rows, id, externalSessionId)
+  }
   db.prepare("UPDATE sessions SET claude_session_id = ?, updated_at = datetime('now') WHERE id = ?").run(externalSessionId, id)
+}
+
+export function findCodexThreadOwner(id: string, threadId: string): CodexThreadCollision | null {
+  const candidate = threadId.trim()
+  if (!candidate) return null
+  const db = getDB()
+  const rows = db.prepare(`
+    SELECT id, title, tool,
+           COALESCE(claude_session_id, '') as externalSessionId
+    FROM sessions
+    WHERE tool = 'codex' AND COALESCE(claude_session_id, '') = ?
+  `).all(candidate) as CodexThreadSession[]
+  return findCodexThreadCollision(rows, id, candidate)
 }
 
 export function updateSessionEnv(id: string, envJson: string): void {

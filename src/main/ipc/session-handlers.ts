@@ -47,6 +47,45 @@ function hiveCli(args: string[]): void {
   } catch { /* ignore */ }
 }
 
+function codexThreadIsAvailable(sessionId: string, threadId: string, context: string): boolean {
+  if (!threadId.trim()) return true
+  const collision = sessionRepo.findCodexThreadOwner(sessionId, threadId)
+  if (!collision) return true
+  log(
+    'codex-ownership',
+    `${context}: refuse thread ${threadId.slice(0, 8)} for ${sessionId}; `
+    + `already owned by ${collision.owner.title} (${collision.owner.id})`,
+  )
+  return false
+}
+
+function assertCodexThreadIsAvailable(sessionId: string, threadId: string, context: string): void {
+  if (codexThreadIsAvailable(sessionId, threadId, context)) return
+  const collision = sessionRepo.findCodexThreadOwner(sessionId, threadId)!
+  throw new Error(
+    `Codex 会话串号已拦截：thread ${threadId.slice(0, 8)} 已属于 `
+    + `${collision.owner.title}，没有继续连接`,
+  )
+}
+
+async function startExclusiveCodexThread(
+  agentId: string,
+  sessionId: string,
+  context: string,
+): Promise<{ wsUrl: string; threadId: string } | null> {
+  for (let attempt = 1; attempt <= 2; attempt++) {
+    const fresh = await codexSetThread(agentId, null)
+    if (fresh.kind !== 'ok' && fresh.kind !== 'resumed_as_new') {
+      log('codex-ownership', `${context}: fresh thread attempt ${attempt} failed (${fresh.kind})`)
+      continue
+    }
+    if (codexThreadIsAvailable(sessionId, fresh.threadId, `${context} fresh attempt ${attempt}`)) {
+      return { wsUrl: fresh.wsUrl, threadId: fresh.threadId }
+    }
+  }
+  return null
+}
+
 /**
  * Path B preparation for a fresh codex session. If the codex hive bridge is
  * enabled, register the agent with hive (so the supervisor spawns a codex
@@ -79,10 +118,16 @@ async function tryPrepareCodexRemoteScript(args: {
       log('codex-bridge', `ws not ready (status=${ws.status}): ${ws.error || ''}`)
       return null
     }
+    let attach = { wsUrl: ws.ws_url, threadId: ws.thread_id }
+    if (!codexThreadIsAvailable(args.kittyId, ws.thread_id, 'fresh bridge attach')) {
+      const fresh = await startExclusiveCodexThread(reg.agentId, args.kittyId, 'fresh bridge collision recovery')
+      if (!fresh) return null
+      attach = fresh
+    }
     return {
-      script: generateCodexRemoteScript(ws.ws_url, ws.thread_id, args.projectDir, undefined, args.initialPrompt),
+      script: generateCodexRemoteScript(attach.wsUrl, attach.threadId, args.projectDir, undefined, args.initialPrompt),
       hiveAgentId: reg.agentId,
-      threadId: ws.thread_id,
+      threadId: attach.threadId,
     }
   } catch (err) {
     log('codex-bridge', 'unexpected:', err)
@@ -582,6 +627,9 @@ export function registerSessionHandlers(): void {
       log('session', `rebind REJECT cross-cwd: ${session.title} cwd=${session.cwd} jsonl=${newExternalId.slice(0, 8)}`)
       return { success: false, error: 'jsonl-not-in-cwd' }
     }
+    if (session.tool === 'codex' && !codexThreadIsAvailable(id, newExternalId, 'manual rebind')) {
+      return { success: false, error: 'codex-thread-already-owned' }
+    }
     if (!keepTmux) {
       try { tmux.killSession(session.tmuxName) } catch { /* ignore */ }
       sessionRepo.updateSessionStatus(id, 'detached')
@@ -852,22 +900,22 @@ export function registerSessionHandlers(): void {
         sendTransferProgress(id, 'handoff')
         const recent = buildClaudeRecentHandoff(jsonl, session.cwd)
         if (!recent) return { success: false, message: '会话过大且无法生成交接文档' }
-        sessionRepo.updateSessionTransferOrigin(id, JSON.stringify({
-          tool: 'claude',
-          externalSessionId: session.externalSessionId,
-          transferredAt: new Date().toISOString(),
-        }))
-        sessionRepo.updateSessionTool(id, 'codex')
         let newThreadId = ''
         if (getCodexHiveBridge()) {
           // bridge:让 daemon 开全新 thread,restartSessionPane 直连分支即刻 attach
           const reg = await registerCodexAgent({ key: session.id, displayName: session.title, projectDir: session.cwd || undefined, switchTool: await hiveSupportsSwitchTool() })
           if (reg.success && reg.agentId) {
             sessionRepo.updateSessionHiveAgentId(id, reg.agentId)
-            const r2 = await codexSetThread(reg.agentId, null)
-            if (r2.kind === 'ok' || r2.kind === 'resumed_as_new') newThreadId = r2.threadId
+            const fresh = await startExclusiveCodexThread(reg.agentId, id, 'degraded transfer')
+            if (fresh) newThreadId = fresh.threadId
           }
         }
+        sessionRepo.updateSessionTransferOrigin(id, JSON.stringify({
+          tool: 'claude',
+          externalSessionId: session.externalSessionId,
+          transferredAt: new Date().toISOString(),
+        }))
+        sessionRepo.updateSessionTool(id, 'codex')
         sessionRepo.updateSessionExternalId(id, newThreadId)
         // ext 为空(非 bridge / daemon 失败)时借 cleared 标记让重启走 'new',
         // 否则 restartMode 会 'continue'(codex resume --last 挂错会话)
@@ -897,6 +945,9 @@ export function registerSessionHandlers(): void {
         const r = await runCodexTransfer(companion, jsonl, session.cwd)
         if (!r.threadId) return { success: false, message: `转移失败: ${r.error}` }
         threadId = r.threadId
+      }
+      if (!codexThreadIsAvailable(id, threadId, reused ? 'reuse transferred thread' : 'import transferred thread')) {
+        return { success: false, message: '转移已停止：目标 Codex thread 已被另一个 Kitty 会话占用' }
       }
       sessionRepo.updateSessionTransferOrigin(id, JSON.stringify({
         tool: 'claude',
@@ -962,10 +1013,10 @@ export function registerSessionHandlers(): void {
       // respawn the pane bound to the new thread via --remote. This keeps the
       // hive agent identity (agent_id, display_name, team) unchanged.
       if (getCodexHiveBridge() && session.hiveAgentId) {
-        const r = await codexSetThread(session.hiveAgentId, null)
-        if (r.kind === 'ok' || r.kind === 'resumed_as_new') {
-          sessionRepo.updateSessionExternalId(session.id, r.threadId)
-          const launch = generateCodexRemoteScript(r.wsUrl, r.threadId, session.cwd || undefined, '🔄 重置对话中…')
+        const fresh = await startExclusiveCodexThread(session.hiveAgentId, session.id, 'clear conversation')
+        if (fresh) {
+          sessionRepo.updateSessionExternalId(session.id, fresh.threadId)
+          const launch = generateCodexRemoteScript(fresh.wsUrl, fresh.threadId, session.cwd || undefined, '🔄 重置对话中…')
           let envFlags = ` -e "HIVE_AGENT_KEY=${session.id}"`
           envFlags += ` -e "HIVE_AGENT_NAME=${String(session.title || '').replace(/"/g, '\\"')}"`
           try {
@@ -973,15 +1024,11 @@ export function registerSessionHandlers(): void {
           } catch (err: any) {
             return { success: false, message: `respawn-pane 失败: ${err?.message || err}` }
           }
-          log('session', `clear-conversation (codex bridge): ${session.title} → ${r.threadId.slice(0, 8)}`)
+          log('session', `clear-conversation (codex bridge): ${session.title} → ${fresh.threadId.slice(0, 8)}`)
           return { success: true, message: '已开新对话，daemon 已同步' }
         }
-        if (r.kind === 'timeout') {
-          log('session', `clear-conversation (codex): daemon timeout, fallback to send-keys`)
-        } else {
-          // 'error' — hive API likely not deployed yet (v0.7.2 pending). Fall back.
-          log('session', `clear-conversation (codex): hive API error: ${r.message}, fallback to send-keys`)
-        }
+        log('session', 'clear-conversation (codex): fresh exclusive daemon thread unavailable; refusing soft clear')
+        return { success: false, message: '无法创建独占的 Codex thread，已停止清空以避免污染其他会话' }
       }
       // Fallback: just send /clear to the TUI. Documented limitation pre-API:
       // daemon stays on old thread, hive pushes land there until next bridge
@@ -2115,6 +2162,13 @@ function bindFreshCodexThread(sessionId: string): void {
     const target = resolveRestartPaneTarget(s) ?? resolvePaneTarget(s.tmuxName, s.mainPane || '0.0')
     const live = target ? paneCodexThread(target) : ''
     if (live) {
+      if (!codexThreadIsAvailable(sessionId, live, 'bind fresh pane thread')) {
+        // Keep the cleared mark: blind mtime sync must not adopt the sibling
+        // rollout after this explicit ownership rejection.
+        clearInterval(timer)
+        log('sync', `codex fresh thread collision: ${s.title} stays unbound`)
+        return
+      }
       sessionRepo.updateSessionExternalId(sessionId, live)
       clearMark(sessionId)
       log('sync', `codex fresh thread bound: ${s.title} → ${live.slice(0, 8)}`)
@@ -2123,14 +2177,16 @@ function bindFreshCodexThread(sessionId: string): void {
     }
     if (Date.now() > deadline) {
       clearInterval(timer)
-      clearMark(sessionId)
-      log('sync', `codex fresh thread bind timeout: ${s.title} (fallback to blind sync)`)
+      log('sync', `codex fresh thread bind timeout: ${s.title} (kept isolated; blind sync disabled)`)
     }
   }, 2000)
 }
 
 async function restartSessionPane(session: sessionRepo.SessionRow, initialPrompt?: string): Promise<void> {
   await syncManagedMcpsToTool(session.cwd, session.tool)
+  if (session.tool === 'codex' && session.externalSessionId) {
+    assertCodexThreadIsAvailable(session.id, session.externalSessionId, 'restart stored thread')
+  }
   // Resolve the exact pane to respawn WITHOUT clobbering a sibling session's
   // pane. Falls back to mainPane only when the tmux session is gone entirely.
   const target = resolveRestartPaneTarget(session)
@@ -2141,9 +2197,11 @@ async function restartSessionPane(session: sessionRepo.SessionRow, initialPrompt
   if (session.tool === 'codex' && !isCleared(session.id)) {
     const live = paneCodexThread(target)
     if (live && live !== session.externalSessionId) {
-      sessionRepo.updateSessionExternalId(session.id, live)
-      log('sync', `codex thread drift healed: ${session.title} ${(session.externalSessionId || '∅').slice(0, 8)} → ${live.slice(0, 8)}`)
-      session = { ...session, externalSessionId: live }
+      if (codexThreadIsAvailable(session.id, live, 'pane drift heal')) {
+        sessionRepo.updateSessionExternalId(session.id, live)
+        log('sync', `codex thread drift healed: ${session.title} ${(session.externalSessionId || '∅').slice(0, 8)} → ${live.slice(0, 8)}`)
+        session = { ...session, externalSessionId: live }
+      }
     }
   }
 
@@ -2168,8 +2226,10 @@ async function restartSessionPane(session: sessionRepo.SessionRow, initialPrompt
     if (reg.success && reg.agentId) bridgedHiveAgentId = reg.agentId
     const ws = await codexPaneWs({ key: session.id, timeoutMs: 10000 })
     const agentId = bridgedHiveAgentId || session.hiveAgentId
-    const requestedThreadId = session.externalSessionId || ws.thread_id || ''
-    if (ws.status === 'ready' && ws.ws_url && ws.thread_id && ws.thread_id === requestedThreadId) {
+    const wsThreadAvailable = !ws.thread_id
+      || codexThreadIsAvailable(session.id, ws.thread_id, 'restart daemon attach')
+    const requestedThreadId = session.externalSessionId || (wsThreadAvailable ? ws.thread_id : '') || ''
+    if (ws.status === 'ready' && ws.ws_url && ws.thread_id && wsThreadAvailable && ws.thread_id === requestedThreadId) {
       // daemon 已在目标 thread 上 → 直接 attach,禁止 set-thread。
       // set-thread 语义是"切换 thread",hive 端会 SIGTERM daemon 重生;之前
       // 无条件调它导致每次重启都杀 daemon(my-game restart_count=89 事故):
@@ -2178,6 +2238,7 @@ async function restartSessionPane(session: sessionRepo.SessionRow, initialPrompt
     } else if (agentId && requestedThreadId) {
       const reset = await codexSetThread(agentId, requestedThreadId)
       if (reset.kind === 'ok' || reset.kind === 'resumed_as_new') {
+        assertCodexThreadIsAvailable(session.id, reset.threadId, 'restart daemon switch result')
         sessionRepo.updateSessionExternalId(session.id, reset.threadId)
         launch = generateCodexRemoteScript(reset.wsUrl, reset.threadId, session.cwd || undefined, undefined, initialPrompt)
       } else {
@@ -2185,11 +2246,14 @@ async function restartSessionPane(session: sessionRepo.SessionRow, initialPrompt
         const mode = restartMode(session)
         launch = generateLaunchScript(session.tool, mode, session.externalSessionId || undefined, session.cwd || undefined, undefined, launchArgsFor(session), initialPrompt)
       }
-    } else if (ws.status === 'ready' && ws.ws_url) {
+    } else if (ws.status === 'ready' && ws.ws_url && wsThreadAvailable) {
       launch = generateCodexRemoteScript(ws.ws_url, ws.thread_id, session.cwd || undefined, undefined, initialPrompt)
-      if (ws.thread_id) {
-        sessionRepo.updateSessionExternalId(session.id, ws.thread_id)
-      }
+      if (ws.thread_id) sessionRepo.updateSessionExternalId(session.id, ws.thread_id)
+    } else if (agentId && ws.status === 'ready' && ws.ws_url && !wsThreadAvailable) {
+      const fresh = await startExclusiveCodexThread(agentId, session.id, 'restart daemon collision recovery')
+      if (!fresh) throw new Error('Hive daemon 返回了其他会话的 Codex thread，且无法创建隔离 thread')
+      sessionRepo.updateSessionExternalId(session.id, fresh.threadId)
+      launch = generateCodexRemoteScript(fresh.wsUrl, fresh.threadId, session.cwd || undefined, undefined, initialPrompt)
     } else {
       log('codex-bridge', `restart fallback (ws status=${ws.status}): ${ws.error || ''}`)
       const mode = restartMode(session)
@@ -2279,6 +2343,9 @@ async function forceRestartSessionRuntime(session: sessionRepo.SessionRow): Prom
   if (session.tool === 'codex' && !getCodexHiveBridge()) {
     throw new Error('Codex Hive Bridge 未开启，当前会话不能强制重启 runtime')
   }
+  if (session.tool === 'codex' && session.externalSessionId) {
+    assertCodexThreadIsAvailable(session.id, session.externalSessionId, 'force restart stored thread')
+  }
   await syncManagedMcpsToTool(session.cwd, session.tool)
   const target = resolveRestartPaneTarget(session)
     ?? resolvePaneTarget(session.tmuxName, session.mainPane || '0.0')
@@ -2323,6 +2390,7 @@ async function forceRestartSessionRuntime(session: sessionRepo.SessionRow): Prom
   let externalSessionId: string
   if (session.tool === 'codex' && freshAttach.kind === 'codex-remote') {
     externalSessionId = freshAttach.thread_id
+    assertCodexThreadIsAvailable(session.id, externalSessionId, 'force restart daemon attach')
     launch = generateCodexRemoteScript(
       freshAttach.ws_url,
       freshAttach.thread_id,
