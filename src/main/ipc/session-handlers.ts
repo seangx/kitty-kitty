@@ -24,6 +24,7 @@ import { buildClaudeMemoryStartupPrompt, findClaudeMemoryForProject } from '../c
 import { syncManagedMcpsToTool } from '../mcps/mcps-manager'
 import { selectGroupRestartCandidates } from '../group-restart'
 import { getPetWindow } from '../windows/pet-window'
+import { recoverSessionPaneId, type HostedPaneLocation } from '../tmux/pane-label'
 import type { SessionInfo } from '@shared/types/session'
 
 const forceRestartSingleFlight = new KeyedSingleFlight()
@@ -1646,7 +1647,7 @@ function migrateToPane(): void {
  */
 function syncPaneIds(): void {
   // Build a global map: pane_id → cwd from all alive tmux sessions
-  const paneMap = new Map<string, { tmuxName: string; cwd: string }>()
+  const paneMap = new Map<string, HostedPaneLocation>()
   for (const s of tmux.listTmuxSessions()) {
     try {
       const panes = execSync(
@@ -1655,23 +1656,49 @@ function syncPaneIds(): void {
       ).trim().split('\n')
       for (const line of panes) {
         const [paneId, ...pp] = line.split(' ')
-        paneMap.set(paneId, { tmuxName: s.name, cwd: pp.join(' ') })
+        paneMap.set(paneId, { paneId, tmuxName: s.name, cwd: pp.join(' ') })
       }
     } catch { /* ignore */ }
   }
 
-  for (const session of sessionRepo.listSessions()) {
-    if (session.hidden || !session.paneId) continue
+  const sessions = sessionRepo.listSessions()
+  const visibleSessions = sessions.filter((session) => !session.hidden)
+  const unresolvedSessions = visibleSessions
+    .filter((session) => !session.paneId || !paneMap.has(session.paneId))
+    .map(({ id, tmuxName, cwd }) => ({ id, tmuxName, cwd }))
+  const claimedPaneIds = new Set(
+    sessions
+      .map((session) => session.paneId)
+      .filter((paneId) => paneId && paneMap.has(paneId)),
+  )
+
+  for (const session of visibleSessions) {
+    const livePane = session.paneId ? paneMap.get(session.paneId) : undefined
 
     // Validate: does this pane_id still exist in tmux?
-    if (paneMap.has(session.paneId)) {
+    if (livePane) {
       // Pane alive — sync tmux_name if it moved to a different session
-      const info = paneMap.get(session.paneId)!
-      if (session.tmuxName !== info.tmuxName) {
-        getDB().prepare("UPDATE sessions SET tmux_name = ? WHERE id = ?").run(info.tmuxName, session.id)
+      if (session.tmuxName !== livePane.tmuxName) {
+        getDB().prepare("UPDATE sessions SET tmux_name = ? WHERE id = ?").run(livePane.tmuxName, session.id)
       }
-    } else {
-      // Pane gone — clear stale pane_id
+      continue
+    }
+
+    const recoveredPaneId = recoverSessionPaneId(
+      session,
+      unresolvedSessions,
+      [...paneMap.values()],
+      claimedPaneIds,
+    )
+    if (recoveredPaneId) {
+      sessionRepo.updateSessionPaneId(session.id, recoveredPaneId)
+      claimedPaneIds.add(recoveredPaneId)
+      log('pane-mode', `recovered pane mapping: ${session.title} → ${recoveredPaneId}`)
+      continue
+    }
+
+    if (session.paneId) {
+      // Pane gone and no unique replacement can be proven — clear stale pane_id.
       sessionRepo.updateSessionPaneId(session.id, '')
     }
   }
@@ -1705,6 +1732,17 @@ function tryRestoreSession(row: sessionRepo.SessionRow): boolean {
       `${tmux.TMUX} new-session -d -s "${row.tmuxName}" -c "${row.cwd}" "${script}"`,
       { stdio: ['ignore', 'ignore', 'pipe'], env: tmux.tmuxSpawnEnv() }
     )
+    try {
+      const paneId = execSync(
+        `${tmux.TMUX} list-panes -t "${row.tmuxName}" -F '#{pane_id}'`,
+        { encoding: 'utf-8', stdio: ['ignore', 'pipe', 'ignore'] },
+      ).trim().split('\n')[0]
+      if (paneId) sessionRepo.updateSessionPaneId(row.id, paneId)
+    } catch (err) {
+      // The session is already live; periodic sync can still recover the
+      // mapping by unique cwd, so a metadata lookup must not kill the restore.
+      log('restore', `pane id lookup deferred for ${row.title}:`, err)
+    }
     tmux.applyKittyStatusBar(row.tmuxName)
     sessionRepo.updateSessionStatus(row.id, 'detached')
     log('restore', `rebuilt ${row.title} (${row.tmuxName})`)
