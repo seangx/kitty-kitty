@@ -66,7 +66,11 @@ export function listSessions(): SessionRow[] {
 
 export function updateSessionStatus(id: string, status: string): void {
   const db = getDB()
-  db.prepare("UPDATE sessions SET status = ?, updated_at = datetime('now') WHERE id = ?").run(status, id)
+  db.prepare(`
+    UPDATE sessions
+    SET status = ?, updated_at = datetime('now')
+    WHERE id = ? AND COALESCE(status, '') <> ?
+  `).run(status, id, status)
 }
 
 export function updateSessionTitle(id: string, title: string): void {

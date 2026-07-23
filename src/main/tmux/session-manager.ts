@@ -10,6 +10,7 @@ import {
   groupDepthForTmuxSql,
   groupSubtreeCte,
   ROOT_GROUPS_SQL,
+  ROOT_STANDALONE_SESSIONS_ORDER_BY,
   rootGroupForTmuxSql,
 } from './group-tree-sql'
 import {
@@ -730,6 +731,15 @@ CLIENT="\$2"
 RENDER_SESSION="\$3"
 [ -z "\$RANGE" ] && exit 0
 case "\$RANGE" in
+  rg:*)
+    ID="\${RANGE##*:}"
+    exec "${navigateScript}" group "\$ID" "\$RENDER_SESSION" "\$CLIENT"
+    ;;
+  rs:*)
+    ID="\${RANGE##*:}"
+    exec "${navigateScript}" session "\$ID" "\$RENDER_SESSION" "\$CLIENT"
+    ;;
+  # Compatibility with status rows rendered by an older app process.
   kr:*)
     IDX="\${RANGE##*:}"
     exec "${switchScript}" "\$IDX" "\$CLIENT"
@@ -816,7 +826,7 @@ function ensureStatusNavigateScript(): string {
 }
 
 /**
- * Legacy single-level root switcher used by prefix+1~9 and root-row clicks.
+ * Positional root switcher used by prefix+1~9 and Alt+1~9.
  */
 function ensureSwitchGroupScript(): string {
   const dbPath = join(homedir(), 'Library', 'Application Support', 'kitty-kitty', 'kitty-kitty.db')
@@ -865,7 +875,7 @@ while IFS='|' read -r TNAME TITLE; do
   N=\$((N+1))
   GROUP_IDS[\$N]="__ungrouped__:\$TNAME"
   GROUP_NAMES[\$N]="\${TITLE:-\$TNAME}"
-done < <(sqlite3 "\$DB" "SELECT tmux_name, title FROM sessions WHERE (group_id IS NULL OR group_id='') AND COALESCE(hidden,0)=0 ORDER BY updated_at DESC;" 2>/dev/null)
+done < <(sqlite3 "\$DB" "SELECT tmux_name, title FROM sessions WHERE (group_id IS NULL OR group_id='') AND COALESCE(hidden,0)=0 ${ROOT_STANDALONE_SESSIONS_ORDER_BY};" 2>/dev/null)
 
 # Validate index
 if [ "\$IDX" -gt "\$N" ] || [ "\$IDX" -lt 1 ]; then

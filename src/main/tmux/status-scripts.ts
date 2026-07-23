@@ -2,6 +2,7 @@ import {
   groupPathForTmuxSql,
   groupSubtreeCte,
   ROOT_GROUPS_SQL,
+  ROOT_STANDALONE_SESSIONS_ORDER_BY,
   rootGroupForTmuxSql,
 } from './group-tree-sql.ts'
 
@@ -137,7 +138,7 @@ add_item() {
 }
 
 build_root_items() {
-  local ACTIVE_ROOT="\$1" GID GNAME COUNT ACTIVE TNAME SID TITLE RANGE_INDEX
+  local ACTIVE_ROOT="\$1" GID GNAME COUNT ACTIVE TNAME SID TITLE
   ITEMS_PLAIN=""
   ITEMS_FORMAT=""
   TARGET_PREFIX=""
@@ -149,8 +150,7 @@ build_root_items() {
     COUNT=\$(group_count "\$GID")
     ACTIVE=0
     [ "\$GID" = "\$ACTIVE_ROOT" ] && ACTIVE=1
-    RANGE_INDEX=\$((ITEM_NO+1))
-    add_item group "\$GID" "\$GNAME" "\$COUNT" "\$ACTIVE" "kr:\$RANGE_INDEX"
+    add_item group "\$GID" "\$GNAME" "\$COUNT" "\$ACTIVE" "rg:\$GID"
   done < <(sqlite3 -separator "\$SEP" "\$DB" "${ROOT_GROUPS_SQL}" 2>/dev/null)
 
   while IFS="\$SEP" read -r SID TNAME TITLE; do
@@ -158,9 +158,8 @@ build_root_items() {
     tmux_is_alive "\$TNAME" || continue
     ACTIVE=0
     [ "\$TNAME" = "\$RENDER_SESSION" ] && ACTIVE=1
-    RANGE_INDEX=\$((ITEM_NO+1))
-    add_item session "\$SID" "\${TITLE:-\$TNAME}" "" "\$ACTIVE" "kr:\$RANGE_INDEX"
-  done < <(sqlite3 -separator "\$SEP" "\$DB" "SELECT id, tmux_name, title FROM sessions WHERE (group_id IS NULL OR group_id='') AND COALESCE(hidden,0)=0 ORDER BY updated_at DESC;" 2>/dev/null)
+    add_item session "\$SID" "\${TITLE:-\$TNAME}" "" "\$ACTIVE" "rs:\$SID"
+  done < <(sqlite3 -separator "\$SEP" "\$DB" "SELECT id, tmux_name, title FROM sessions WHERE (group_id IS NULL OR group_id='') AND COALESCE(hidden,0)=0 ${ROOT_STANDALONE_SESSIONS_ORDER_BY};" 2>/dev/null)
 }
 
 build_group_items() {
@@ -279,7 +278,7 @@ SESSION_PREFIX="${options.sessionPrefix}"
 SEP=$'\\037'
 
 if ! [ -f "\$DB" ] || ! command -v sqlite3 >/dev/null 2>&1; then exit 0; fi
-case "\$ACTION" in group|direct|level-index) ;; *) exit 0 ;; esac
+case "\$ACTION" in group|session|direct|level-index) ;; *) exit 0 ;; esac
 case "\$ACTION" in
   level-index) case "\$VALUE" in *[!0-9]*|'') exit 0 ;; esac ;;
   *) case "\$VALUE" in *[!A-Za-z0-9_-]*|'') exit 0 ;; esac ;;
@@ -353,6 +352,12 @@ navigate_group() {
   finish_navigation "\$TARGET_TMUX" ""
 }
 
+navigate_session() {
+  local SID="\$1" TARGET_TMUX
+  TARGET_TMUX=\$(sqlite3 "\$DB" "SELECT tmux_name FROM sessions WHERE id='\$SID' AND COALESCE(hidden,0)=0 LIMIT 1;" 2>/dev/null)
+  finish_navigation "\$TARGET_TMUX" ""
+}
+
 navigate_direct() {
   local GID="\$1" TARGET_TMUX CANDIDATE
   while read -r CANDIDATE; do
@@ -404,6 +409,7 @@ navigate_level_index() {
 
 case "\$ACTION" in
   group) navigate_group "\$VALUE" ;;
+  session) navigate_session "\$VALUE" ;;
   direct) navigate_direct "\$VALUE" ;;
   level-index) navigate_level_index "\$VALUE" ;;
 esac

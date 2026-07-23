@@ -7,6 +7,13 @@ export const ROOT_GROUPS_SQL = `
 `.trim()
 
 /**
+ * Root-level standalone sessions must keep the same order between rendering
+ * and Alt+number dispatch. Runtime status polling updates `updated_at`, so it
+ * must never participate in this positional order.
+ */
+export const ROOT_STANDALONE_SESSIONS_ORDER_BY = 'ORDER BY created_at DESC, id'
+
+/**
  * Resolve the root group for a tmux session. `tmuxNameSql` is a SQL value
  * expression: use `?` for better-sqlite3 or a quoted shell variable in the
  * generated sqlite3 helper script.

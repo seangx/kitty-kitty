@@ -71,7 +71,10 @@ test('nested tmux rows anchor to their parent and collapse direct panes into ung
     const rootRow = render(1)
     const hiddenLeafRow = render(2)
 
-    assert.match(rootRow, /range=user\|kr:1/)
+    assert.match(rootRow, /range=user\|rg:root/)
+    assert.match(rootRow, /range=user\|rs:loose1/)
+    assert.match(rootRow, /range=user\|rs:loose2/)
+    assert.doesNotMatch(rootRow, /range=user\|kr:/)
     assert.match(rootRow, /fg=#\{@kitty_active_fg\},bg=#\{@kitty_active_bg\}/)
     assert.match(rootRow, /Root \(3\)/)
     assert.match(rootRow, /Loose 1/)
@@ -95,6 +98,15 @@ test('nested tmux rows anchor to their parent and collapse direct panes into ung
     const visibleText = (value: string) => value.replace(/#\[[^\]]*\]/g, '')
     const leadingCells = (value: string) => visibleText(value).match(/^ */)?.[0].length || 0
     assert.equal(leadingCells(rootContentsRow), leadingCells(rootRow))
+
+    const rootTextBeforeStatusPoll = visibleText(rootRow)
+    sqlite("UPDATE sessions SET updated_at='2099-01-01' WHERE id='loose1';")
+    const rootTextAfterStatusPoll = visibleText(render(1))
+    assert.equal(rootTextAfterStatusPoll, rootTextBeforeStatusPoll)
+    assert.ok(rootTextAfterStatusPoll.indexOf('Loose 2') < rootTextAfterStatusPoll.indexOf('Loose 1'))
+
+    assert.match(readFileSync(navigateScript, 'utf8'), /session\) navigate_session/)
+    assert.match(readFileSync(navigateScript, 'utf8'), /WHERE id='\$SID'/)
 
     tmux('select-pane', '-t', childPanes[0])
     execFileSync(navigateScript, ['level-index', '1', 'kitty_child', ''], { encoding: 'utf8' })
@@ -143,6 +155,32 @@ test('Alt+number switches root groups without requiring the tmux prefix', () => 
   assert.match(block, /const switchScript = ensureSwitchGroupScript\(\)/)
   assert.match(block, /bind-key -n M-\$\{i\} run-shell -b '\$\{switchScript\} \$\{i\} "#\{client_name\}"'/)
   assert.doesNotMatch(block, /level-index/)
+})
+
+test('status clicks dispatch stable root group and session ids', () => {
+  const source = readFileSync(new URL('../src/main/tmux/session-manager.ts', import.meta.url), 'utf8')
+  const clickStart = source.indexOf('function ensureStatusClickScript')
+  const clickEnd = source.indexOf('/**\n * Bind Alt+1~9', clickStart)
+  const block = source.slice(clickStart, clickEnd)
+
+  assert.ok(clickStart >= 0)
+  assert.ok(clickEnd > clickStart)
+  assert.match(block, /rg:\*\)/)
+  assert.match(block, /rs:\*\)/)
+  assert.match(block, /navigateScript}" group/)
+  assert.match(block, /navigateScript}" session/)
+})
+
+test('unchanged session status does not reorder root standalone sessions', () => {
+  const source = readFileSync(new URL('../src/main/db/session-repo.ts', import.meta.url), 'utf8')
+  const updateStart = source.indexOf('export function updateSessionStatus')
+  const updateEnd = source.indexOf('export function updateSessionTitle', updateStart)
+  const block = source.slice(updateStart, updateEnd)
+
+  assert.ok(updateStart >= 0)
+  assert.ok(updateEnd > updateStart)
+  assert.match(block, /COALESCE\(status, ''\) <> \?/)
+  assert.match(block, /\.run\(status, id, status\)/)
 })
 
 test('status navigation gives the selected hierarchy a short native color transition', () => {
