@@ -159,14 +159,18 @@ export default function SessionDeck({
   const [renameBusy, setRenameBusy] = useState(false)
   const [renameError, setRenameError] = useState('')
   const [rootBranchStyle, setRootBranchStyle] = useState<React.CSSProperties | null>(null)
+  const [hiddenBranchStyle, setHiddenBranchStyle] = useState<React.CSSProperties | null>(null)
   const [groupRestart, setGroupRestart] = useState<GroupRestartState | null>(null)
   const branchPortalRef = useRef<HTMLDivElement | null>(null)
+  const hiddenButtonRef = useRef<HTMLButtonElement | null>(null)
   const createButtonRef = useRef<HTMLButtonElement | null>(null)
 
   const collapseBranches = useCallback(() => {
     setOpenGroupIds([])
     setVerticalDirections({})
     setRootBranchStyle(null)
+    setShowHidden(false)
+    setHiddenBranchStyle(null)
   }, [])
 
   const accent = /^#[0-9a-f]{6}$/i.test(bubble.deckAccentColor || '')
@@ -263,6 +267,8 @@ export default function SessionDeck({
     const next = toggleDeckSubtree(openGroupIds, node, depth === 0)
     if (depth === 0 && next.includes(groupId)) {
       const rect = target.getBoundingClientRect()
+      setShowHidden(false)
+      setHiddenBranchStyle(null)
       setRootBranchStyle(edge === 'left'
         ? { top: rect.top + rect.height / 2, left: rect.right + 14 }
         : { top: rect.top + rect.height / 2, right: window.innerWidth - rect.left + 14 })
@@ -552,6 +558,15 @@ export default function SessionDeck({
         : renderGroup(item.node, axis, depth))}
     </div>
   )
+  const hiddenItems = hiddenSessions.map((session): DeckItem => ({ kind: 'session', session }))
+  const hiddenBranch = showHidden && hiddenBranchStyle ? (
+    <div
+      className={`session-deck__branch is-horizontal from-${edge} is-portaled`}
+      style={hiddenBranchStyle}
+    >
+      {renderItems(hiddenItems, 'horizontal', 1)}
+    </div>
+  ) : null
 
   const selectedSession = sessionMenu
     ? sessions.find((session) => session.id === sessionMenu.id)
@@ -596,16 +611,23 @@ export default function SessionDeck({
           {rootItems.map((item) => item.kind === 'session'
             ? renderSession(item.session, true)
             : renderGroup(item.node, 'vertical', 0, true))}
-          {showHidden && hiddenSessions.map((session) => renderSession(session, true))}
         </div>
         <div className="session-deck__footer">
           {hiddenSessions.length > 0 && (
             <button
+              ref={hiddenButtonRef}
               className={`session-deck__utility${showHidden ? ' is-selected' : ''}`}
-              onClick={() => {
+              onClick={(event) => {
+                event.stopPropagation()
+                const nextOpen = !showHidden
                 collapseBranches()
                 setCreateMenu(null)
-                setShowHidden((value) => !value)
+                if (!nextOpen) return
+                const rect = event.currentTarget.getBoundingClientRect()
+                setHiddenBranchStyle(edge === 'left'
+                  ? { top: rect.top + rect.height / 2, left: rect.right + 14 }
+                  : { top: rect.top + rect.height / 2, right: window.innerWidth - rect.left + 14 })
+                setShowHidden(true)
               }}
               title="隐藏的会话"
             >◌<span>{hiddenSessions.length}</span></button>
@@ -632,6 +654,9 @@ export default function SessionDeck({
       </div>
 
       <div ref={branchPortalRef} className="session-deck__branch-portal" />
+      {hiddenBranch && branchPortalRef.current
+        ? createPortal(hiddenBranch, branchPortalRef.current)
+        : null}
 
       {createMenu && (
         <DeckMenu
