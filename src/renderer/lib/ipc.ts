@@ -20,7 +20,7 @@ export const attachSession = (id: string) =>
   api().invoke(IPC.SESSION_ATTACH, id) as Promise<boolean>
 
 export const killSession = (id: string) =>
-  api().invoke(IPC.SESSION_KILL, id) as Promise<{ success: boolean }>
+  api().invoke(IPC.SESSION_KILL, id) as Promise<{ success: boolean; message?: string }>
 
 export const syncSessions = () =>
   api().invoke(IPC.SESSION_SYNC) as Promise<SessionInfo[]>

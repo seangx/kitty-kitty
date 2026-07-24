@@ -810,7 +810,13 @@ export default function TagCloud({ sessions, onAttach, onKill, onRename, onResta
                 const toolName = s?.tool === 'codex' ? 'codex' : s?.tool === 'opencode' ? 'opencode' : 'claude'
                 const ok = window.confirm(`确定删除「${s?.title || '会话'}」？\n会话目录和 ${toolName} 对话文件将被清除，不可恢复。`)
                 if (ok) {
-                  await window.api.invoke('session:kill-and-delete', ctxMenu.id)
+                  const result = await window.api.invoke('session:kill-and-delete', ctxMenu.id) as {
+                    success?: boolean
+                    message?: string
+                  }
+                  if (result?.success === false) {
+                    window.alert(result.message || '删除失败')
+                  }
                 }
                 setCtxMenu(null)
               }, color: T.dangerText },

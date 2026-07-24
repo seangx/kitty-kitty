@@ -76,8 +76,11 @@ export const useSessionStore = create<SessionState>((set, get) => ({
   },
 
   killSession: async (id: string) => {
-    await ipc.killSession(id)
+    const result = await ipc.killSession(id)
     await get().loadSessions()
+    if (result?.success === false) {
+      window.alert(result.message || '结束会话失败')
+    }
   },
 
   renameSession: async (id: string, title: string) => {
