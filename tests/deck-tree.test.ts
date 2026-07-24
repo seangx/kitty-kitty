@@ -97,6 +97,17 @@ test('SessionDeck wires group clicks to recursive subtree expansion', async () =
   assert.match(source, /const isOpen = openGroupIds\.includes\(groupId\)/)
 })
 
+test('hidden sessions expand from their footer anchor through the shared Deck branch portal', async () => {
+  const source = await readFile(new URL('../src/renderer/pet/SessionDeck.tsx', import.meta.url), 'utf8')
+
+  assert.match(source, /ref=\{hiddenButtonRef\}/)
+  assert.match(source, /const hiddenBranch = showHidden && hiddenBranchStyle/)
+  assert.match(source, /className=\{`session-deck__branch is-horizontal from-\$\{edge\} is-portaled`\}/)
+  assert.match(source, /createPortal\(hiddenBranch, branchPortalRef\.current\)/)
+  assert.doesNotMatch(source, /\{showHidden && hiddenSessions\.map\(\(session\) => renderSession\(session, true\)\)\}/)
+  assert.match(source, /const collapseBranches = useCallback\(\(\) => \{[\s\S]*?setShowHidden\(false\)[\s\S]*?setHiddenBranchStyle\(null\)/)
+})
+
 test('child group creation uses the in-app name dialog instead of Electron window.prompt', async () => {
   const source = await readFile(new URL('../src/renderer/pet/SessionDeck.tsx', import.meta.url), 'utf8')
   assert.doesNotMatch(source, /window\.prompt\(['"]子分组名称/)
