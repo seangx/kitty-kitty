@@ -25,6 +25,7 @@ import { syncManagedMcpsToTool } from '../mcps/mcps-manager'
 import { selectGroupRestartCandidates } from '../group-restart'
 import { getPetWindow } from '../windows/pet-window'
 import { recoverSessionPaneId, type HostedPaneLocation } from '../tmux/pane-label'
+import { planSharedPaneRemoval, type LivePane } from '../safe-pane-removal'
 import type { SessionInfo } from '@shared/types/session'
 
 const forceRestartSingleFlight = new KeyedSingleFlight()
@@ -348,25 +349,56 @@ function runCodexTransfer(companion: string, sourceJsonl: string, cwd: string): 
   })
 }
 
-function killSessionTmux(session: sessionRepo.SessionRow): void {
+function killSessionTmux(
+  session: sessionRepo.SessionRow,
+  preserveSiblings = true,
+): boolean {
   const siblings = sessionRepo.listSessions().filter(
     (s) => s.id !== session.id && s.tmuxName === session.tmuxName,
   )
   const hostAlive = tmux.isSessionAlive(session.tmuxName)
-  if (siblings.length > 0 && hostAlive && session.paneId) {
-    // Other rows live in this tmux session — only remove our pane.
+  if (siblings.length > 0 && hostAlive && preserveSiblings) {
+    let livePanes: LivePane[] = []
     try {
-      execSync(`${tmux.TMUX} kill-pane -t ${session.paneId}`, { stdio: 'ignore' })
+      livePanes = execSync(
+        `${tmux.TMUX} list-panes -t "${session.tmuxName}" -F '#{pane_id}\t#{pane_current_path}'`,
+        { encoding: 'utf-8', stdio: ['ignore', 'pipe', 'ignore'] },
+      ).trim().split('\n').filter(Boolean).map((line) => {
+        const [paneId, cwd = ''] = line.split('\t')
+        return { paneId, cwd }
+      })
+    } catch (error) {
+      log('session', `delete refused: cannot inspect shared host ${session.tmuxName}`, error)
+      return false
+    }
+
+    const plan = planSharedPaneRemoval(session, siblings, livePanes)
+    if (plan.kind !== 'kill-pane') {
+      log(
+        'session',
+        `delete refused: preserve shared host ${session.tmuxName} for ${session.title} (${plan.reason})`,
+      )
+      return false
+    }
+
+    try {
+      execSync(`${tmux.TMUX} kill-pane -t ${plan.paneId}`, { stdio: 'ignore' })
       if (tmux.getPaneCount(session.tmuxName) > 1) {
         tmux.applyMainVerticalLayout(session.tmuxName)
       }
-    } catch {
-      // pane id stale — last resort, but only if no sibling actually has a pane
-      try { tmux.killSession(session.tmuxName) } catch { /* ignore */ }
+      return true
+    } catch (error) {
+      log(
+        'session',
+        `delete refused: kill-pane ${plan.paneId} failed; preserved shared host ${session.tmuxName}`,
+        error,
+      )
+      return false
     }
-    return
   }
-  tmux.killSession(session.tmuxName)
+
+  if (hostAlive) tmux.killSession(session.tmuxName)
+  return true
 }
 
 /** List recent on-disk CLI sessions for the given tool, started from `projectDir`. */
@@ -643,7 +675,12 @@ export function registerSessionHandlers(): void {
     const rows = sessionRepo.listSessions()
     const session = rows.find((s) => s.id === id)
     if (session) {
-      killSessionTmux(session)
+      if (!killSessionTmux(session)) {
+        return {
+          success: false,
+          message: '无法确认该会话对应的 tmux pane；已保留整个分组，请刷新后重试',
+        }
+      }
       sessionRepo.deleteSession(id)
       hiveCli(['agent', 'remove', '--key', id, '--yes'])
     }
@@ -657,7 +694,12 @@ export function registerSessionHandlers(): void {
     const session = rows.find((s) => s.id === id)
     if (!session) return { success: true }
 
-    killSessionTmux(session)
+    if (!killSessionTmux(session)) {
+      return {
+        success: false,
+        message: '无法确认该会话对应的 tmux pane；未删除会话或对话文件',
+      }
+    }
 
     // Delete session directory if under ~/.kitty-kitty/sessions/
     const kittySessionsDir = join(homedir(), '.kitty-kitty', 'sessions')
@@ -1219,7 +1261,7 @@ export function registerSessionHandlers(): void {
       const rows = sessionRepo.listSessionsByGroup(id)
       count += rows.length
       for (const s of rows) {
-        try { killSessionTmux(s) } catch { /* tmux 可能已死 */ }
+        try { killSessionTmux(s, false) } catch { /* tmux 可能已死 */ }
         sessionRepo.updateSessionStatus(s.id, 'dead')
       }
       sessionRepo.setGroupArchived(id, true)
