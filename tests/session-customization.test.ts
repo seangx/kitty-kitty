@@ -59,6 +59,34 @@ test('creating a session from a group routes through the shared tool picker', as
   assert.match(block, /initialPrompt: cleanMessage/)
 })
 
+test('ordinary Codex creation prepares one stable project directory before Hive registration', async () => {
+  const handlers = await source('src/main/ipc/session-handlers.ts')
+  const start = handlers.indexOf('ipcMain.handle(IPC.SESSION_CREATE,')
+  const end = handlers.indexOf('ipcMain.handle(IPC.SESSION_CREATE_IN_DIR', start)
+  const block = handlers.slice(start, end)
+
+  assert.notEqual(start, -1)
+  assert.notEqual(end, -1)
+  assert.match(block, /const provisional = uuid\(\)\.slice\(0, 8\)/)
+  assert.match(block, /const projectDir = join\(homedir\(\), '\.kitty-kitty', 'sessions', provisional\)/)
+  assert.match(block, /mkdirSync\(projectDir, \{ recursive: true \}\)/)
+  assert.match(block, /await syncManagedMcpsToTool\(projectDir, t\)/)
+  assert.match(block, /prepareProjectForTool\(projectDir, t, script\)/)
+  assert.match(block, /tryPrepareCodexRemoteScript\(\{[\s\S]*?kittyId: provisional,[\s\S]*?projectDir,[\s\S]*?\}\)/)
+  assert.match(block, /createTmuxSession\(t, firstMessage, projectDir, script, provisional\)/)
+
+  const mkdirAt = block.indexOf('mkdirSync(projectDir')
+  const mcpAt = block.indexOf('await syncManagedMcpsToTool(projectDir, t)')
+  const prepareAt = block.indexOf('prepareProjectForTool(projectDir, t, script)')
+  const registerAt = block.indexOf('await tryPrepareCodexRemoteScript')
+  const createAt = block.indexOf('tmux.createTmuxSession(t, firstMessage, projectDir, script, provisional)')
+  assert.ok(mkdirAt < mcpAt)
+  assert.ok(mcpAt < prepareAt)
+  assert.ok(prepareAt < registerAt)
+  assert.ok(registerAt < createAt)
+  assert.doesNotMatch(block, /createTmuxSession\(t, firstMessage, undefined, script, provisional\)/)
+})
+
 test('settings exposes a global Skills and MCP repository manager', async () => {
   const [settings, router, panel, ipcTypes, skillsHandlers] = await Promise.all([
     source('src/renderer/pet/SettingsPanel.tsx'),

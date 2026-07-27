@@ -442,21 +442,33 @@ export function registerSessionHandlers(): void {
     let script: string
     let hiveAgentId = ''
     if (t === 'codex') {
-      // We don't yet have a stable kitty id — generate one first so hive can
-      // map back to it. tmux.createTmuxSession will reuse the id we pass via
-      // the script env injection below.
+      // Allocate the Kitty id and its default project directory before Hive
+      // starts the Codex daemon. Otherwise the daemon inherits Kitty's own cwd
+      // while createTmuxSession creates the real session directory afterwards,
+      // leaving project rules, skills and MCP discovery permanently split.
       const provisional = uuid().slice(0, 8)
-      const bridged = await tryPrepareCodexRemoteScript({ kittyId: provisional, title: firstMessage?.slice(0, 40) || provisional })
+      const projectDir = join(homedir(), '.kitty-kitty', 'sessions', provisional)
+      const title = firstMessage?.slice(0, 40) || provisional
+      mkdirSync(projectDir, { recursive: true })
+      await syncManagedMcpsToTool(projectDir, t)
+      script = generateLaunchScript(t, 'new')
+      prepareProjectForTool(projectDir, t, script)
+
+      const bridged = await tryPrepareCodexRemoteScript({
+        kittyId: provisional,
+        title,
+        projectDir,
+      })
       if (bridged) {
         script = bridged.script
         hiveAgentId = bridged.hiveAgentId
-        const session = tmux.createTmuxSession(t, firstMessage, undefined, script, provisional)
-        sessionRepo.saveSession(session)
-        if (hiveAgentId) sessionRepo.updateSessionHiveAgentId(session.id, hiveAgentId)
-        if (bridged.threadId) sessionRepo.updateSessionExternalId(session.id, bridged.threadId)
-        tmux.attachSession(session.tmuxName)
-        return toSessionInfo(session)
       }
+      const session = tmux.createTmuxSession(t, firstMessage, projectDir, script, provisional)
+      sessionRepo.saveSession(session)
+      if (hiveAgentId) sessionRepo.updateSessionHiveAgentId(session.id, hiveAgentId)
+      if (bridged?.threadId) sessionRepo.updateSessionExternalId(session.id, bridged.threadId)
+      tmux.attachSession(session.tmuxName)
+      return toSessionInfo(session)
     }
     if (t === 'opencode') {
       const provisional = uuid().slice(0, 8)
