@@ -29,8 +29,10 @@ import { homedir } from 'os'
 import { join } from 'path'
 import { log } from './logger'
 import { getPetWindow } from './windows/pet-window'
+import { showCompletionNotification } from './windows/completion-notification-window'
 import * as sessionRepo from './db/session-repo'
 import { clearMark } from './session-clear-state'
+import { CODEX_TURN_COMPLETED_EVENT } from '@shared/completion-notification'
 
 const SOCK_DIR = join(homedir(), '.kitty-kitty')
 const CLAUDE_PROJECTS = join(homedir(), '.claude', 'projects')
@@ -112,7 +114,10 @@ async function handleRequest(req: IncomingMessage, res: ServerResponse): Promise
   const kittyHeader = (req.headers['x-kitty-session'] as string | undefined)?.trim()
   const externalSessionId = typeof payload?.session_id === 'string' ? payload.session_id : undefined
   const sourceTool = typeof payload?.tool === 'string' ? payload.tool : 'claude'
-  const hookEvent: string = typeof payload?.hook_event_name === 'string' ? payload.hook_event_name : ''
+  const hookEvent: string =
+    typeof payload?.hook_event_name === 'string' ? payload.hook_event_name
+      : typeof payload?.event === 'string' ? payload.event
+        : ''
 
   const kittyId = resolveKittySessionId(kittyHeader, externalSessionId)
   if (!kittyId) {
@@ -154,6 +159,15 @@ async function handleRequest(req: IncomingMessage, res: ServerResponse): Promise
         }
       }
     } catch (err) { log('wakeup', 'updateSessionExternalId failed:', err) }
+  }
+
+  if (hookEvent === CODEX_TURN_COMPLETED_EVENT) {
+    const row = sessionRepo.listSessions().find((session) => session.id === kittyId)
+    if (row?.tool === 'codex') {
+      showCompletionNotification(row.id, row.title)
+    } else {
+      log('wakeup', `ignored ${CODEX_TURN_COMPLETED_EVENT} for non-codex session ${kittyId}`)
+    }
   }
 
   res.statusCode = 200

@@ -1,0 +1,141 @@
+import { randomUUID } from 'crypto'
+import { BrowserWindow, ipcMain, screen } from 'electron'
+import { join } from 'path'
+import { is } from '@electron-toolkit/utils'
+import {
+  COMPLETION_NOTIFICATION_IPC,
+  getCompletionNotificationWindowBounds,
+  type CompletionNotification,
+} from '@shared/completion-notification'
+import { log } from '../logger'
+
+let notificationWindow: BrowserWindow | null = null
+let registered = false
+let rendererReady = false
+let notifications: CompletionNotification[] = []
+
+function currentDisplay(): Electron.Display {
+  return screen.getDisplayNearestPoint(screen.getCursorScreenPoint())
+}
+
+function positionWindow(win: BrowserWindow): void {
+  win.setBounds(getCompletionNotificationWindowBounds(currentDisplay().workArea))
+}
+
+function sendNotifications(): void {
+  const win = notificationWindow
+  if (!rendererReady || !win || win.isDestroyed()) return
+  win.webContents.send(COMPLETION_NOTIFICATION_IPC.CHANGED, notifications)
+}
+
+function hideWhenEmpty(): void {
+  const win = notificationWindow
+  if (notifications.length > 0 || !win || win.isDestroyed()) return
+  win.setIgnoreMouseEvents(true, { forward: true })
+  win.hide()
+}
+
+function ensureWindow(): BrowserWindow {
+  if (notificationWindow && !notificationWindow.isDestroyed()) return notificationWindow
+
+  rendererReady = false
+  const bounds = getCompletionNotificationWindowBounds(currentDisplay().workArea)
+  notificationWindow = new BrowserWindow({
+    ...bounds,
+    show: false,
+    transparent: true,
+    frame: false,
+    resizable: false,
+    skipTaskbar: true,
+    hasShadow: false,
+    focusable: true,
+    acceptFirstMouse: true,
+    webPreferences: {
+      preload: join(__dirname, '../preload/index.js'),
+      sandbox: false,
+      contextIsolation: true,
+      nodeIntegration: false,
+    },
+  })
+
+  const win = notificationWindow
+  win.setAlwaysOnTop(true, 'floating')
+  win.setIgnoreMouseEvents(true, { forward: true })
+  if (process.platform === 'darwin') {
+    win.setVisibleOnAllWorkspaces(true, { visibleOnFullScreen: true })
+  }
+
+  const hash = '#completion-notifications'
+  if (is.dev && process.env['ELECTRON_RENDERER_URL']) {
+    void win.loadURL(process.env['ELECTRON_RENDERER_URL'] + hash)
+  } else {
+    void win.loadFile(join(__dirname, '../renderer/index.html'), { hash: 'completion-notifications' })
+  }
+
+  win.webContents.on('did-finish-load', () => {
+    rendererReady = true
+    sendNotifications()
+    if (notifications.length > 0) {
+      positionWindow(win)
+      win.showInactive()
+    }
+  })
+  win.webContents.on('render-process-gone', (_event, details) => {
+    rendererReady = false
+    log('completion-notification', `renderer gone: ${details.reason}`)
+  })
+  win.on('closed', () => {
+    rendererReady = false
+    notificationWindow = null
+  })
+  return win
+}
+
+export function registerCompletionNotificationHandlers(): void {
+  if (registered) return
+  registered = true
+
+  ipcMain.handle(COMPLETION_NOTIFICATION_IPC.LIST, () => notifications)
+  ipcMain.handle(COMPLETION_NOTIFICATION_IPC.DISMISS, (_event, id: string) => {
+    const before = notifications.length
+    notifications = notifications.filter((notification) => notification.id !== id)
+    if (notifications.length === before) return { success: false }
+    sendNotifications()
+    hideWhenEmpty()
+    return { success: true }
+  })
+  ipcMain.handle(COMPLETION_NOTIFICATION_IPC.IGNORE_MOUSE, (_event, ignore: boolean) => {
+    const win = notificationWindow
+    if (win && !win.isDestroyed()) {
+      win.setIgnoreMouseEvents(Boolean(ignore), { forward: true })
+    }
+  })
+
+  screen.on('display-metrics-changed', () => {
+    const win = notificationWindow
+    if (win && !win.isDestroyed() && win.isVisible()) positionWindow(win)
+  })
+}
+
+export function showCompletionNotification(sessionId: string, sessionName: string): void {
+  notifications.push({
+    id: randomUUID(),
+    sessionId,
+    sessionName,
+    createdAt: Date.now(),
+  })
+
+  const win = ensureWindow()
+  positionWindow(win)
+  sendNotifications()
+  if (rendererReady) win.showInactive()
+  log('completion-notification', `queued ${sessionName} (${sessionId})`)
+}
+
+export function closeCompletionNotificationWindow(): void {
+  notifications = []
+  const win = notificationWindow
+  if (win && !win.isDestroyed()) win.destroy()
+  notificationWindow = null
+  rendererReady = false
+}

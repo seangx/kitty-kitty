@@ -25,6 +25,14 @@ body.popup-mode {
   overflow: hidden;
 }
 
+body.completion-notification-mode {
+  background: transparent !important;
+  margin: 0;
+  padding: 0;
+  overflow: hidden;
+  font-family: -apple-system, BlinkMacSystemFont, "SF Pro Display", "PingFang SC", sans-serif;
+}
+
 /* Override SkillsPanel fixed dimensions in popup window */
 .popup-skills-override > div {
   width: 100% !important;

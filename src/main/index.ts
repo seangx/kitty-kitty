@@ -11,6 +11,7 @@ import { startWakeupServer, stopWakeupServer } from './wakeup'
 import { ensureClaudeSessionSyncHook } from './hook-installer'
 import { ensureOpenCodePlugin } from './opencode-plugin-installer'
 import { ensureOpenCodeHiveMcp } from './opencode-hive'
+import { closeCompletionNotificationWindow } from './windows/completion-notification-window'
 
 app.whenReady().then(() => {
   initLogger()
@@ -67,5 +68,6 @@ app.on('activate', () => {
 app.on('before-quit', () => {
   ntfy.stop()
   stopWakeupServer()
+  closeCompletionNotificationWindow()
   closeDB()
 })
