@@ -20,6 +20,7 @@ import {
   resolveSessionPaneId,
 } from './pane-label'
 import type { PaneLocation } from './pane-label'
+import { isPaneInForeground } from './foreground-pane'
 import {
   buildStatusNavigateScript,
   buildStatusRowScript,
@@ -303,6 +304,26 @@ export function hasAnyAttachedClient(): boolean {
     return output.trim().split('\n')
       .filter((l) => l.startsWith(SESSION_PREFIX))
       .some((l) => l.endsWith(':1'))
+  } catch {
+    return false
+  }
+}
+
+/**
+ * Whether an attached tmux client is currently displaying this exact pane.
+ *
+ * Fail open: if tmux state cannot be read, return false so callers keep
+ * user-visible notifications instead of silently dropping them.
+ */
+export function isPaneForeground(paneId: string): boolean {
+  if (!paneId.trim()) return false
+  try {
+    const output = execFileSync(
+      TMUX,
+      ['list-clients', '-F', '#{pane_id}'],
+      { encoding: 'utf-8', stdio: ['ignore', 'pipe', 'ignore'] },
+    )
+    return isPaneInForeground(paneId, output)
   } catch {
     return false
   }

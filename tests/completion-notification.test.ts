@@ -6,6 +6,10 @@ import {
   COMPLETION_NOTIFICATION,
   getCompletionNotificationWindowBounds,
 } from '../src/shared/completion-notification.ts'
+import {
+  isPaneInForeground,
+  parseForegroundPaneIds,
+} from '../src/main/tmux/foreground-pane.ts'
 
 const source = (path: string) => readFile(new URL(`../${path}`, import.meta.url), 'utf8')
 
@@ -32,6 +36,7 @@ test('codex turn completion is routed to a transient notification instead of nee
   assert.match(wakeup, /payload\?\.notification_type/)
   assert.match(wakeup, /notificationType === CODEX_TURN_COMPLETED_EVENT/)
   assert.doesNotMatch(wakeup, /hookEvent === CODEX_TURN_COMPLETED_EVENT/)
+  assert.match(wakeup, /isPaneForeground\(row\.paneId\)/)
   assert.match(wakeup, /showCompletionNotification\(row\.id, row\.title\)/)
   assert.match(notifications, /showInactive\(\)/)
   assert.match(renderer, /COMPLETION_NOTIFICATION\.MAX_VISIBLE/)
@@ -39,4 +44,19 @@ test('codex turn completion is routed to a transient notification instead of nee
   assert.match(renderer, /window\.api\.invoke\('session:attach', notification\.sessionId\)/)
   assert.doesNotMatch(renderer, /LIFE_MS|remainingRef|自动消失/)
   assert.doesNotMatch([wakeup, notifications, renderer].join('\n'), /session:needs-input/)
+})
+
+test('completion notifications are suppressed only for the pane shown by an attached client', () => {
+  const clientPaneOutput = '%24\n%31\n'
+
+  assert.deepEqual([...parseForegroundPaneIds(clientPaneOutput)], ['%24', '%31'])
+  assert.equal(isPaneInForeground('%24', clientPaneOutput), true)
+  assert.equal(isPaneInForeground('%25', clientPaneOutput), false)
+})
+
+test('missing or malformed pane state fails open so notifications are not lost', () => {
+  assert.equal(isPaneInForeground('', '%24\n'), false)
+  assert.equal(isPaneInForeground('%24', ''), false)
+  assert.equal(isPaneInForeground('%24', 'no server running\n'), false)
+  assert.deepEqual([...parseForegroundPaneIds('%24\nunexpected\n%31\n')], ['%24', '%31'])
 })

@@ -31,6 +31,7 @@ import { log } from './logger'
 import { getPetWindow } from './windows/pet-window'
 import { showCompletionNotification } from './windows/completion-notification-window'
 import * as sessionRepo from './db/session-repo'
+import { isPaneForeground } from './tmux/session-manager'
 import { clearMark } from './session-clear-state'
 import { CODEX_TURN_COMPLETED_EVENT } from '@shared/completion-notification'
 
@@ -166,7 +167,11 @@ async function handleRequest(req: IncomingMessage, res: ServerResponse): Promise
   if (notificationType === CODEX_TURN_COMPLETED_EVENT) {
     const row = sessionRepo.listSessions().find((session) => session.id === kittyId)
     if (row?.tool === 'codex') {
-      showCompletionNotification(row.id, row.title)
+      if (isPaneForeground(row.paneId)) {
+        log('wakeup', `suppressed ${CODEX_TURN_COMPLETED_EVENT} for foreground session ${row.id} (pane=${row.paneId})`)
+      } else {
+        showCompletionNotification(row.id, row.title)
+      }
     } else {
       log('wakeup', `ignored ${CODEX_TURN_COMPLETED_EVENT} for non-codex session ${kittyId}`)
     }
