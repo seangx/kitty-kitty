@@ -118,6 +118,8 @@ async function handleRequest(req: IncomingMessage, res: ServerResponse): Promise
     typeof payload?.hook_event_name === 'string' ? payload.hook_event_name
       : typeof payload?.event === 'string' ? payload.event
         : ''
+  const notificationType: string =
+    typeof payload?.notification_type === 'string' ? payload.notification_type : ''
 
   const kittyId = resolveKittySessionId(kittyHeader, externalSessionId)
   if (!kittyId) {
@@ -161,7 +163,7 @@ async function handleRequest(req: IncomingMessage, res: ServerResponse): Promise
     } catch (err) { log('wakeup', 'updateSessionExternalId failed:', err) }
   }
 
-  if (hookEvent === CODEX_TURN_COMPLETED_EVENT) {
+  if (notificationType === CODEX_TURN_COMPLETED_EVENT) {
     const row = sessionRepo.listSessions().find((session) => session.id === kittyId)
     if (row?.tool === 'codex') {
       showCompletionNotification(row.id, row.title)

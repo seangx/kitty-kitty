@@ -29,7 +29,9 @@ test('codex turn completion is routed to a transient notification instead of nee
   ])
 
   assert.equal(CODEX_TURN_COMPLETED_EVENT, 'codex_turn_completed')
-  assert.match(wakeup, /hookEvent === CODEX_TURN_COMPLETED_EVENT/)
+  assert.match(wakeup, /payload\?\.notification_type/)
+  assert.match(wakeup, /notificationType === CODEX_TURN_COMPLETED_EVENT/)
+  assert.doesNotMatch(wakeup, /hookEvent === CODEX_TURN_COMPLETED_EVENT/)
   assert.match(wakeup, /showCompletionNotification\(row\.id, row\.title\)/)
   assert.match(notifications, /showInactive\(\)/)
   assert.match(renderer, /COMPLETION_NOTIFICATION\.MAX_VISIBLE/)
