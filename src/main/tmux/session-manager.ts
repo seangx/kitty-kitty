@@ -86,6 +86,7 @@ export interface TmuxSession {
 }
 
 const SESSION_PREFIX = 'kitty_'
+let statusRefreshScheduled = false
 
 export function getToolCommand(tool: string): string {
   // Only used as fallback when no launch script is provided.
@@ -349,15 +350,28 @@ export function focusSession(tmuxName: string): void {
     execSync(`${TMUX} switch-client -t ${shellQuote(tmuxName)}`, { stdio: 'ignore' })
   } catch { /* ignore */ }
 
-  // Sync active group to match the session we just switched to
-  syncActiveGroupForSession(tmuxName)
-
-  // Force immediate status bar refresh on all sessions
-  refreshAllStatusBars()
-
+  // Return the already-running terminal to the foreground immediately.
+  // Rebuilding every Kitty status bar can take noticeably longer when many
+  // sessions exist, so it must not sit on the critical click-to-focus path.
   if (process.platform === 'darwin') {
     exec(`osascript -e 'tell application "Ghostty" to activate'`)
   }
+
+  // Sync active group to match the session we just switched to
+  syncActiveGroupForSession(tmuxName)
+
+  // Refresh decoration after the switch has returned to the user. Coalesce
+  // rapid card/Deck clicks into one full refresh.
+  scheduleStatusBarRefresh()
+}
+
+function scheduleStatusBarRefresh(): void {
+  if (statusRefreshScheduled) return
+  statusRefreshScheduled = true
+  setImmediate(() => {
+    statusRefreshScheduled = false
+    refreshAllStatusBars()
+  })
 }
 
 /**

@@ -81,3 +81,20 @@ test('the latest completion replaces an existing card for the same agent', () =>
   assert.deepEqual(result, [latest, existing[1]])
   assert.deepEqual(existing.map((notification) => notification.id), ['old-a', 'only-b'])
 })
+
+test('notification activation focuses the live terminal before deferred status decoration', async () => {
+  const sessionManagerSource = await source('src/main/tmux/session-manager.ts')
+  const start = sessionManagerSource.indexOf('export function focusSession')
+  const end = sessionManagerSource.indexOf('\nfunction scheduleStatusBarRefresh', start)
+  const block = sessionManagerSource.slice(start, end)
+  const schedulerEnd = sessionManagerSource.indexOf('/**\n * Set KITTY_ACTIVE_GROUP', end)
+  const scheduler = sessionManagerSource.slice(end, schedulerEnd)
+
+  assert.ok(start >= 0)
+  assert.ok(end > start)
+  assert.ok(block.indexOf('switch-client') < block.indexOf('tell application "Ghostty" to activate'))
+  assert.ok(block.indexOf('tell application "Ghostty" to activate') < block.indexOf('scheduleStatusBarRefresh()'))
+  assert.doesNotMatch(block, /\n\s*refreshAllStatusBars\(\)\n/)
+  assert.match(scheduler, /setImmediate\(\(\) =>/)
+  assert.match(scheduler, /refreshAllStatusBars\(\)/)
+})
