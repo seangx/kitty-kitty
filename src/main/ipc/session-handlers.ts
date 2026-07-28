@@ -17,7 +17,7 @@ import * as sessionRepo from '../db/session-repo'
 import { getDB } from '../db/database'
 import * as ntfy from '../ntfy'
 import { getProvider } from '../sessions'
-import { clearNeedsInput, getPendingInput, isJsonlInCwd, claudeJsonlPath } from '../wakeup'
+import { isJsonlInCwd, claudeJsonlPath } from '../wakeup'
 import { markCleared, isCleared, clearMark } from '../session-clear-state'
 import { buildCodexHandoff, buildClaudeRecentHandoff, scanClaudeMessageTokens } from '../codex-rollout'
 import { buildClaudeMemoryStartupPrompt, findClaudeMemoryForProject } from '../claude-memory'
@@ -597,9 +597,6 @@ export function registerSessionHandlers(): void {
 
   // Re-attach to existing session (skip if already attached via kitty)
   ipcMain.handle(IPC.SESSION_ATTACH, (_event, id: string) => {
-    // Whatever the outcome, the user took action on this session — the
-    // wakeup badge has done its job, clear it.
-    clearNeedsInput(id)
     const rows = sessionRepo.listSessions()
     const session = rows.find((s) => s.id === id)
     if (!session) throw new Error('Session not found')
@@ -643,7 +640,7 @@ export function registerSessionHandlers(): void {
   })
 
   // Drift detection is disabled.
-  // - Claude has the wakeup Stop/Notification hook that auto-syncs
+  // - Claude has the wakeup Stop hook that auto-syncs
   //   externalSessionId with cwd validation; drift was redundant.
   // - Codex's cwd-fallback path produced false positives (the cwd recorded in
   //   a codex rollout header is where codex was launched from, not the kitty
@@ -773,15 +770,6 @@ export function registerSessionHandlers(): void {
 
   ipcMain.handle('session:set-expertise', (_event, id: string, expertise: string) => {
     sessionRepo.updateSessionExpertise(id, expertise)
-    return { success: true }
-  })
-
-  // Wakeup state — list of session ids currently flagged "needs your input".
-  ipcMain.handle('session:list-needs-input', () => getPendingInput())
-  // Renderer notifies the main process that the user has handled a wakeup
-  // (typically when they attach the session). Removes the badge.
-  ipcMain.handle('session:clear-needs-input', (_event, id: string) => {
-    clearNeedsInput(id)
     return { success: true }
   })
 

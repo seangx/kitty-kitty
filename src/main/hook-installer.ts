@@ -1,16 +1,14 @@
 /**
  * Claude Code hook installer.
  *
- * On startup we ensure ~/.claude/settings.json contains hooks that POST
- * claude's payload (stdin JSON) to our wakeup unix socket. Two events:
- *   - Notification → "needs your input" badge.
- *   - Stop         → after every assistant turn, used to keep kitty's DB
- *                    externalSessionId in sync with claude's actual jsonl
- *                    so `/clear` (which silently rolls to a new session id)
- *                    survives kitty restarts.
+ * On startup we ensure ~/.claude/settings.json contains a Stop hook that POSTs
+ * claude's payload (stdin JSON) to our wakeup unix socket. It keeps kitty's DB
+ * externalSessionId in sync with claude's actual jsonl so `/clear` (which
+ * silently rolls to a new session id) survives kitty restarts.
  *
- * Both hooks are idempotently keyed by `KITTY_KITTY_WAKEUP_HOOK` so we can
- * detect and refresh them across re-runs.
+ * Older Kitty versions also installed a Notification hook for the removed
+ * "needs input" badge. Reconciliation removes only our tagged legacy hook and
+ * preserves every user-owned Notification hook.
  */
 
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'fs'
@@ -20,7 +18,7 @@ import { log } from './logger'
 import { WAKEUP_SOCK_PATH } from './wakeup'
 
 const HOOK_TAG = 'KITTY_KITTY_WAKEUP_HOOK'
-const HOOK_EVENTS = ['Notification', 'Stop'] as const
+const SESSION_SYNC_EVENT = 'Stop'
 
 function buildHookCommand(): string {
   // Hook receives the event payload as JSON on stdin.
@@ -69,7 +67,34 @@ function ensureHookForEvent(settings: any, event: string, desiredCommand: string
   return true
 }
 
-export function ensureClaudeNotificationHook(): void {
+function removeTaggedHookForEvent(settings: any, event: string): boolean {
+  if (!Array.isArray(settings?.hooks?.[event])) return false
+  const groups: HookGroup[] = settings.hooks[event]
+  let changed = false
+  const nextGroups = groups.flatMap((group) => {
+    if (!Array.isArray(group?.hooks)) return [group]
+    const hooks = group.hooks.filter((hook) => {
+      const tagged = typeof hook?.command === 'string' && hook.command.includes(HOOK_TAG)
+      if (tagged) changed = true
+      return !tagged
+    })
+    return hooks.length > 0 ? [{ ...group, hooks }] : []
+  })
+  if (!changed) return false
+  if (nextGroups.length > 0) settings.hooks[event] = nextGroups
+  else delete settings.hooks[event]
+  log('hook-installer', `removed legacy kitty wakeup hook for ${event}`)
+  return true
+}
+
+export function reconcileClaudeSessionSyncHooks(settings: any, desiredCommand = buildHookCommand()): boolean {
+  if (!settings || typeof settings !== 'object') return false
+  const installed = ensureHookForEvent(settings, SESSION_SYNC_EVENT, desiredCommand)
+  const removedLegacyNotification = removeTaggedHookForEvent(settings, 'Notification')
+  return installed || removedLegacyNotification
+}
+
+export function ensureClaudeSessionSyncHook(): void {
   const settingsPath = join(homedir(), '.claude', 'settings.json')
   let settings: any = {}
   try {
@@ -85,12 +110,7 @@ export function ensureClaudeNotificationHook(): void {
 
   if (!settings || typeof settings !== 'object') settings = {}
 
-  const desiredCommand = buildHookCommand()
-  let dirty = false
-  for (const event of HOOK_EVENTS) {
-    if (ensureHookForEvent(settings, event, desiredCommand)) dirty = true
-  }
-  if (!dirty) return
+  if (!reconcileClaudeSessionSyncHooks(settings)) return
 
   try {
     writeFileSync(settingsPath, JSON.stringify(settings, null, 2) + '\n')

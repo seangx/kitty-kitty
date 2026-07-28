@@ -62,7 +62,7 @@ export default function PetCanvas() {
   const forceRestartingIdsRef = useRef(new Set<string>())
   const [forceRestartingSessionIds, setForceRestartingSessionIds] = useState<Set<string>>(() => new Set())
 
-  const { sessions, loadSessions, createSession, attachSession, killSession, renameSession, needsInput, loadNeedsInput, markNeedsInput, clearNeedsInput } = useSessionStore()
+  const { sessions, loadSessions, createSession, attachSession, killSession, renameSession } = useSessionStore()
   const { bubble, lastTool, setLastTool } = useConfigStore()
 
   const machine = useMemo(() => new PetStateMachine(setAnimation), [])
@@ -131,24 +131,11 @@ export default function PetCanvas() {
     }
   }, [scheduler, machine, loadSessions, closeAll])
 
-  // Wakeup ("xxx 在等你") IPC — bound ONCE, never re-binds on session updates,
-  // otherwise the 10s sessions poll would tear down + re-bind every cycle and
-  // make SessionDeck re-render via loadNeedsInput's fresh Set, stuttering drags.
+  // Pane-side IPC is bound once. Keep current sessions in a ref so the 10s
+  // session refresh does not tear down and rebuild the listener.
   const sessionsRef = useRef(sessions)
   useEffect(() => { sessionsRef.current = sessions }, [sessions])
   useEffect(() => {
-    loadNeedsInput()
-    const unsubNeed = window.api.on('session:needs-input', (msg: any) => {
-      if (!msg?.sessionId) return
-      markNeedsInput(msg.sessionId)
-      const session = sessionsRef.current.find((s) => s.id === msg.sessionId)
-      const title = session?.title || String(msg.sessionId).slice(0, 6)
-      machine.forceState('happy', 1500)
-      say(`${title} 在等你喵~`, 4000)
-    })
-    const unsubClear = window.api.on('session:needs-input-clear', (msg: any) => {
-      if (msg?.sessionId) clearNeedsInput(msg.sessionId)
-    })
     // Pane-side triggers (e.g. tmux Alt+C) route here via unix socket.
     const unsubPaneAction = window.api.on('pane:action', async (msg: any) => {
       if (!msg?.sessionId || !msg?.action) return
@@ -204,8 +191,8 @@ export default function PetCanvas() {
         }
       }
     })
-    return () => { unsubNeed(); unsubClear(); unsubPaneAction() }
-  }, [loadNeedsInput, markNeedsInput, clearNeedsInput, loadSessions, machine, say, startProgressHeartbeat])
+    return () => { unsubPaneAction() }
+  }, [loadSessions, machine, say, startProgressHeartbeat])
 
   // Ntfy push notifications — keep last 3
   const [ntfyMessages, setNtfyMessages] = useState<Array<{ id: number; text: string; url?: string; color: string; time: string }>>([])

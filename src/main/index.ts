@@ -8,7 +8,7 @@ import { initLogger, log } from './logger'
 import { hasTmux, focusAnyAttachedSession, refreshAllStatusBars } from './tmux/session-manager'
 import * as ntfy from './ntfy'
 import { startWakeupServer, stopWakeupServer } from './wakeup'
-import { ensureClaudeNotificationHook } from './hook-installer'
+import { ensureClaudeSessionSyncHook } from './hook-installer'
 import { ensureOpenCodePlugin } from './opencode-plugin-installer'
 import { ensureOpenCodeHiveMcp } from './opencode-hive'
 
@@ -43,7 +43,7 @@ app.whenReady().then(() => {
   try { createPetWindow(); log('app', 'pet window created') } catch (e) { log('app', 'window error:', e) }
   try { ntfy.start(); log('app', 'ntfy listener started') } catch (e) { log('app', 'ntfy error:', e) }
   try { startWakeupServer(); log('app', 'wakeup server started') } catch (e) { log('app', 'wakeup error:', e) }
-  try { ensureClaudeNotificationHook(); log('app', 'claude hook ensured') } catch (e) { log('app', 'hook installer error:', e) }
+  try { ensureClaudeSessionSyncHook(); log('app', 'claude session sync hook ensured') } catch (e) { log('app', 'hook installer error:', e) }
   try { ensureOpenCodePlugin(); log('app', 'opencode plugin ensured') } catch (e) { log('app', 'opencode plugin error:', e) }
   const openCodeHive = ensureOpenCodeHiveMcp()
   if (openCodeHive.success) log('app', 'opencode hive MCP ensured')

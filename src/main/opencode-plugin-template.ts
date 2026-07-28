@@ -41,16 +41,15 @@ function memorySnapshot() {
   } catch { return '' }
 }
 
-function postEvent(event, message) {
+function postEvent(event) {
   const kittyId = process.env.KITTY_SESSION_ID
   const sessionID = event?.properties?.sessionID || event?.properties?.info?.id
   if (!kittyId || !sessionID) return Promise.resolve()
   const body = JSON.stringify({
     tool: 'opencode',
     session_id: sessionID,
-    hook_event_name: message ? 'Notification' : event.type,
+    hook_event_name: event.type,
     notification_type: event.type,
-    message: message || '',
   })
   return new Promise((resolve) => {
     const req = http.request({
@@ -73,13 +72,7 @@ function postEvent(event, message) {
 export const KittyKittyPlugin = async () => ({
   event: async ({ event }) => {
     if (event.type === 'session.created' || event.type === 'session.updated') {
-      await postEvent(event, '')
-    } else if (event.type === 'session.idle') {
-      await postEvent(event, 'OpenCode 已完成，等待你的输入')
-    } else if (event.type === 'permission.asked') {
-      await postEvent(event, 'OpenCode 正在等待权限确认')
-    } else if (event.type === 'question.asked' || event.type === 'question.v2.asked') {
-      await postEvent(event, 'OpenCode 正在等待你的回答')
+      await postEvent(event)
     }
   },
   'experimental.chat.system.transform': async (_input, output) => {

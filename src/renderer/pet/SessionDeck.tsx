@@ -140,7 +140,6 @@ export default function SessionDeck({
   onOpenSkills,
 }: Props) {
   const { bubble } = useConfigStore()
-  const needsInput = useSessionStore((state) => state.needsInput)
   const loadSessions = useSessionStore((state) => state.loadSessions)
   const [groups, setGroups] = useState<GroupInfo[]>([])
   const [openGroupIds, setOpenGroupIds] = useState<string[]>([])
@@ -466,7 +465,6 @@ export default function SessionDeck({
         }}
         title={`${session.tool}: ${session.title}\n${session.cwd || '未设置目录'}`}
       >
-        {needsInput.has(session.id) && <span className="session-deck__attention">1</span>}
         <ToolIcon tool={session.tool} color={session.color} />
         <span className="session-deck__label">{session.title}</span>
       </div>

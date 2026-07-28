@@ -1,7 +1,7 @@
 /**
- * Wakeup server — receives "needs your input" notifications from claude-code
- * (and other tools' equivalents) via a unix-domain HTTP socket and forwards
- * them to the pet window so the right session bubble lights up.
+ * Wakeup server — receives lifecycle events from supported tools through a
+ * unix-domain HTTP socket. It keeps external session ids synchronized and
+ * also accepts pane-side UI actions.
  *
  * Layout:
  *   ~/.kitty-kitty/wakeup.sock     ← unix domain socket
@@ -11,12 +11,11 @@
  *        -H 'X-Kitty-Session: '"${HIVE_AGENT_KEY:-}" \
  *        -X POST 'http://_/wakeup' --data-binary @-
  *
- * Payload coming in (claude Notification hook):
+ * Payload coming in (claude Stop hook):
  *   {
  *     "session_id": "...claude jsonl uuid...",
  *     "transcript_path": "...",
- *     "hook_event_name": "Notification",
- *     "message": "...human readable..."
+ *     "hook_event_name": "Stop"
  *   }
  *
  * We map to a kitty session row by:
@@ -62,22 +61,6 @@ export function claudeJsonlPath(sessionId: string, cwd: string): string | null {
 export const WAKEUP_SOCK_PATH = join(SOCK_DIR, 'wakeup.sock')
 
 let server: Server | null = null
-
-/** Sessions currently in "needs input" state, addressed by kitty session id. */
-const pending = new Map<string, { type: string; message: string; ts: string }>()
-
-export function getPendingInput(): string[] {
-  return [...pending.keys()]
-}
-
-export function clearNeedsInput(kittyId: string): void {
-  if (pending.delete(kittyId)) {
-    const win = getPetWindow()
-    if (win && !win.isDestroyed()) {
-      win.webContents.send('session:needs-input-clear', { sessionId: kittyId })
-    }
-  }
-}
 
 function readBody(req: IncomingMessage): Promise<string> {
   return new Promise((resolve, reject) => {
@@ -129,14 +112,7 @@ async function handleRequest(req: IncomingMessage, res: ServerResponse): Promise
   const kittyHeader = (req.headers['x-kitty-session'] as string | undefined)?.trim()
   const externalSessionId = typeof payload?.session_id === 'string' ? payload.session_id : undefined
   const sourceTool = typeof payload?.tool === 'string' ? payload.tool : 'claude'
-  const message: string = typeof payload?.message === 'string' ? payload.message : ''
   const hookEvent: string = typeof payload?.hook_event_name === 'string' ? payload.hook_event_name : ''
-  // claude-code Notification payload doesn't include `notification_type` (issue #11964),
-  // so we keep this as a best-effort tag derived from the message.
-  const type: string =
-    /permission/i.test(message) ? 'permission_prompt' :
-    /elicit|choose|question/i.test(message) ? 'elicitation_dialog' :
-    'notification'
 
   const kittyId = resolveKittySessionId(kittyHeader, externalSessionId)
   if (!kittyId) {
@@ -178,17 +154,6 @@ async function handleRequest(req: IncomingMessage, res: ServerResponse): Promise
         }
       }
     } catch (err) { log('wakeup', 'updateSessionExternalId failed:', err) }
-  }
-
-  // Only Notification events surface the "needs your input" badge. Stop
-  // events are purely for the externalSessionId sync above.
-  if (hookEvent === 'Notification' || (!hookEvent && message)) {
-    pending.set(kittyId, { type, message, ts: new Date().toISOString() })
-    log('wakeup', `${kittyId} needs input (${type}): ${message.slice(0, 80)}`)
-    const win = getPetWindow()
-    if (win && !win.isDestroyed()) {
-      win.webContents.send('session:needs-input', { sessionId: kittyId, type, message })
-    }
   }
 
   res.statusCode = 200

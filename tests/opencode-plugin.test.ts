@@ -7,7 +7,7 @@ import { pathToFileURL } from 'node:url'
 import test from 'node:test'
 import { buildOpenCodePlugin } from '../src/main/opencode-plugin-template.ts'
 
-test('OpenCode plugin bridges memory, session ids, and input notifications', async (t) => {
+test('OpenCode plugin bridges memory and session ids without attention notifications', async (t) => {
   const plugin = buildOpenCodePlugin('/tmp/kitty test/wakeup.sock')
   const dir = mkdtempSync(join(tmpdir(), 'kitty-opencode-plugin-'))
   t.after(() => rmSync(dir, { recursive: true, force: true }))
@@ -34,8 +34,9 @@ test('OpenCode plugin bridges memory, session ids, and input notifications', asy
   assert.ok(plugin.includes('experimental.chat.system.transform'))
   assert.ok(plugin.includes('KITTY_CLAUDE_MEMORY_FILE'))
   assert.ok(plugin.includes("event?.properties?.sessionID || event?.properties?.info?.id"))
-  assert.ok(plugin.includes("event.type === 'session.idle'"))
-  assert.ok(plugin.includes("event.type === 'permission.asked'"))
-  assert.ok(plugin.includes("event.type === 'question.asked'"))
+  assert.ok(!plugin.includes("event.type === 'session.idle'"))
+  assert.ok(!plugin.includes("event.type === 'permission.asked'"))
+  assert.ok(!plugin.includes("event.type === 'question.asked'"))
+  assert.ok(!plugin.includes("hook_event_name: message ? 'Notification'"))
   assert.ok(plugin.includes("'X-Kitty-Session': kittyId"))
 })
