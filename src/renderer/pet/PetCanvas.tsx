@@ -3,6 +3,7 @@ import { flushSync } from 'react-dom'
 import PetSprite from './PetSprite'
 import { getPetAnimationStageSize } from './sprite-layout'
 import SessionDeck from './SessionDeck'
+import { isDeckInteractiveTarget } from './deck-hit-test'
 import InputPopup from './InputPopup'
 import ContextMenu from './ContextMenu'
 import SettingsPanel from './SettingsPanel'
@@ -482,8 +483,11 @@ export default function PetCanvas() {
   // Dynamically toggle click-through: transparent area = pass through, pet/UI = capture
   const handleMouseMove = useCallback((e: React.MouseEvent) => {
     if (anyPopup || isDraggingBubble.current) return
-    window.api.invoke('set-ignore-mouse', e.target === e.currentTarget)
-  }, [anyPopup])
+    const ignore = deckOpen
+      ? !isDeckInteractiveTarget(document.elementFromPoint(e.clientX, e.clientY))
+      : e.target === e.currentTarget
+    window.api.invoke('set-ignore-mouse', ignore)
+  }, [anyPopup, deckOpen])
 
   const handleMouseLeave = useCallback(() => {
     if (!anyPopup && !isDraggingBubble.current) {

@@ -6,6 +6,10 @@ import {
   applyFloatingDeckBounds,
   getFloatingDeckLayout,
 } from '../src/main/windows/deck-window-layout.ts'
+import {
+  DECK_INTERACTIVE_SELECTOR,
+  isDeckInteractiveTarget,
+} from '../src/renderer/pet/deck-hit-test.ts'
 
 const workArea = { x: 100, y: 24, width: 1400, height: 900 }
 
@@ -36,6 +40,20 @@ test('Deck render releases any late mouse capture from the replaced pet', async 
     source,
     /useEffect\(\(\) => \{[\s\S]*?if \(deckOpen && !anyPopup && !isDraggingBubble\.current\)[\s\S]*?set-ignore-mouse', true[\s\S]*?\}, \[anyPopup, deckOpen\]\)/,
   )
+})
+
+test('Deck mouse capture is limited to its visible interaction islands', async () => {
+  const source = await readFile(new URL('../src/renderer/pet/PetCanvas.tsx', import.meta.url), 'utf8')
+  const target = (matchedSelector: string | null) => ({
+    closest: (selectors: string) => selectors === DECK_INTERACTIVE_SELECTOR ? matchedSelector : null,
+  })
+
+  assert.equal(isDeckInteractiveTarget(target('.session-deck__rail') as unknown as EventTarget), true)
+  assert.equal(isDeckInteractiveTarget(target('.session-deck__menu') as unknown as EventTarget), true)
+  assert.equal(isDeckInteractiveTarget(target(null) as unknown as EventTarget), false)
+  assert.equal(isDeckInteractiveTarget(null), false)
+  assert.match(source, /document\.elementFromPoint\(e\.clientX, e\.clientY\)/)
+  assert.match(source, /!isDeckInteractiveTarget/)
 })
 
 test('floating Deck chooses the side with outward space and stays on screen', () => {
