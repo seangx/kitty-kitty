@@ -21,6 +21,22 @@ export interface CompletionNotification {
   createdAt: number
 }
 
+/**
+ * Keep at most one completion card per Kitty agent/session.
+ *
+ * A fresh notification keeps its fresh id so an exit animation already
+ * running for the replaced card cannot dismiss the newer completion.
+ */
+export function upsertCompletionNotification(
+  notifications: readonly CompletionNotification[],
+  next: CompletionNotification,
+): CompletionNotification[] {
+  return [
+    next,
+    ...notifications.filter((notification) => notification.sessionId !== next.sessionId),
+  ]
+}
+
 export interface ScreenWorkArea {
   x: number
   y: number

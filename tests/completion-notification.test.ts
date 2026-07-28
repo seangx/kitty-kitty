@@ -5,6 +5,7 @@ import {
   CODEX_TURN_COMPLETED_EVENT,
   COMPLETION_NOTIFICATION,
   getCompletionNotificationWindowBounds,
+  upsertCompletionNotification,
 } from '../src/shared/completion-notification.ts'
 import {
   isPaneInForeground,
@@ -38,6 +39,8 @@ test('codex turn completion is routed to a transient notification instead of nee
   assert.doesNotMatch(wakeup, /hookEvent === CODEX_TURN_COMPLETED_EVENT/)
   assert.match(wakeup, /isPaneForeground\(row\.paneId\)/)
   assert.match(wakeup, /showCompletionNotification\(row\.id, row\.title\)/)
+  assert.match(notifications, /upsertCompletionNotification\(notifications/)
+  assert.doesNotMatch(notifications, /notifications\.push\(/)
   assert.match(notifications, /showInactive\(\)/)
   assert.match(renderer, /COMPLETION_NOTIFICATION\.MAX_VISIBLE/)
   assert.match(renderer, /className="completion-notification-ignore"/)
@@ -59,4 +62,22 @@ test('missing or malformed pane state fails open so notifications are not lost',
   assert.equal(isPaneInForeground('%24', ''), false)
   assert.equal(isPaneInForeground('%24', 'no server running\n'), false)
   assert.deepEqual([...parseForegroundPaneIds('%24\nunexpected\n%31\n')], ['%24', '%31'])
+})
+
+test('the latest completion replaces an existing card for the same agent', () => {
+  const existing = [
+    { id: 'old-a', sessionId: 'agent-a', sessionName: 'Agent A', createdAt: 1 },
+    { id: 'only-b', sessionId: 'agent-b', sessionName: 'Agent B', createdAt: 2 },
+  ]
+  const latest = {
+    id: 'new-a',
+    sessionId: 'agent-a',
+    sessionName: 'Renamed Agent A',
+    createdAt: 3,
+  }
+
+  const result = upsertCompletionNotification(existing, latest)
+
+  assert.deepEqual(result, [latest, existing[1]])
+  assert.deepEqual(existing.map((notification) => notification.id), ['old-a', 'only-b'])
 })

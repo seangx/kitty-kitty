@@ -6,6 +6,7 @@ import {
   COMPLETION_NOTIFICATION_IPC,
   getCompletionNotificationWindowBounds,
   type CompletionNotification,
+  upsertCompletionNotification,
 } from '@shared/completion-notification'
 import { log } from '../logger'
 
@@ -118,7 +119,8 @@ export function registerCompletionNotificationHandlers(): void {
 }
 
 export function showCompletionNotification(sessionId: string, sessionName: string): void {
-  notifications.push({
+  const replacing = notifications.some((notification) => notification.sessionId === sessionId)
+  notifications = upsertCompletionNotification(notifications, {
     id: randomUUID(),
     sessionId,
     sessionName,
@@ -129,7 +131,7 @@ export function showCompletionNotification(sessionId: string, sessionName: strin
   positionWindow(win)
   sendNotifications()
   if (rendererReady) win.showInactive()
-  log('completion-notification', `queued ${sessionName} (${sessionId})`)
+  log('completion-notification', `${replacing ? 'refreshed' : 'queued'} ${sessionName} (${sessionId})`)
 }
 
 export function closeCompletionNotificationWindow(): void {
