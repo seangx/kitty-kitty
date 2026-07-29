@@ -432,7 +432,9 @@ export default function PetCanvas() {
     { label: '📂 在目录中开始', onClick: handleOpenInDir },
     { label: '📁 新建分组', onClick: () => setGroupPrompt(true) },
     { separator: true as const },
-    { label: '♻️ 重启全部', onClick: async () => {
+    { label: '⚙️ 设置', onClick: () => setShowSettings(true) },
+    { separator: true as const },
+    { label: '♻️ 重启全部会话', onClick: async () => {
       try {
         machine.forceState('dance', 8000)
         say('全部重启中喵~')
@@ -444,8 +446,6 @@ export default function PetCanvas() {
         say(err?.message || '重启失败喵...')
       }
     }},
-    { separator: true as const },
-    { label: '⚙️ 设置', onClick: () => setShowSettings(true) },
   ], [handleOpenInDir, loadSessions, machine, openSessionCreator, say])
 
 
@@ -744,6 +744,13 @@ export default function PetCanvas() {
         edge={deckEdge}
         closing={deckClosing}
         onClose={closeDeck}
+        onOpenAppMenu={(x, y) => {
+          setShowInput(false)
+          setCreateTargetGroupId(null)
+          setShowSettings(false)
+          setDirPick(null)
+          setContextMenu({ x, y })
+        }}
         onCreateDirect={openSessionCreator}
         onCreateInDirectory={handleOpenInDir}
         onAttach={handleAttach}

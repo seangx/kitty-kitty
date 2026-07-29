@@ -47,6 +47,7 @@ export default function ContextMenu({ x, y, onClose, items }: Props) {
   return (
     <div
       ref={setRef}
+      className="pet-context-menu"
       style={{
         ...menuSurface(),
         position: 'fixed', ...position, zIndex: 200,
