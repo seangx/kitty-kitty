@@ -20,7 +20,7 @@ import {
   resolveSessionPaneId,
 } from './pane-label'
 import type { PaneLocation } from './pane-label'
-import { isPaneInForeground } from './foreground-pane'
+import { isPaneActuallyForeground } from './foreground-pane'
 import {
   buildStatusNavigateScript,
   buildStatusRowScript,
@@ -311,20 +311,39 @@ export function hasAnyAttachedClient(): boolean {
 }
 
 /**
- * Whether an attached tmux client is currently displaying this exact pane.
+ * Whether Ghostty is the active macOS application and an attached tmux client
+ * is currently displaying this exact pane.
  *
- * Fail open: if tmux state cannot be read, return false so callers keep
+ * An attached client can survive while its Ghostty window is hidden or behind
+ * another application, so tmux state alone is not enough. Fail open: if either
+ * application focus or tmux state cannot be read, return false so callers keep
  * user-visible notifications instead of silently dropping them.
  */
 export function isPaneForeground(paneId: string): boolean {
-  if (!paneId.trim()) return false
+  if (!paneId.trim() || process.platform !== 'darwin') return false
   try {
-    const output = execFileSync(
+    const frontmostAsn = execFileSync(
+      '/usr/bin/lsappinfo',
+      ['front'],
+      { encoding: 'utf-8', stdio: ['ignore', 'pipe', 'ignore'] },
+    ).trim()
+    if (!frontmostAsn) return false
+
+    const frontmostAppInfo = execFileSync(
+      '/usr/bin/lsappinfo',
+      ['info', '-only', 'bundleid', frontmostAsn],
+      { encoding: 'utf-8', stdio: ['ignore', 'pipe', 'ignore'] },
+    )
+    const clientPaneOutput = execFileSync(
       TMUX,
       ['list-clients', '-F', '#{pane_id}'],
       { encoding: 'utf-8', stdio: ['ignore', 'pipe', 'ignore'] },
     )
-    return isPaneInForeground(paneId, output)
+    return isPaneActuallyForeground(
+      paneId,
+      clientPaneOutput,
+      frontmostAppInfo,
+    )
   } catch {
     return false
   }

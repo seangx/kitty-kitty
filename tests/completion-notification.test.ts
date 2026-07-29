@@ -8,6 +8,8 @@ import {
   upsertCompletionNotification,
 } from '../src/shared/completion-notification.ts'
 import {
+  isGhosttyFrontmost,
+  isPaneActuallyForeground,
   isPaneInForeground,
   parseForegroundPaneIds,
 } from '../src/main/tmux/foreground-pane.ts'
@@ -49,18 +51,41 @@ test('codex turn completion is routed to a transient notification instead of nee
   assert.doesNotMatch([wakeup, notifications, renderer].join('\n'), /session:needs-input/)
 })
 
-test('completion notifications are suppressed only for the pane shown by an attached client', () => {
+test('completion notifications are suppressed only for the pane shown by foreground Ghostty', () => {
   const clientPaneOutput = '%24\n%31\n'
+  const ghosttyAppInfo = '"CFBundleIdentifier"="com.mitchellh.ghostty"\n'
 
   assert.deepEqual([...parseForegroundPaneIds(clientPaneOutput)], ['%24', '%31'])
   assert.equal(isPaneInForeground('%24', clientPaneOutput), true)
   assert.equal(isPaneInForeground('%25', clientPaneOutput), false)
+  assert.equal(isGhosttyFrontmost(ghosttyAppInfo), true)
+  assert.equal(
+    isPaneActuallyForeground('%24', clientPaneOutput, ghosttyAppInfo),
+    true,
+  )
+})
+
+test('an attached pane is not foreground while another macOS app is active', () => {
+  const clientPaneOutput = '%24\n'
+  const finderAppInfo = '"CFBundleIdentifier"="com.apple.finder"\n'
+
+  assert.equal(isPaneInForeground('%24', clientPaneOutput), true)
+  assert.equal(isGhosttyFrontmost(finderAppInfo), false)
+  assert.equal(
+    isPaneActuallyForeground('%24', clientPaneOutput, finderAppInfo),
+    false,
+  )
 })
 
 test('missing or malformed pane state fails open so notifications are not lost', () => {
+  const ghosttyAppInfo = '"CFBundleIdentifier"="com.mitchellh.ghostty"\n'
+
   assert.equal(isPaneInForeground('', '%24\n'), false)
   assert.equal(isPaneInForeground('%24', ''), false)
   assert.equal(isPaneInForeground('%24', 'no server running\n'), false)
+  assert.equal(isGhosttyFrontmost(''), false)
+  assert.equal(isGhosttyFrontmost('invalid app info'), false)
+  assert.equal(isPaneActuallyForeground('%24', '', ghosttyAppInfo), false)
   assert.deepEqual([...parseForegroundPaneIds('%24\nunexpected\n%31\n')], ['%24', '%31'])
 })
 
