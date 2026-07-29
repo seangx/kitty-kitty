@@ -5,6 +5,7 @@ export const DECK_INTERACTIVE_SELECTOR = [
   '.session-deck__name-dialog',
   '.session-deck__restart-progress',
   '.session-deck__drag-preview',
+  '.pet-context-menu',
 ].join(', ')
 
 interface ClosestTarget {

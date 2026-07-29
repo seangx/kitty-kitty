@@ -557,11 +557,14 @@
 
 .session-deck__menu button:hover { background: rgba(255, 255, 255, .08); }
 .session-deck__menu button.is-danger { color: #ff8e98; }
+.session-deck__menu-separator {
+  height: 1px;
+  margin: 5px 7px;
+  background: rgba(224, 229, 245, .1);
+}
 .session-deck__color-picker {
   margin: 4px 4px 5px;
   padding: 7px 6px 8px;
-  border-top: 1px solid rgba(224, 229, 245, .09);
-  border-bottom: 1px solid rgba(224, 229, 245, .09);
 }
 
 .session-deck__color-picker > span {

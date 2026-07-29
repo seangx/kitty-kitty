@@ -25,6 +25,7 @@ interface Props {
   edge: DeckEdge
   closing?: boolean
   onClose: () => void
+  onOpenAppMenu: (x: number, y: number) => void
   onCreateDirect: (groupId?: string) => void
   onCreateInDirectory: () => void
   onAttach: (id: string) => void
@@ -127,6 +128,7 @@ export default function SessionDeck({
   edge,
   closing = false,
   onClose,
+  onOpenAppMenu,
   onCreateDirect,
   onCreateInDirectory,
   onAttach,
@@ -585,6 +587,15 @@ export default function SessionDeck({
       onMouseDown={(event) => {
         event.stopPropagation()
       }}
+      onContextMenu={(event) => {
+        event.preventDefault()
+        event.stopPropagation()
+        setSessionMenu(null)
+        setGroupMenu(null)
+        setCreateMenu(null)
+        setShowMoveMenu(false)
+        onOpenAppMenu(event.clientX, event.clientY)
+      }}
     >
       <div
         className="session-deck__rail"
@@ -717,6 +728,7 @@ export default function SessionDeck({
       {sessionMenu && selectedSession && (
         <DeckMenu x={sessionMenu.x} y={sessionMenu.y} onClose={() => { setSessionMenu(null); setShowMoveMenu(false) }}>
           <button onClick={() => { attach(selectedSession); setSessionMenu(null) }}>打开会话</button>
+          <div className="session-deck__menu-separator" role="separator" />
           <button onClick={() => { onRestart(selectedSession.id); setSessionMenu(null) }}>重启</button>
           {(selectedSession.tool === 'codex' || selectedSession.tool === 'opencode') && (
             <button
@@ -729,8 +741,9 @@ export default function SessionDeck({
             >{selectedSessionForceRestarting ? '正在强制重启…' : '强制重启 Runtime'}</button>
           )}
           <button onClick={() => { onClearConversation(selectedSession.id); setSessionMenu(null) }}>清空对话</button>
-          <button onClick={() => { onEditEnv(selectedSession.id); setSessionMenu(null) }}>环境与参数</button>
+          <div className="session-deck__menu-separator" role="separator" />
           <button onClick={() => { onOpenSkills(selectedSession.id); setSessionMenu(null) }}>技能 / MCP</button>
+          <button onClick={() => { onEditEnv(selectedSession.id); setSessionMenu(null) }}>环境与参数</button>
           <button onClick={() => {
             setRenameError('')
             setRenameDialog({
@@ -752,6 +765,7 @@ export default function SessionDeck({
               })()
             }}
           />
+          <div className="session-deck__menu-separator" role="separator" />
           <button onClick={() => setShowMoveMenu((value) => !value)}>移动到分组…</button>
           {showMoveMenu && (
             <div className="session-deck__menu-sublist">
@@ -764,6 +778,7 @@ export default function SessionDeck({
             </div>
           )}
           <button onClick={async () => { await window.api.invoke('session:set-hidden', selectedSession.id, true); setSessionMenu(null); await refresh() }}>隐藏</button>
+          <div className="session-deck__menu-separator" role="separator" />
           <button className="is-danger" onClick={() => { onKill(selectedSession.id); setSessionMenu(null) }}>结束会话</button>
         </DeckMenu>
       )}
@@ -778,6 +793,9 @@ export default function SessionDeck({
             setGroupMenu(null)
             openChildGroupDialog(selectedGroup.id, undefined, groupMenu.x, groupMenu.y)
           }}>新建子分组</button>
+          <div className="session-deck__menu-separator" role="separator" />
+          <button onClick={() => { void restartGroup(selectedGroup) }}>重启整个分组</button>
+          <div className="session-deck__menu-separator" role="separator" />
           <button onClick={async () => {
             setRenameError('')
             setRenameDialog({
@@ -802,7 +820,7 @@ export default function SessionDeck({
           {selectedGroup.parentGroupId && (
             <button onClick={async () => { await window.api.invoke('group:set-parent', selectedGroup.id, null); setGroupMenu(null); await refresh() }}>移到根层级</button>
           )}
-          <button onClick={() => { void restartGroup(selectedGroup) }}>重启整个分组</button>
+          <div className="session-deck__menu-separator" role="separator" />
           <button className="is-danger" onClick={async () => { await window.api.invoke('group:archive', selectedGroup.id); setGroupMenu(null); await refresh() }}>归档分组</button>
         </DeckMenu>
       )}
