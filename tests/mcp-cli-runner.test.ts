@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict'
-import { mkdtempSync, mkdirSync, rmSync, writeFileSync } from 'node:fs'
+import { mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import test from 'node:test'
@@ -102,4 +102,20 @@ test('repairs and scans scoped MCP central definitions safely', () => {
   } finally {
     rmSync(central, { recursive: true, force: true })
   }
+})
+
+test('project deployment reuses a trusted scoped central definition before invoking mcpsmgr', () => {
+  const source = readFileSync(new URL('../src/main/mcps/mcps-manager.ts', import.meta.url), 'utf8')
+  const start = source.indexOf('export async function addMcp')
+  const end = source.indexOf('export async function removeMcp', start)
+  const block = source.slice(start, end)
+
+  assert.ok(start >= 0)
+  assert.ok(end > start)
+  assert.match(block, /readCentralConfigFromFs\(CENTRAL_DIR, safe, agent\)/)
+  assert.match(block, /tool === 'opencode'[\s\S]*?writeOpenCodeMcp/)
+  assert.match(block, /tool === 'codex'[\s\S]*?writeTomlMcp/)
+  assert.match(block, /else writeJsonMcp/)
+  assert.match(block, /listDeployedForTool\(cwd, tool\)\.includes\(safe\)/)
+  assert.ok(block.indexOf('readCentralConfigFromFs') < block.indexOf('runMcpsMgrWithScopedRetry'))
 })

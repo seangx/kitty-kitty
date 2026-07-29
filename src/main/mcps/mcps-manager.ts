@@ -213,6 +213,24 @@ export async function addMcp(cwd: string, source: string, tool: string): Promise
   const safe = validateName(source)
   const agent = TOOL_AGENT_MAP[tool] || 'claude-code'
   const before = new Set(listDeployedForTool(cwd, tool))
+  // A central definition is already trusted and normalized. Deploy it
+  // directly instead of asking mcpsmgr to parse its name again: mcpsmgr
+  // 0.4.10 rejects scoped central names such as @upstash/context7.
+  const centralConfig = readCentralConfigFromFs(CENTRAL_DIR, safe, agent)
+  if (centralConfig) {
+    try {
+      if (tool === 'opencode') writeOpenCodeMcp(cwd, { [safe]: centralConfig })
+      else if (tool === 'codex') writeTomlMcp(cwd, { [safe]: centralConfig })
+      else writeJsonMcp(cwd, { [safe]: centralConfig })
+    } catch (err: any) {
+      return { success: false, message: err?.message || `${safe} 写入 ${agent} 配置失败` }
+    }
+    if (listDeployedForTool(cwd, tool).includes(safe)) {
+      log('mcps', `central direct deploy: ${safe} → ${agent}`)
+      return { success: true, message: `${safe} 已部署到 ${agent}` }
+    }
+    return { success: false, message: `${safe} 未写入 ${agent} 配置` }
+  }
   // mcpsmgr 0.4.10 still prompts to trust README-derived configs even with
   // `-y`. The Add button is the user's authorization, so answer only that
   // confirmation through stdin. Any further prompt is left unanswered and the
