@@ -5,15 +5,21 @@ import { is } from '@electron-toolkit/utils'
 import {
   COMPLETION_NOTIFICATION_IPC,
   getCompletionNotificationWindowBounds,
+  removeForegroundCompletionNotifications,
   type CompletionNotification,
   upsertCompletionNotification,
 } from '@shared/completion-notification'
 import { log } from '../logger'
+import * as sessionRepo from '../db/session-repo'
+import { foregroundPaneIds } from '../tmux/session-manager'
 
 let notificationWindow: BrowserWindow | null = null
 let registered = false
 let rendererReady = false
 let notifications: CompletionNotification[] = []
+let foregroundTimer: ReturnType<typeof setInterval> | null = null
+
+const FOREGROUND_RECONCILE_MS = 500
 
 function currentDisplay(): Electron.Display {
   return screen.getDisplayNearestPoint(screen.getCursorScreenPoint())
@@ -30,10 +36,52 @@ function sendNotifications(): void {
 }
 
 function hideWhenEmpty(): void {
+  if (notifications.length > 0) return
+  stopForegroundReconcile()
   const win = notificationWindow
-  if (notifications.length > 0 || !win || win.isDestroyed()) return
+  if (!win || win.isDestroyed()) return
   win.setIgnoreMouseEvents(true, { forward: true })
   win.hide()
+}
+
+function stopForegroundReconcile(): void {
+  if (!foregroundTimer) return
+  clearInterval(foregroundTimer)
+  foregroundTimer = null
+}
+
+function reconcileForegroundNotifications(): void {
+  if (notifications.length === 0) {
+    stopForegroundReconcile()
+    return
+  }
+
+  const paneIds = foregroundPaneIds()
+  if (paneIds.size === 0) return
+
+  const next = removeForegroundCompletionNotifications(
+    notifications,
+    sessionRepo.listSessions(),
+    paneIds,
+  )
+  if (next.length === notifications.length) return
+
+  const removed = notifications
+    .filter((notification) => !next.some((candidate) => candidate.id === notification.id))
+    .map((notification) => notification.sessionName)
+  notifications = next
+  sendNotifications()
+  hideWhenEmpty()
+  log('completion-notification', `focused session dismissed ${removed.join(', ')}`)
+}
+
+function ensureForegroundReconcile(): void {
+  if (foregroundTimer) return
+  foregroundTimer = setInterval(
+    reconcileForegroundNotifications,
+    FOREGROUND_RECONCILE_MS,
+  )
+  foregroundTimer.unref()
 }
 
 function ensureWindow(): BrowserWindow {
@@ -86,6 +134,7 @@ function ensureWindow(): BrowserWindow {
     log('completion-notification', `renderer gone: ${details.reason}`)
   })
   win.on('closed', () => {
+    stopForegroundReconcile()
     rendererReady = false
     notificationWindow = null
   })
@@ -128,6 +177,7 @@ export function showCompletionNotification(sessionId: string, sessionName: strin
   })
 
   const win = ensureWindow()
+  ensureForegroundReconcile()
   positionWindow(win)
   sendNotifications()
   if (rendererReady) win.showInactive()
@@ -135,6 +185,7 @@ export function showCompletionNotification(sessionId: string, sessionName: strin
 }
 
 export function closeCompletionNotificationWindow(): void {
+  stopForegroundReconcile()
   notifications = []
   const win = notificationWindow
   if (win && !win.isDestroyed()) win.destroy()

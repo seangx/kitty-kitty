@@ -37,6 +37,22 @@ export function upsertCompletionNotification(
   ]
 }
 
+export function removeForegroundCompletionNotifications(
+  notifications: readonly CompletionNotification[],
+  sessions: ReadonlyArray<{ id: string; paneId: string }>,
+  foregroundPaneIds: ReadonlySet<string>,
+): CompletionNotification[] {
+  if (foregroundPaneIds.size === 0) return [...notifications]
+  const foregroundSessionIds = new Set(
+    sessions
+      .filter((session) => foregroundPaneIds.has(session.paneId))
+      .map((session) => session.id),
+  )
+  return notifications.filter(
+    (notification) => !foregroundSessionIds.has(notification.sessionId),
+  )
+}
+
 export interface ScreenWorkArea {
   x: number
   y: number

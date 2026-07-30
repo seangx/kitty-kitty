@@ -5,6 +5,7 @@ import {
   CODEX_TURN_COMPLETED_EVENT,
   COMPLETION_NOTIFICATION,
   getCompletionNotificationWindowBounds,
+  removeForegroundCompletionNotifications,
   upsertCompletionNotification,
 } from '../src/shared/completion-notification.ts'
 import {
@@ -107,6 +108,32 @@ test('the latest completion replaces an existing card for the same agent', () =>
   assert.deepEqual(existing.map((notification) => notification.id), ['old-a', 'only-b'])
 })
 
+test('focusing a session removes only its completion card', () => {
+  const notifications = [
+    { id: 'a', sessionId: 'agent-a', sessionName: 'Agent A', createdAt: 1 },
+    { id: 'b', sessionId: 'agent-b', sessionName: 'Agent B', createdAt: 2 },
+    { id: 'c', sessionId: 'agent-c', sessionName: 'Agent C', createdAt: 3 },
+  ]
+  const sessions = [
+    { id: 'agent-a', paneId: '%24' },
+    { id: 'agent-b', paneId: '%25' },
+    { id: 'agent-c', paneId: '%26' },
+  ]
+
+  assert.deepEqual(
+    removeForegroundCompletionNotifications(
+      notifications,
+      sessions,
+      new Set(['%25']),
+    ),
+    [notifications[0], notifications[2]],
+  )
+  assert.deepEqual(
+    removeForegroundCompletionNotifications(notifications, sessions, new Set()),
+    notifications,
+  )
+})
+
 test('notification cards reflow before the main-process dismissal reply', async () => {
   const renderer = await source('src/renderer/completion/CompletionNotifications.tsx')
   const start = renderer.indexOf('const dismiss = useCallback')
@@ -129,4 +156,14 @@ test('notification activation focuses the live terminal without rebuilding every
   assert.ok(block.indexOf('switch-client') < block.indexOf('tell application "Ghostty" to activate'))
   assert.ok(block.indexOf('tell application "Ghostty" to activate') < block.indexOf("'refresh-client', '-S'"))
   assert.doesNotMatch(block, /refreshAllStatusBars|scheduleStatusBarRefresh|setImmediate/)
+})
+
+test('visible completion cards reconcile against the foreground pane', async () => {
+  const notifications = await source('src/main/windows/completion-notification-window.ts')
+
+  assert.match(notifications, /FOREGROUND_RECONCILE_MS = 500/)
+  assert.match(notifications, /foregroundPaneIds\(\)/)
+  assert.match(notifications, /removeForegroundCompletionNotifications\(/)
+  assert.match(notifications, /ensureForegroundReconcile\(\)/)
+  assert.match(notifications, /stopForegroundReconcile\(\)/)
 })

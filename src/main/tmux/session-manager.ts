@@ -20,7 +20,7 @@ import {
   resolveSessionPaneId,
 } from './pane-label'
 import type { PaneLocation } from './pane-label'
-import { isPaneActuallyForeground } from './foreground-pane'
+import { isGhosttyFrontmost, parseForegroundPaneIds } from './foreground-pane'
 import {
   buildStatusNavigateScript,
   buildStatusRowScript,
@@ -314,38 +314,42 @@ export function hasAnyAttachedClient(): boolean {
  * is currently displaying this exact pane.
  *
  * An attached client can survive while its Ghostty window is hidden or behind
- * another application, so tmux state alone is not enough. Fail open: if either
- * application focus or tmux state cannot be read, return false so callers keep
- * user-visible notifications instead of silently dropping them.
+ * another application, so tmux state alone is not enough. Fail open with an
+ * empty set if either application focus or tmux state cannot be read, so
+ * callers keep user-visible notifications instead of silently dropping them.
  */
-export function isPaneForeground(paneId: string): boolean {
-  if (!paneId.trim() || process.platform !== 'darwin') return false
+export function foregroundPaneIds(): Set<string> {
+  if (process.platform !== 'darwin') return new Set()
   try {
     const frontmostAsn = execFileSync(
       '/usr/bin/lsappinfo',
       ['front'],
       { encoding: 'utf-8', stdio: ['ignore', 'pipe', 'ignore'] },
     ).trim()
-    if (!frontmostAsn) return false
+    if (!frontmostAsn) return new Set()
 
     const frontmostAppInfo = execFileSync(
       '/usr/bin/lsappinfo',
       ['info', '-only', 'bundleid', frontmostAsn],
       { encoding: 'utf-8', stdio: ['ignore', 'pipe', 'ignore'] },
     )
+    if (!isGhosttyFrontmost(frontmostAppInfo)) return new Set()
+
     const clientPaneOutput = execFileSync(
       TMUX,
       ['list-clients', '-F', '#{pane_id}'],
       { encoding: 'utf-8', stdio: ['ignore', 'pipe', 'ignore'] },
     )
-    return isPaneActuallyForeground(
-      paneId,
-      clientPaneOutput,
-      frontmostAppInfo,
-    )
+    return parseForegroundPaneIds(clientPaneOutput)
   } catch {
-    return false
+    return new Set()
   }
+}
+
+export function isPaneForeground(paneId: string): boolean {
+  const candidate = paneId.trim()
+  if (!/^%\d+$/.test(candidate)) return false
+  return foregroundPaneIds().has(candidate)
 }
 
 /**
