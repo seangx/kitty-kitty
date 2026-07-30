@@ -90,6 +90,10 @@ export default function CompletionNotifications() {
   }, [])
 
   const dismiss = useCallback((id: string) => {
+    // Reflow the visible stack without waiting for Electron's main process.
+    // Session activation may be doing tmux work, but that must not pin an
+    // already-finished exit animation in the middle of the stack.
+    setNotifications((current) => current.filter((notification) => notification.id !== id))
     void window.api.invoke(COMPLETION_NOTIFICATION_IPC.DISMISS, id)
   }, [])
 

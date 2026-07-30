@@ -107,19 +107,26 @@ test('the latest completion replaces an existing card for the same agent', () =>
   assert.deepEqual(existing.map((notification) => notification.id), ['old-a', 'only-b'])
 })
 
-test('notification activation focuses the live terminal before deferred status decoration', async () => {
+test('notification cards reflow before the main-process dismissal reply', async () => {
+  const renderer = await source('src/renderer/completion/CompletionNotifications.tsx')
+  const start = renderer.indexOf('const dismiss = useCallback')
+  const end = renderer.indexOf('\n\n  const activate', start)
+  const block = renderer.slice(start, end)
+
+  assert.ok(start >= 0)
+  assert.ok(end > start)
+  assert.ok(block.indexOf('setNotifications((current)') < block.indexOf('window.api.invoke(COMPLETION_NOTIFICATION_IPC.DISMISS'))
+})
+
+test('notification activation focuses the live terminal without rebuilding every status bar', async () => {
   const sessionManagerSource = await source('src/main/tmux/session-manager.ts')
   const start = sessionManagerSource.indexOf('export function focusSession')
-  const end = sessionManagerSource.indexOf('\nfunction scheduleStatusBarRefresh', start)
+  const end = sessionManagerSource.indexOf('/**\n * Set KITTY_ACTIVE_GROUP', start)
   const block = sessionManagerSource.slice(start, end)
-  const schedulerEnd = sessionManagerSource.indexOf('/**\n * Set KITTY_ACTIVE_GROUP', end)
-  const scheduler = sessionManagerSource.slice(end, schedulerEnd)
 
   assert.ok(start >= 0)
   assert.ok(end > start)
   assert.ok(block.indexOf('switch-client') < block.indexOf('tell application "Ghostty" to activate'))
-  assert.ok(block.indexOf('tell application "Ghostty" to activate') < block.indexOf('scheduleStatusBarRefresh()'))
-  assert.doesNotMatch(block, /\n\s*refreshAllStatusBars\(\)\n/)
-  assert.match(scheduler, /setImmediate\(\(\) =>/)
-  assert.match(scheduler, /refreshAllStatusBars\(\)/)
+  assert.ok(block.indexOf('tell application "Ghostty" to activate') < block.indexOf("'refresh-client', '-S'"))
+  assert.doesNotMatch(block, /refreshAllStatusBars|scheduleStatusBarRefresh|setImmediate/)
 })

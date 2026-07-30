@@ -86,7 +86,6 @@ export interface TmuxSession {
 }
 
 const SESSION_PREFIX = 'kitty_'
-let statusRefreshScheduled = false
 
 export function getToolCommand(tool: string): string {
   // Only used as fallback when no launch script is provided.
@@ -379,18 +378,16 @@ export function focusSession(tmuxName: string): void {
   // Sync active group to match the session we just switched to
   syncActiveGroupForSession(tmuxName)
 
-  // Refresh decoration after the switch has returned to the user. Coalesce
-  // rapid card/Deck clicks into one full refresh.
-  scheduleStatusBarRefresh()
-}
-
-function scheduleStatusBarRefresh(): void {
-  if (statusRefreshScheduled) return
-  statusRefreshScheduled = true
-  setImmediate(() => {
-    statusRefreshScheduled = false
-    refreshAllStatusBars()
-  })
+  // Existing sessions already own fully-rendered status rows. A focus-only
+  // navigation needs one cheap redraw, not a synchronous rebuild of every
+  // Kitty status bar. The latter blocks unrelated renderer IPC for seconds.
+  try {
+    execFileSync(
+      TMUX,
+      ['refresh-client', '-S'],
+      { stdio: ['ignore', 'ignore', 'ignore'] },
+    )
+  } catch { /* no attached client */ }
 }
 
 /**
